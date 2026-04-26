@@ -1,0 +1,23 @@
+{{template "base" .}}
+
+{{define "title"}}Two-factor authentication{{end}}
+
+{{define "content"}}
+<h1>Two-factor authentication</h1>
+<p class="subtitle">Enter the 6-digit code from your authenticator app.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<form method="POST" action="/authorize/mfa/totp">
+  <input type="hidden" name="auth_state" value="{{.AuthState}}">
+
+  <div class="form-group">
+    <label for="code">Authenticator code</label>
+    <input type="text" id="code" name="code" class="code-input"
+           inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+           placeholder="000000" required autofocus autocomplete="one-time-code">
+  </div>
+
+  <button type="submit" class="btn btn-primary btn-block">Verify</button>
+</form>
+{{end}}

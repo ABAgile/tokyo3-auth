@@ -1,0 +1,45 @@
+{{template "base" .}}
+
+{{define "title"}}Audit Log{{end}}
+{{define "pagetitle"}}Audit Log{{end}}
+
+{{define "content"}}
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Action</th>
+          <th>User</th>
+          <th>IP</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Logs}}
+        <tr>
+          <td class="text-muted mono" style="white-space:nowrap">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+          <td><span class="badge badge-gray">{{.Action}}</span></td>
+          <td class="text-muted">{{if .UserID}}{{.UserID}}{{else}}—{{end}}</td>
+          <td class="text-muted mono">{{.IP}}</td>
+          <td class="text-muted truncate">{{range $k,$v := .Metadata}}{{$k}}={{$v}} {{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" class="text-muted" style="text-align:center;padding:28px">No audit records.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="display:flex;gap:10px;margin-top:16px;align-items:center">
+  {{if gt .Offset 0}}
+  <a href="?offset={{.PrevOffset}}" class="btn btn-secondary btn-sm">← Previous</a>
+  {{end}}
+  {{if .HasMore}}
+  <a href="?offset={{.NextOffset}}" class="btn btn-secondary btn-sm">Next →</a>
+  {{end}}
+  <span class="text-muted">Showing {{.Offset}}–{{.OffsetEnd}}</span>
+</div>
+{{end}}

@@ -1,0 +1,51 @@
+{{template "base" .}}
+
+{{define "title"}}OAuth Clients{{end}}
+{{define "pagetitle"}}OAuth Clients{{end}}
+
+{{define "topbar-right"}}
+<a href="/portal/admin/clients/new" class="btn btn-primary btn-sm">+ New client</a>
+{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .NewSecret}}<div class="alert alert-info">New client secret (save now, shown only once): <strong class="mono">{{.NewSecret}}</strong></div>{{end}}
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Client ID</th>
+          <th>Type</th>
+          <th>Scopes</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Clients}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td class="mono truncate">{{.ClientID}}</td>
+          <td>{{if .Public}}<span class="badge badge-blue">Public</span>{{else}}<span class="badge badge-gray">Confidential</span>{{end}}</td>
+          <td class="text-muted truncate">{{range $i,$s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
+          <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+          <td style="white-space:nowrap">
+            <a href="/portal/admin/clients/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
+            <form method="POST" action="/portal/admin/clients/{{.ID}}/rotate-secret"
+                  style="display:inline" onsubmit="return confirm('Rotate client secret? Apps using the old secret will stop working.')">
+              <button type="submit" class="btn btn-secondary btn-sm">Rotate secret</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="text-muted" style="text-align:center;padding:28px">No clients found.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

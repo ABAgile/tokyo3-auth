@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authdb
+      POSTGRES_USER: authuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  auth:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${AUTH_PORT:-8080}:8080"
+    environment:
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_PORT: "8080"
+      # App role DSN (DML only — used at runtime).
+      AUTH_DATABASE_URL: postgres://authuser:${POSTGRES_PASSWORD:-changeme}@postgres:5432/authdb?sslmode=disable
+      # Admin DSN (DDL — used for migrations on startup; defaults to same DSN here).
+      AUTH_ADMIN_DATABASE_URL: postgres://authuser:${POSTGRES_PASSWORD:-changeme}@postgres:5432/authdb?sslmode=disable
+      # Generate with: docker run --rm golang:1.26-alpine sh -c 'head -c32 /dev/urandom | xxd -p'
+      AUTH_MASTER_KEY: ${AUTH_MASTER_KEY:?AUTH_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm auth keygen')}
+      AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-false}
+      AUTH_AWS_IAM_ENABLED: ${AUTH_AWS_IAM_ENABLED:-false}
+      AUTH_WEBAUTHN_ORIGINS: ${AUTH_WEBAUTHN_ORIGINS:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  postgres_data:

@@ -1,0 +1,45 @@
+{{template "base" .}}
+
+{{define "title"}}Users{{end}}
+{{define "pagetitle"}}Users{{end}}
+
+{{define "topbar-right"}}
+<a href="/portal/admin/users/new" class="btn btn-primary btn-sm">+ New user</a>
+{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Status</th>
+          <th>MFA</th>
+          <th>Role</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Users}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td>{{.Email}}</td>
+          <td>{{if .Active}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
+          <td>{{if .MFAEnabled}}<span class="badge badge-blue">On</span>{{else}}<span class="badge badge-gray">Off</span>{{end}}</td>
+          <td>{{if .IsAdmin}}<span class="badge badge-blue">Admin</span>{{else}}<span class="badge badge-gray">User</span>{{end}}</td>
+          <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+          <td><a href="/portal/admin/users/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a></td>
+        </tr>
+        {{else}}
+        <tr><td colspan="7" class="text-muted" style="text-align:center;padding:28px">No users found.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,38 @@
+{{template "base" .}}
+
+{{define "title"}}Security key{{end}}
+
+{{define "content"}}
+<h1>Security key</h1>
+<p class="subtitle">Touch your security key or use biometrics to continue.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div style="text-align:center;padding:28px 0">
+  <span class="spinner" id="wa-spinner"></span>
+  <p id="wa-status">Waiting for authenticator…</p>
+</div>
+
+<button id="wa-retry" class="btn btn-secondary btn-block" style="display:none" onclick="startWA()">Try again</button>
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function startWA() {
+  document.getElementById("wa-retry").style.display = "none";
+  document.getElementById("wa-spinner").style.display = "inline-block";
+  try {
+    await waSSOLogin(
+      "/authorize/mfa/webauthn/begin",
+      "/authorize/mfa/webauthn/finish",
+    );
+  } catch(e) {
+    document.getElementById("wa-status").textContent = "Error: " + e.message;
+    document.getElementById("wa-spinner").style.display = "none";
+    document.getElementById("wa-retry").style.display = "block";
+  }
+}
+
+startWA();
+</script>
+{{end}}

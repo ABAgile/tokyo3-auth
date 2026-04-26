@@ -1,0 +1,46 @@
+{{template "base" .}}
+
+{{define "title"}}SCIM Tokens{{end}}
+{{define "pagetitle"}}SCIM Tokens{{end}}
+
+{{define "content"}}
+{{if .NewToken}}<div class="alert alert-info">New SCIM token (save now, shown only once): <strong class="mono">{{.NewToken}}</strong></div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card mb-4">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Description</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        {{range .Tokens}}
+        <tr>
+          <td>{{.Description}}</td>
+          <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+          <td class="text-right">
+            <form method="POST" action="/portal/admin/scim-tokens/{{.ID}}/delete"
+                  onsubmit="return confirm('Delete this SCIM token?')">
+              <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3" class="text-muted" style="text-align:center;padding:28px">No SCIM tokens.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="max-width:460px">
+  <div class="card-header"><h2>Create token</h2></div>
+  <div class="card-body">
+    <form method="POST" action="/portal/admin/scim-tokens/new">
+      <div class="form-group">
+        <label for="description">Description</label>
+        <input type="text" id="description" name="description" placeholder="e.g. Okta provisioner" required>
+      </div>
+      <button type="submit" class="btn btn-primary">Generate token</button>
+    </form>
+  </div>
+</div>
+{{end}}

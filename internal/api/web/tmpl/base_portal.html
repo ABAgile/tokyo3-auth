@@ -1,0 +1,52 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Portal{{end}} — tokyo3-auth</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="portal-layout">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 3a3 3 0 110 6 3 3 0 010-6zm0 14.2a7.2 7.2 0 01-6-3.22c.03-1.99 4-3.08 6-3.08s5.97 1.09 6 3.08A7.2 7.2 0 0112 19.2z"/>
+      </svg>
+      tokyo3-auth
+    </div>
+    <nav>
+      <span class="nav-section">Account</span>
+      <a href="/portal" {{if eq .ActivePage "home"}}class="active"{{end}}>Overview</a>
+      <a href="/portal/account" {{if eq .ActivePage "account"}}class="active"{{end}}>Settings</a>
+      <a href="/portal/mfa" {{if eq .ActivePage "mfa"}}class="active"{{end}}>MFA</a>
+      {{if .IsAdmin}}
+      <span class="nav-section">Admin</span>
+      <a href="/portal/admin/users" {{if eq .ActivePage "admin-users"}}class="active"{{end}}>Users</a>
+      <a href="/portal/admin/clients" {{if eq .ActivePage "admin-clients"}}class="active"{{end}}>OAuth Clients</a>
+      <a href="/portal/admin/scim-tokens" {{if eq .ActivePage "admin-scim"}}class="active"{{end}}>SCIM Tokens</a>
+      <a href="/portal/admin/audit" {{if eq .ActivePage "admin-audit"}}class="active"{{end}}>Audit Log</a>
+      {{end}}
+    </nav>
+    <div class="sidebar-footer">
+      <div class="text-muted" style="margin-bottom:6px">{{.UserEmail}}</div>
+      <form method="POST" action="/portal/logout" style="margin:0">
+        <button type="submit" class="btn-link">Sign out</button>
+      </form>
+    </div>
+  </aside>
+  <div class="portal-main">
+    <div class="portal-topbar">
+      <h1>{{block "pagetitle" .}}Portal{{end}}</h1>
+      <div>{{block "topbar-right" .}}{{end}}</div>
+    </div>
+    <div class="portal-content">
+      {{block "content" .}}{{end}}
+    </div>
+  </div>
+</div>
+<script src="/static/webauthn.js"></script>
+{{block "scripts" .}}{{end}}
+</body>
+</html>
+{{end}}

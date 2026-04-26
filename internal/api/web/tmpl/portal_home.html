@@ -1,0 +1,27 @@
+{{template "base" .}}
+
+{{define "title"}}Overview{{end}}
+{{define "pagetitle"}}Overview{{end}}
+
+{{define "content"}}
+<div class="card mb-4">
+  <div class="card-header"><h2>Your account</h2></div>
+  <div class="card-body">
+    <table style="max-width:480px">
+      <tbody>
+        <tr><td class="text-muted" style="width:140px">Name</td><td>{{.User.Name}}</td></tr>
+        <tr><td class="text-muted">Email</td><td>{{.User.Email}}</td></tr>
+        <tr><td class="text-muted">MFA</td><td>
+          {{if .User.MFAEnabled}}<span class="badge badge-green">Enabled</span>{{else}}<span class="badge badge-red">Disabled</span>{{end}}
+        </td></tr>
+        {{if .User.IsAdmin}}<tr><td class="text-muted">Role</td><td><span class="badge badge-blue">Administrator</span></td></tr>{{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="display:flex;gap:12px;flex-wrap:wrap">
+  <a href="/portal/account" class="btn btn-secondary">Edit profile</a>
+  <a href="/portal/mfa" class="btn btn-secondary">Manage MFA</a>
+</div>
+{{end}}

@@ -1,0 +1,23 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Sign in{{end}} — tokyo3-auth</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="sso-body">
+<div class="sso-card">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 3a3 3 0 110 6 3 3 0 010-6zm0 14.2a7.2 7.2 0 01-6-3.22c.03-1.99 4-3.08 6-3.08s5.97 1.09 6 3.08A7.2 7.2 0 0112 19.2z"/>
+    </svg>
+    <span>tokyo3-auth</span>
+  </div>
+  {{block "content" .}}{{end}}
+</div>
+<script src="/static/webauthn.js"></script>
+{{block "scripts" .}}{{end}}
+</body>
+</html>
+{{end}}

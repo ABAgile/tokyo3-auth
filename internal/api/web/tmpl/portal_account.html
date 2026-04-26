@@ -1,0 +1,44 @@
+{{template "base" .}}
+
+{{define "title"}}Account settings{{end}}
+{{define "pagetitle"}}Account settings{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card mb-4" style="max-width:520px">
+  <div class="card-header"><h2>Profile</h2></div>
+  <div class="card-body">
+    <form method="POST" action="/portal/account/profile">
+      <div class="form-group">
+        <label for="name">Display name</label>
+        <input type="text" id="name" name="name" value="{{.User.Name}}" required>
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" value="{{.User.Email}}" disabled>
+      </div>
+      <button type="submit" class="btn btn-primary">Save changes</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="max-width:520px">
+  <div class="card-header"><h2>Change password</h2></div>
+  <div class="card-body">
+    <form method="POST" action="/portal/account/password">
+      <div class="form-group">
+        <label for="current_password">Current password</label>
+        <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label for="new_password">New password</label>
+        <input type="password" id="new_password" name="new_password" required autocomplete="new-password">
+        <p class="text-muted" style="margin-top:4px;font-size:12px">Min 12 chars, upper, lower, digit, special.</p>
+      </div>
+      <button type="submit" class="btn btn-primary">Update password</button>
+    </form>
+  </div>
+</div>
+{{end}}
