@@ -301,6 +301,57 @@ Attach a trust policy to your IAM role:
    - Authentication: Bearer token from step 1
 3. Set `AUTH_AWS_IAM_ENABLED=true` to enable automatic IAM user creation on SCIM events.
 
+## Outbound provisioning
+
+Auth fans out user and group lifecycle events to downstream systems whenever an authoritative mutation occurs — inbound SCIM, the admin API, self-registration, and the portal admin actions all trigger the same fan-out. Each downstream is a `provision.Provisioner` (`internal/provision/`); failures are logged but never block the originating request.
+
+> See [`docs/integration-guide.md`](docs/integration-guide.md) for the full bring-up runbook (auth ↔ vault) and the recipe for adding any new SCIM/REST-capable downstream app.
+
+### Vault SCIM (auth as IdP for vault)
+
+Vault is the canonical example: auth pushes users and groups to vault's SCIM server so vault membership stays in lockstep with auth's identity.
+
+**1. Mint a SCIM token in vault** (run on the vault side):
+```
+POST $VAULT/api/v1/scim/tokens
+Authorization: Bearer <vault server-admin token>
+{ "description": "auth -> vault provisioner" }
+```
+The response includes the raw token once — store it.
+
+**2. Register vault as an OAuth2 client in auth** (for SSO; see "Vault SSO" below).
+
+**3. Configure auth env**:
+```
+AUTH_VAULT_SCIM_ENABLED=true
+AUTH_VAULT_SCIM_URL=https://vault.example.com/scim/v2
+AUTH_VAULT_SCIM_TOKEN=<token from step 1>
+AUTH_VAULT_SCIM_TIMEOUT=10s   # optional
+```
+
+**4. Backfill existing users** (one-time, after first deployment or when recovering from drift):
+```
+authd admin sync --target=vault
+```
+Iterates auth's `users` and `scim_groups` tables and pushes them all. Idempotent — vault's SCIM POST returns the existing record on duplicate email.
+
+**Self-heal**: external_ids is a best-effort cache. On a 404 from PUT/PATCH/DELETE the client invalidates the cache, re-resolves via `filter=externalId eq` (vault's Phase 2 filter subset), then either retries or falls through to POST (vault's POST is idempotent on email).
+
+### Vault SSO (vault uses auth as OIDC provider)
+
+1. Register vault as an OAuth2 client:
+   ```
+   POST /admin/clients
+   {
+     "name": "vault",
+     "redirect_uris": ["https://vault.example.com/api/v1/auth/oidc/callback"],
+     "scopes": ["openid", "email", "profile", "offline_access"],
+     "public": false
+   }
+   ```
+2. Configure vault env: `VAULT_OIDC_ISSUER`, `VAULT_OIDC_CLIENT_ID`, `VAULT_OIDC_CLIENT_SECRET`, `VAULT_OIDC_REDIRECT_URI`, optionally `VAULT_OIDC_ENFORCE=true`.
+3. Vault CLI: `vault login --oidc` opens the browser to auth, captures the session token via a loopback listener, and persists it. `--manual` for SSH/headless cases.
+
 ## PCI-DSS v4.0.1 Notes
 
 This service satisfies the following PCI-DSS v4.0.1 requirements in the Cardholder Data Environment (CDE):
