@@ -15,11 +15,12 @@ import (
 
 	"github.com/abagile/tokyo3-auth/internal/api"
 	"github.com/abagile/tokyo3-auth/internal/auth"
-	iaws "github.com/abagile/tokyo3-auth/internal/aws"
 	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/policy"
+	"github.com/abagile/tokyo3-auth/internal/provision"
+	"github.com/abagile/tokyo3-auth/internal/provision/iam"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
 	"github.com/spf13/cobra"
 )
@@ -94,12 +95,14 @@ func runServe() error {
 
 	eng := policy.New(policy.DefaultPCIRules()...)
 
-	var iamProv *iaws.IAMProvisioner
+	provSet := &provision.Set{Log: log}
 	if strings.EqualFold(os.Getenv("AUTH_AWS_IAM_ENABLED"), "true") {
-		iamProv, err = iaws.NewIAMProvisioner(ctx, nil, log)
+		iamProv, err := iam.New(ctx, nil, log)
 		if err != nil {
 			log.Error("iam provisioner init", "err", err)
 			// Non-fatal: continue without IAM provisioning.
+		} else {
+			provSet.Provisioners = append(provSet.Provisioners, iamProv)
 		}
 	}
 
@@ -109,7 +112,7 @@ func runServe() error {
 		Policy:            eng,
 		WAHandler:         waHandler,
 		KP:                kp,
-		IAM:               iamProv,
+		Provisioners:      provSet,
 		Issuer:            issuer,
 		MasterKey:         masterKey,
 		Log:               log,

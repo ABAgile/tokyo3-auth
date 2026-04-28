@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -242,7 +243,7 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 		user.Active = false
 	}
 	s.logAudit(r, ActionSCIMUserCreated, uuidPtr(user.ID), nil, logMeta("email", email))
-	s.iamProvision(r, iamOpCreate, user, nil)
+	s.provisionUser(r, provision.OpCreate, user, nil)
 	w.Header().Set("Location", s.issuer+"/scim/v2/Users/"+user.ID.String())
 	writeSCIMJSON(w, http.StatusCreated, userToSCIM(user, s.issuer))
 }
@@ -299,9 +300,9 @@ func (s *Server) handleSCIMReplaceUser(w http.ResponseWriter, r *http.Request) {
 	user, _ = s.store.GetUserByID(r.Context(), id)
 	s.logAudit(r, ActionSCIMUserUpdated, uuidPtr(id), nil, logMeta("active", req.Active))
 	if req.Active {
-		s.iamProvision(r, iamOpUpdate, user, nil)
+		s.provisionUser(r, provision.OpUpdate, user, nil)
 	} else {
-		s.iamProvision(r, iamOpDeactivate, user, nil)
+		s.provisionUser(r, provision.OpDeactivate, user, nil)
 	}
 	writeSCIMJSON(w, http.StatusOK, userToSCIM(user, s.issuer))
 }
@@ -345,9 +346,9 @@ func (s *Server) applyUserPatchReplace(r *http.Request, user *model.User, op sci
 		if err := json.Unmarshal(op.Value, &active); err == nil {
 			_ = s.store.SetUserActive(r.Context(), user.ID, active)
 			if active {
-				s.iamProvision(r, iamOpUpdate, user, nil)
+				s.provisionUser(r, provision.OpUpdate, user, nil)
 			} else {
-				s.iamProvision(r, iamOpDeactivate, user, nil)
+				s.provisionUser(r, provision.OpDeactivate, user, nil)
 			}
 		}
 	case "displayname", "name.formatted":
@@ -390,7 +391,7 @@ func (s *Server) handleSCIMDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAudit(r, ActionSCIMUserDeleted, uuidPtr(id), nil, nil)
-	s.iamProvision(r, iamOpDelete, user, nil)
+	s.provisionUser(r, provision.OpDelete, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -437,9 +438,7 @@ func (s *Server) handleSCIMCreateGroup(w http.ResponseWriter, r *http.Request) {
 		g.Members = ids
 	}
 	s.logAudit(r, ActionSCIMGroupCreated, nil, nil, logMeta("name", req.DisplayName))
-	if s.iamProv != nil {
-		_ = s.iamProv.EnsureGroup(r.Context(), req.DisplayName)
-	}
+	s.provisionGroup(r, provision.OpCreate, g, nil)
 	um := s.userMap(r)
 	w.Header().Set("Location", s.issuer+"/scim/v2/Groups/"+g.ID.String())
 	writeSCIMJSON(w, http.StatusCreated, groupToSCIM(g, um, s.issuer))
@@ -569,38 +568,18 @@ func (s *Server) handleSCIMDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ── IAM provisioner bridge ────────────────────────────────────────────────────
+// ── Provisioner fan-out ───────────────────────────────────────────────────────
 
-type iamOp int
+// provisionUser fans out a user lifecycle event to every registered downstream
+// provisioner (AWS IAM, vault SCIM, etc.). Errors are logged inside Set; the
+// originating request is never blocked by a downstream failure.
+func (s *Server) provisionUser(r *http.Request, op provision.Op, user *model.User, groups []string) {
+	s.provSet.User(r.Context(), op, user, groups)
+}
 
-const (
-	iamOpCreate iamOp = iota
-	iamOpUpdate
-	iamOpDeactivate
-	iamOpDelete
-)
-
-func (s *Server) iamProvision(r *http.Request, op iamOp, user *model.User, groups []string) {
-	if s.iamProv == nil {
-		return
-	}
-	p := s.iamProv
-	login := strings.SplitN(user.Email, "@", 2)[0]
-	ctx := r.Context()
-	var err error
-	switch op {
-	case iamOpCreate:
-		err = p.CreateUser(ctx, login, groups)
-	case iamOpUpdate:
-		err = p.UpdateUser(ctx, login)
-	case iamOpDeactivate:
-		err = p.DeactivateUser(ctx, login)
-	case iamOpDelete:
-		err = p.DeleteUser(ctx, login)
-	}
-	if err != nil {
-		s.log.Error("iam provision", "op", op, "user", login, "err", err)
-	}
+// provisionGroup fans out a group lifecycle event to every provisioner.
+func (s *Server) provisionGroup(r *http.Request, op provision.Op, g *model.SCIMGroup, members []*model.User) {
+	s.provSet.Group(r.Context(), op, g, members)
 }
 
 // ── member parsing helpers ────────────────────────────────────────────────────

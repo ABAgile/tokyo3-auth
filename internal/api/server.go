@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	iaws "github.com/abagile/tokyo3-auth/internal/aws"
 	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/policy"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 )
 
@@ -21,7 +21,7 @@ type Server struct {
 	policy     *policy.Engine
 	wa         *mfa.WAHandler
 	kp         crypto.KeyProvider
-	iamProv    *iaws.IAMProvisioner // may be nil
+	provSet    *provision.Set // outbound user/group provisioning fan-out; may be nil
 	issuer     string
 	masterKey  []byte
 	log        *slog.Logger
@@ -37,7 +37,7 @@ type Config struct {
 	Policy            *policy.Engine
 	WAHandler         *mfa.WAHandler
 	KP                crypto.KeyProvider
-	IAM               *iaws.IAMProvisioner
+	Provisioners      *provision.Set
 	Issuer            string
 	MasterKey         []byte
 	Log               *slog.Logger
@@ -60,7 +60,7 @@ func New(cfg Config) (*Server, error) {
 		policy:     cfg.Policy,
 		wa:         cfg.WAHandler,
 		kp:         cfg.KP,
-		iamProv:    cfg.IAM,
+		provSet:    cfg.Provisioners,
 		issuer:     cfg.Issuer,
 		masterKey:  cfg.MasterKey,
 		log:        cfg.Log,

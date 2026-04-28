@@ -22,6 +22,7 @@ type Store interface {
 	GroupStore
 	SigningKeyStore
 	AuditStore
+	ExternalIDStore
 }
 
 type UserStore interface {
@@ -111,4 +112,15 @@ type SigningKeyStore interface {
 type AuditStore interface {
 	CreateAuditLog(ctx context.Context, log *model.AuditLog) error
 	ListAuditLogs(ctx context.Context, limit, offset int) ([]*model.AuditLog, error)
+}
+
+// ExternalIDStore caches each user's identity in downstream provisioning targets
+// (vault, AWS IAM, etc.). It is a best-effort cache: outbound provisioners write
+// the downstream UUID on first create and read it back to avoid a filter lookup
+// per update. Callers MUST be prepared for ErrNotFound on Get and treat it as a
+// cache miss (re-resolve via the downstream's filter, then SetExternalID).
+type ExternalIDStore interface {
+	GetExternalID(ctx context.Context, provider string, userID uuid.UUID) (string, error)
+	SetExternalID(ctx context.Context, provider string, userID uuid.UUID, externalID string) error
+	DeleteExternalID(ctx context.Context, provider string, userID uuid.UUID) error
 }

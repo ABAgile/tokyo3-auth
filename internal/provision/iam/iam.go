@@ -1,39 +1,75 @@
-// Package aws handles AWS IAM user and group provisioning triggered by SCIM events.
-package aws
+// Package iam is the AWS IAM provisioner. It implements provision.Provisioner
+// by mapping auth's users/groups to IAM users/groups, tagging managed users,
+// and revoking access keys + group memberships on deactivation.
+package iam
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/iam/types"
+
+	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 )
 
-// IAMProvisioner provisions AWS IAM users and manages group membership.
-type IAMProvisioner struct {
+// Provisioner provisions AWS IAM users and manages group membership.
+type Provisioner struct {
 	client   *iam.Client
 	log      *slog.Logger
 	GroupMap map[string]string // SCIM group display name → IAM group name
 }
 
-// NewIAMProvisioner creates a provisioner using the default AWS credential chain.
-func NewIAMProvisioner(ctx context.Context, groupMap map[string]string, log *slog.Logger) (*IAMProvisioner, error) {
+// New returns a Provisioner using the default AWS credential chain.
+func New(ctx context.Context, groupMap map[string]string, log *slog.Logger) (*Provisioner, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
-	return &IAMProvisioner{
+	return &Provisioner{
 		client:   iam.NewFromConfig(cfg),
 		log:      log,
 		GroupMap: groupMap,
 	}, nil
 }
 
-// CreateUser creates an IAM user and adds them to the mapped groups.
-func (p *IAMProvisioner) CreateUser(ctx context.Context, username string, scimGroups []string) error {
+// Name implements provision.Provisioner.
+func (*Provisioner) Name() string { return "aws-iam" }
+
+// User implements provision.Provisioner. IAM usernames are the local-part of
+// the user's email (everything before the first '@').
+func (p *Provisioner) User(ctx context.Context, op provision.Op, u *model.User, groups []string) error {
+	username := strings.SplitN(u.Email, "@", 2)[0]
+	switch op {
+	case provision.OpCreate:
+		return p.createUser(ctx, username, groups)
+	case provision.OpUpdate:
+		return p.updateUser(ctx, username)
+	case provision.OpDeactivate:
+		return p.deactivateUser(ctx, username)
+	case provision.OpDelete:
+		return p.deleteUser(ctx, username)
+	}
+	return fmt.Errorf("iam: unknown op %v", op)
+}
+
+// Group implements provision.Provisioner. IAM has no concept of "delete a
+// group of users" — only EnsureGroup on create is meaningful here. Membership
+// changes flow through User() with the groups slice.
+func (p *Provisioner) Group(ctx context.Context, op provision.Op, g *model.SCIMGroup, _ []*model.User) error {
+	if op != provision.OpCreate {
+		return nil
+	}
+	return p.EnsureGroup(ctx, g.DisplayName)
+}
+
+// createUser creates an IAM user and adds them to the mapped groups.
+func (p *Provisioner) createUser(ctx context.Context, username string, scimGroups []string) error {
 	_, err := p.client.CreateUser(ctx, &iam.CreateUserInput{
 		UserName: aws.String(username),
 		Tags:     []types.Tag{{Key: aws.String("ManagedBy"), Value: aws.String("tokyo3-auth")}},
@@ -49,8 +85,8 @@ func (p *IAMProvisioner) CreateUser(ctx context.Context, username string, scimGr
 	return nil
 }
 
-// UpdateUser re-applies tags (username is immutable in IAM).
-func (p *IAMProvisioner) UpdateUser(ctx context.Context, username string) error {
+// updateUser re-applies tags (username is immutable in IAM).
+func (p *Provisioner) updateUser(ctx context.Context, username string) error {
 	_, err := p.client.TagUser(ctx, &iam.TagUserInput{
 		UserName: aws.String(username),
 		Tags:     []types.Tag{{Key: aws.String("ManagedBy"), Value: aws.String("tokyo3-auth")}},
@@ -61,17 +97,17 @@ func (p *IAMProvisioner) UpdateUser(ctx context.Context, username string) error 
 	return nil
 }
 
-// DeactivateUser revokes all access keys and removes the user from all groups.
-func (p *IAMProvisioner) DeactivateUser(ctx context.Context, username string) error {
+// deactivateUser revokes all access keys and removes the user from all groups.
+func (p *Provisioner) deactivateUser(ctx context.Context, username string) error {
 	if err := p.revokeAccessKeys(ctx, username); err != nil {
 		return err
 	}
 	return p.removeFromAllGroups(ctx, username)
 }
 
-// DeleteUser deactivates and then deletes the IAM user.
-func (p *IAMProvisioner) DeleteUser(ctx context.Context, username string) error {
-	_ = p.DeactivateUser(ctx, username)
+// deleteUser deactivates and then deletes the IAM user.
+func (p *Provisioner) deleteUser(ctx context.Context, username string) error {
+	_ = p.deactivateUser(ctx, username)
 	_, err := p.client.DeleteUser(ctx, &iam.DeleteUserInput{UserName: aws.String(username)})
 	if err != nil {
 		return fmt.Errorf("iam delete user %s: %w", username, err)
@@ -80,7 +116,7 @@ func (p *IAMProvisioner) DeleteUser(ctx context.Context, username string) error 
 }
 
 // EnsureGroup creates the IAM group if it does not already exist.
-func (p *IAMProvisioner) EnsureGroup(ctx context.Context, groupName string) error {
+func (p *Provisioner) EnsureGroup(ctx context.Context, groupName string) error {
 	_, err := p.client.CreateGroup(ctx, &iam.CreateGroupInput{GroupName: aws.String(groupName)})
 	// EntityAlreadyExists is acceptable.
 	if err != nil {
@@ -89,7 +125,7 @@ func (p *IAMProvisioner) EnsureGroup(ctx context.Context, groupName string) erro
 	return nil
 }
 
-func (p *IAMProvisioner) addToGroup(ctx context.Context, username, scimGroup string) error {
+func (p *Provisioner) addToGroup(ctx context.Context, username, scimGroup string) error {
 	iamGroup, ok := p.GroupMap[scimGroup]
 	if !ok {
 		return nil
@@ -101,7 +137,7 @@ func (p *IAMProvisioner) addToGroup(ctx context.Context, username, scimGroup str
 	return err
 }
 
-func (p *IAMProvisioner) revokeAccessKeys(ctx context.Context, username string) error {
+func (p *Provisioner) revokeAccessKeys(ctx context.Context, username string) error {
 	out, err := p.client.ListAccessKeys(ctx, &iam.ListAccessKeysInput{UserName: aws.String(username)})
 	if err != nil {
 		return fmt.Errorf("iam list access keys for %s: %w", username, err)
@@ -117,7 +153,7 @@ func (p *IAMProvisioner) revokeAccessKeys(ctx context.Context, username string) 
 	return nil
 }
 
-func (p *IAMProvisioner) removeFromAllGroups(ctx context.Context, username string) error {
+func (p *Provisioner) removeFromAllGroups(ctx context.Context, username string) error {
 	out, err := p.client.ListGroupsForUser(ctx, &iam.ListGroupsForUserInput{UserName: aws.String(username)})
 	if err != nil {
 		return fmt.Errorf("iam list groups for %s: %w", username, err)
