@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/api"
 	"github.com/abagile/tokyo3-auth/internal/auth"
@@ -73,7 +76,8 @@ func runServe() error {
 	}
 	defer db.Close()
 
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 	kp := crypto.NewLocalKeyProvider(masterKey)
 
 	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, issuer)
@@ -116,8 +120,27 @@ func runServe() error {
 	}
 
 	addr := ":" + port
+	httpSrv := &http.Server{
+		Addr:    addr,
+		Handler: srv.Routes(),
+	}
+
 	log.Info("starting server", "addr", addr, "issuer", issuer)
-	return http.ListenAndServe(addr, srv.Routes())
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Info("authd shutting down")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
+	}
+	return nil
 }
 
 // ── migrate ───────────────────────────────────────────────────────────────────

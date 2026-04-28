@@ -145,7 +145,7 @@ docker-push: docker-build
 
 ## docker-up: Start auth + Postgres with docker compose
 docker-up:
-	docker compose up -d --build
+	docker compose up -d
 
 ## docker-down: Stop all compose services
 docker-down:
@@ -172,6 +172,6 @@ clean:
 
 ## help: Show this help message
 help:
-	@echo "tokyo3-auth Makefile targets:"
+	@echo "auth Makefile targets:"
 	@echo ""
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | awk -F: '{printf "  %-24s %s\n", $$1, $$2}'
