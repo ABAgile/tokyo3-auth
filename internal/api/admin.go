@@ -9,6 +9,7 @@ import (
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -55,6 +56,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", req.Email, "admin", req.Admin))
+	s.provisionUser(r, provision.OpCreate, user, nil)
 	s.writeJSON(w, http.StatusCreated, toUserView(user))
 }
 
@@ -93,6 +95,11 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logAudit(r, ActionUserUpdated, uuidPtr(user.ID), nil, logMeta("name", name, "active", active))
 	user, _ = s.store.GetUserByID(r.Context(), user.ID)
+	op := provision.OpUpdate
+	if !active {
+		op = provision.OpDeactivate
+	}
+	s.provisionUser(r, op, user, nil)
 	s.writeJSON(w, http.StatusOK, toUserView(user))
 }
 
@@ -107,6 +114,7 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAudit(r, ActionUserDeleted, uuidPtr(user.ID), nil, nil)
+	s.provisionUser(r, provision.OpDelete, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

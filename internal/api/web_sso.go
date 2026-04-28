@@ -10,6 +10,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -126,6 +127,7 @@ func (s *Server) handleRegisterPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", email, "via", "self-registration"))
+	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	// After registration, continue the OAuth2 flow by redirecting to /authorize.
 	q := url.Values{

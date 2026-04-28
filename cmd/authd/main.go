@@ -18,9 +18,11 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
+	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/provision/iam"
+	scimprov "github.com/abagile/tokyo3-auth/internal/provision/scim"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
 	"github.com/spf13/cobra"
 )
@@ -105,6 +107,22 @@ func runServe() error {
 			provSet.Provisioners = append(provSet.Provisioners, iamProv)
 		}
 	}
+	if strings.EqualFold(os.Getenv("AUTH_VAULT_SCIM_ENABLED"), "true") {
+		baseURL := os.Getenv("AUTH_VAULT_SCIM_URL")
+		token := os.Getenv("AUTH_VAULT_SCIM_TOKEN")
+		if baseURL == "" || token == "" {
+			log.Error("vault scim provisioner: AUTH_VAULT_SCIM_URL and AUTH_VAULT_SCIM_TOKEN are required")
+		} else {
+			timeout, _ := time.ParseDuration(os.Getenv("AUTH_VAULT_SCIM_TIMEOUT"))
+			provSet.Provisioners = append(provSet.Provisioners, scimprov.New(scimprov.Config{
+				BaseURL: baseURL,
+				Token:   token,
+				Timeout: timeout,
+				Store:   db,
+				Log:     log,
+			}))
+		}
+	}
 
 	srv, err := api.New(api.Config{
 		Store:             db,
@@ -187,8 +205,94 @@ func adminCmd() *cobra.Command {
 		Use:   "admin",
 		Short: "Administrative operations",
 	}
-	admin.AddCommand(adminUserCmd())
+	admin.AddCommand(adminUserCmd(), adminSyncCmd())
 	return admin
+}
+
+// adminSyncCmd backfills downstream provisioning targets from auth's user/group
+// tables. Use after a fresh deployment, after restoring auth from backup, or to
+// recover from a downstream that drifted out of sync (`authd admin sync --target=vault`).
+func adminSyncCmd() *cobra.Command {
+	var target string
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Backfill a downstream provisioning target from auth's tables",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runAdminSync(target)
+		},
+	}
+	cmd.Flags().StringVar(&target, "target", "", "Provisioning target: vault")
+	_ = cmd.MarkFlagRequired("target")
+	return cmd
+}
+
+func runAdminSync(target string) error {
+	if target != "vault" {
+		return fmt.Errorf("unsupported target %q (only \"vault\" is supported)", target)
+	}
+	baseURL := mustEnv("AUTH_VAULT_SCIM_URL")
+	token := mustEnv("AUTH_VAULT_SCIM_TOKEN")
+	dbURL := mustEnv("AUTH_DATABASE_URL")
+	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
+
+	if err := postgres.Migrate(adminDBURL); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	db, err := postgres.Open(dbURL)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer db.Close()
+
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	timeout, _ := time.ParseDuration(os.Getenv("AUTH_VAULT_SCIM_TIMEOUT"))
+	prov := scimprov.New(scimprov.Config{
+		BaseURL: baseURL,
+		Token:   token,
+		Timeout: timeout,
+		Store:   db,
+		Log:     log,
+	})
+
+	ctx := context.Background()
+	users, err := db.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+	var userOK, userFail int
+	for _, u := range users {
+		if err := prov.User(ctx, provision.OpCreate, u, nil); err != nil {
+			log.Error("sync user", "email", u.Email, "err", err)
+			userFail++
+			continue
+		}
+		userOK++
+	}
+
+	groups, err := db.ListGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("list groups: %w", err)
+	}
+	var groupOK, groupFail int
+	for _, g := range groups {
+		members := make([]*model.User, 0, len(g.Members))
+		for _, mid := range g.Members {
+			m, err := db.GetUserByID(ctx, mid)
+			if err == nil {
+				members = append(members, m)
+			}
+		}
+		if err := prov.Group(ctx, provision.OpCreate, g, members); err != nil {
+			log.Error("sync group", "displayName", g.DisplayName, "err", err)
+			groupFail++
+			continue
+		}
+		groupOK++
+	}
+
+	fmt.Printf("sync %s done: users %d ok / %d failed; groups %d ok / %d failed\n",
+		target, userOK, userFail, groupOK, groupFail)
+	return nil
 }
 
 func adminUserCmd() *cobra.Command {

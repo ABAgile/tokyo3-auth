@@ -15,6 +15,7 @@ import (
 	iMFA "github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -286,6 +287,7 @@ func (s *Server) handlePortalRegisterPOST(w http.ResponseWriter, r *http.Request
 	}
 
 	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("via", "portal_register"))
+	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	if err := s.createPortalSession(w, r, user); err != nil {
 		http.Redirect(w, r, "/portal/login", http.StatusFound)
@@ -780,6 +782,8 @@ func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request
 		_ = s.store.SetUserAdmin(r.Context(), user.ID, true)
 	}
 	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", email, "by", pc.User.Email))
+	user, _ = s.store.GetUserByID(r.Context(), user.ID)
+	s.provisionUser(r, provision.OpCreate, user, nil)
 	http.Redirect(w, r, "/portal/admin/users?success=User+created.", http.StatusFound)
 }
 
@@ -827,6 +831,14 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.logAudit(r, ActionUserUpdated, uuidPtr(id), nil, logMeta("by", pc.User.Email))
+	updated, _ := s.store.GetUserByID(r.Context(), id)
+	if updated != nil {
+		op := provision.OpUpdate
+		if !active {
+			op = provision.OpDeactivate
+		}
+		s.provisionUser(r, op, updated, nil)
+	}
 	http.Redirect(w, r, "/portal/admin/users?success=User+updated.", http.StatusFound)
 }
 
@@ -837,12 +849,16 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+	user, _ := s.store.GetUserByID(r.Context(), id)
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
 		return
 	}
 	s.logAudit(r, ActionUserDeleted, uuidPtr(id), nil, logMeta("by", pc.User.Email))
+	if user != nil {
+		s.provisionUser(r, provision.OpDelete, user, nil)
+	}
 	http.Redirect(w, r, "/portal/admin/users?success=User+deleted.", http.StatusFound)
 }
 
