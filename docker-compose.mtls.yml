@@ -1,0 +1,50 @@
+# docker-compose.mtls.yml — mTLS overlay
+#
+# Enables TLS on every inter-service connection:
+#   authd HTTPS API     AUTH_TLS_CERT / AUTH_TLS_KEY
+#   authd → postgres    client cert + cert auth (no password in DSN)
+#
+# Prerequisites:
+#   1. make docker-up-mtls   # auto-generates leaf certs (signed by mkcert's
+#                            # root) and populates the shared-data volume.
+#                            # The root CA is mkcert's, kept at $(mkcert -CAROOT)
+#                            # — _sync-certs stages it into /shared/certs/ca.crt
+#                            # for the mounts referenced below.
+#
+#   To regenerate leaf certs: rm certs/authd-server.crt, then re-run make docker-up-mtls.
+#   To rotate the root CA:    mkcert -uninstall && mkcert -install on the host.
+#
+# PostgreSQL cert auth:
+#   pg_hba_cert.conf replaces the default pg_hba.conf. All TCP connections must
+#   use TLS with a client cert whose CN matches the connecting role name:
+#     authd-admin-db-client.crt  CN=${AUTH_ADMIN_DB_USERNAME:-auth_admin}  → AUTH_ADMIN_DATABASE_URL
+#     authd-app-db-client.crt    CN=${AUTH_APP_USERNAME:-auth_app}          → AUTH_DATABASE_URL
+#   If any username env var is changed from its default, remove the shared-data
+#   volume and re-run to regenerate certs with the correct CNs.
+
+services:
+
+  # ── Auth database: enable server TLS + cert auth ──────────────────────────
+  # shared-data:/shared is already mounted by the base file (for pg-scripts).
+  db:
+    environment:
+      POSTGRES_SSL_CERT: /shared/certs/db-server.crt
+      POSTGRES_SSL_KEY:  /shared/certs/db-server.key
+      POSTGRES_SSL_CA:   /shared/certs/ca.crt
+
+  # ── authd: HTTPS + mTLS certs for Postgres ────────────────────────────────
+  auth:
+    environment:
+      AUTH_TLS_CERT:           /shared/certs/authd-server.crt
+      AUTH_TLS_KEY:            /shared/certs/authd-server.key
+      AUTH_ADMIN_DB_CERT:      /shared/certs/authd-admin-db-client.crt
+      AUTH_ADMIN_DB_KEY:       /shared/certs/authd-admin-db-client.key
+      AUTH_ADMIN_DB_CA:        /shared/certs/ca.crt
+      AUTH_DB_CERT:            /shared/certs/authd-app-db-client.crt
+      AUTH_DB_KEY:             /shared/certs/authd-app-db-client.key
+      AUTH_DB_CA:              /shared/certs/ca.crt
+      # Cert auth: no password; cert CN authenticates the role.
+      AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full
+      AUTH_DATABASE_URL:       postgres://${AUTH_APP_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full
+    volumes:
+      - shared-data:/shared:ro

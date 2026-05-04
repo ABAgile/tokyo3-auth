@@ -40,8 +40,8 @@ func writeSCIMError(w http.ResponseWriter, status int, detail string) {
 
 type scimMeta struct {
 	ResourceType string    `json:"resourceType"`
-	Created      time.Time `json:"created,omitempty"`
-	LastModified time.Time `json:"lastModified,omitempty"`
+	Created      time.Time `json:"created,omitzero"`
+	LastModified time.Time `json:"lastModified,omitzero"`
 	Location     string    `json:"location,omitempty"`
 }
 
@@ -60,11 +60,11 @@ type scimUserResource struct {
 	ID          string          `json:"id,omitempty"`
 	ExternalID  string          `json:"externalId,omitempty"`
 	UserName    string          `json:"userName"`
-	Name        scimNameAttr    `json:"name,omitempty"`
+	Name        scimNameAttr    `json:"name,omitzero"`
 	DisplayName string          `json:"displayName,omitempty"`
 	Emails      []scimEmailAttr `json:"emails,omitempty"`
 	Active      bool            `json:"active"`
-	Meta        scimMeta        `json:"meta,omitempty"`
+	Meta        scimMeta        `json:"meta,omitzero"`
 }
 
 type scimMemberAttr struct {
@@ -77,7 +77,7 @@ type scimGroupResource struct {
 	ID          string           `json:"id,omitempty"`
 	DisplayName string           `json:"displayName"`
 	Members     []scimMemberAttr `json:"members,omitempty"`
-	Meta        scimMeta         `json:"meta,omitempty"`
+	Meta        scimMeta         `json:"meta,omitzero"`
 }
 
 type scimListResponse struct {
@@ -242,7 +242,7 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetUserActive(r.Context(), user.ID, false)
 		user.Active = false
 	}
-	s.logAudit(r, ActionSCIMUserCreated, uuidPtr(user.ID), nil, logMeta("email", email))
+	s.logAudit(r, ActionSCIMUserCreated, &user.ID, nil, logMeta("email", email))
 	s.provisionUser(r, provision.OpCreate, user, nil)
 	w.Header().Set("Location", s.issuer+"/scim/v2/Users/"+user.ID.String())
 	writeSCIMJSON(w, http.StatusCreated, userToSCIM(user, s.issuer))
@@ -298,7 +298,7 @@ func (s *Server) handleSCIMReplaceUser(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetUserSCIMExternalID(r.Context(), id, req.ExternalID)
 	}
 	user, _ = s.store.GetUserByID(r.Context(), id)
-	s.logAudit(r, ActionSCIMUserUpdated, uuidPtr(id), nil, logMeta("active", req.Active))
+	s.logAudit(r, ActionSCIMUserUpdated, &id, nil, logMeta("active", req.Active))
 	if req.Active {
 		s.provisionUser(r, provision.OpUpdate, user, nil)
 	} else {
@@ -334,7 +334,7 @@ func (s *Server) handleSCIMPatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	user, _ = s.store.GetUserByID(r.Context(), id)
-	s.logAudit(r, ActionSCIMUserUpdated, uuidPtr(id), nil, nil)
+	s.logAudit(r, ActionSCIMUserUpdated, &id, nil, nil)
 	writeSCIMJSON(w, http.StatusOK, userToSCIM(user, s.issuer))
 }
 
@@ -390,7 +390,7 @@ func (s *Server) handleSCIMDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
-	s.logAudit(r, ActionSCIMUserDeleted, uuidPtr(id), nil, nil)
+	s.logAudit(r, ActionSCIMUserDeleted, &id, nil, nil)
 	s.provisionUser(r, provision.OpDelete, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -538,10 +538,11 @@ func (s *Server) applyGroupOp(r *http.Request, groupID uuid.UUID, op scimOp) {
 			}
 		}
 	case "replace":
-		if path == "members" || path == "" {
+		switch path {
+		case "members", "":
 			ids := parseMemberValue(op.Value)
 			_ = s.store.ReplaceGroupMembers(r.Context(), groupID, ids)
-		} else if path == "displayname" {
+		case "displayname":
 			var name string
 			if err := json.Unmarshal(op.Value, &name); err == nil && name != "" {
 				_ = s.store.UpdateGroup(r.Context(), groupID, name)
@@ -574,12 +575,12 @@ func (s *Server) handleSCIMDeleteGroup(w http.ResponseWriter, r *http.Request) {
 // provisioner (AWS IAM, vault SCIM, etc.). Errors are logged inside Set; the
 // originating request is never blocked by a downstream failure.
 func (s *Server) provisionUser(r *http.Request, op provision.Op, user *model.User, groups []string) {
-	s.provSet.User(r.Context(), op, user, groups)
+	s.provReg.User(r.Context(), op, user, groups)
 }
 
 // provisionGroup fans out a group lifecycle event to every provisioner.
 func (s *Server) provisionGroup(r *http.Request, op provision.Op, g *model.SCIMGroup, members []*model.User) {
-	s.provSet.Group(r.Context(), op, g, members)
+	s.provReg.Group(r.Context(), op, g, members)
 }
 
 // ── member parsing helpers ────────────────────────────────────────────────────

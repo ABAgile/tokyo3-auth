@@ -79,7 +79,7 @@ func (s *Server) handleGitHubAccessToken(w http.ResponseWriter, r *http.Request)
 		githubTokenError(w, r, "server_error", "token issuance failed")
 		return
 	}
-	s.logAudit(r, ActionTokenIssued, uuidPtr(user.ID), uuidPtr(client.ID), logMeta("compat", "github"))
+	s.logAudit(r, ActionTokenIssued, &user.ID, &client.ID, logMeta("compat", "github"))
 
 	accessToken, _ := resp["access_token"].(string)
 	scope, _ := resp["scope"].(string)

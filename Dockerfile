@@ -15,6 +15,6 @@ RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /authd /usr/local/bin/authd
 
-EXPOSE 8080
+EXPOSE 8443
 ENTRYPOINT ["authd"]
 CMD ["serve"]

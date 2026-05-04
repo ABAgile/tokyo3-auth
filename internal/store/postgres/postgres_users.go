@@ -47,6 +47,12 @@ func (s *DB) GetUserByEmail(ctx context.Context, email string) (*model.User, err
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE email = $1`, email))
 }
 
+func (s *DB) CountUsers(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
 func (s *DB) ListUsers(ctx context.Context) ([]*model.User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY created_at`)
 	if err != nil {

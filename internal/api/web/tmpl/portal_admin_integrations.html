@@ -1,0 +1,52 @@
+{{template "base" .}}
+
+{{define "title"}}Integrations{{end}}
+{{define "pagetitle"}}App Integrations{{end}}
+
+{{define "topbar-right"}}
+<a href="/portal/admin/integrations/new" class="btn btn-primary btn-sm">+ New integration</a>
+{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Notice}}<div class="alert alert-info">{{.Notice}}</div>{{end}}
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Provider</th>
+          <th>Status</th>
+          <th>Endpoint</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Integrations}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td><span class="badge badge-gray">{{.Provider}}</span></td>
+          <td>{{if .Enabled}}<span class="badge badge-blue">Enabled</span>{{else}}<span class="badge badge-gray">Disabled</span>{{end}}</td>
+          <td class="text-muted truncate">{{.Config.BaseURL}}</td>
+          <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+          <td style="white-space:nowrap">
+            <a href="/portal/admin/integrations/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
+            {{if eq .Provider "scim"}}
+            <form method="POST" action="/portal/admin/integrations/{{.ID}}/test" style="display:inline">
+              <button type="submit" class="btn btn-secondary btn-sm">Test</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="text-muted" style="text-align:center;padding:28px">No integrations configured. <a href="/portal/admin/integrations/new">Add one</a> to provision users to a downstream system via SCIM or AWS IAM.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

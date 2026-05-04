@@ -1,16 +1,21 @@
 ## tokyo3-auth — build targets
 ##
 ## Usage:
-##   make build           Build authd binary to ./bin/
-##   make run             Start the server with dev defaults (starts Postgres via compose)
-##   make keygen          Generate an AUTH_MASTER_KEY
-##   make check           Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
-##   make docker-build    Build Docker image
-##   make docker-up       Start with docker compose (Postgres + auth)
-##   make docker-down     Stop docker compose
-##   make clean           Remove ./bin/
-##   make test            Run tests
-##   make help            Show this help
+##   make build             Build authd binary to ./bin/
+##   make run               Start authd with dev defaults (starts Postgres via compose)
+##   make run-mtls          Start authd with mTLS (cert auth, no password in DSN)
+##   make keygen            Generate an AUTH_MASTER_KEY
+##   make check             Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
+##   make docker-build      Build Docker image
+##   make docker-up         Start with docker compose (Postgres + auth)
+##   make docker-up-mtls    Start with docker compose + mTLS overlay (auto-generates certs)
+##   make docker-down       Stop docker compose (overlay-aware; safe in any mode)
+##   make docker-down-all   Stop + remove orphan containers AND named volumes (destroys DB data)
+##   make gen-certs         Generate mTLS certs in certs/ (manual; auto-run by run-mtls/docker-up-mtls)
+##   make clean             Remove ./bin/
+##   make clean-all         Remove ./bin/, certs/*.crt, certs/*.key, certs/ca.srl, and .env
+##   make test              Run tests
+##   make help              Show this help
 
 # ── Variables ─────────────────────────────────────────────────────────────────
 
@@ -32,14 +37,21 @@ GOFLAGS :=
 IMAGE_NAME    ?= abagile/tokyo3-auth
 IMAGE_TAG     ?= $(VERSION)
 POSTGRES_PORT ?= 5433
+AUTH_PORT     ?= 8443
+
+# Docker Compose project name (defaults to directory basename, matching Compose behaviour).
+# Used to derive the shared named volume name for pre-population via tar pipe (no bind mounts).
+COMPOSE_PROJECT := $(notdir $(CURDIR))
+SHARED_VOLUME   := $(COMPOSE_PROJECT)_shared-data
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
 
 .PHONY: all build build-linux build-linux-amd64 build-darwin \
-        run keygen \
+        run run-mtls keygen gen-certs \
+        _gen-env _sync-pg-scripts _sync-certs \
         test test-verbose tidy vet lint check \
-        docker-build docker-build-amd64 docker-push docker-up docker-down docker-logs \
-        install clean help
+        docker-build docker-build-amd64 docker-push docker-up docker-up-mtls docker-down docker-down-all docker-logs \
+        install clean clean-all help
 
 all: build
 
@@ -68,27 +80,72 @@ build-darwin: $(BIN_DIR)
 	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-darwin-arm64 $(CMD_AUTHD)
 	@echo "  built authd-darwin-arm64"
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+# Generate .env with dev defaults on first run. Used by run / run-mtls.
+# DSNs use password auth; the mTLS run target overrides with cert-auth DSNs at process launch time.
+_gen-env: build
+	@if [ ! -f .env ]; then \
+	    KEY=$$($(AUTHD_BIN) keygen); \
+	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                            > .env; \
+	    echo "AUTH_ISSUER=https://localhost:$(AUTH_PORT)"                                                                                      >> .env; \
+	    echo "AUTH_PORT=$(AUTH_PORT)"                                                                                                          >> .env; \
+	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                  >> .env; \
+	    echo "AUTH_ADMIN_PASSWORD=changeme"                                                                                                    >> .env; \
+	    echo "AUTH_APP_PASSWORD=changeme"                                                                                                      >> .env; \
+	    echo "AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable" >> .env; \
+	    echo "AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"        >> .env; \
+	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                    >> .env; \
+	    echo "  generated .env"; \
+	fi
+
+# Push local postgres/ scripts into shared-data:/shared/pg-scripts (no bind mount needed).
+# Re-runs on every invoke so changes to init scripts are always picked up.
+_sync-pg-scripts:
+	@docker volume create $(SHARED_VOLUME) 2>&1 >/dev/null || true
+	@tar -cf - -C postgres . | docker run --rm -i -v $(SHARED_VOLUME):/shared alpine:3.21 sh -c "mkdir -p /shared/pg-scripts && tar -xf - -C /shared/pg-scripts && chmod +x /shared/pg-scripts/*.sh"
+
+# Generate leaf certs if absent, then push local certs/ + mkcert's root CA
+# into shared-data:/shared/certs (root CA staged as ca.crt for compose mounts;
+# removed locally after the volume copy so certs/ stays free of the CA).
+_sync-certs:
+	@if [ ! -f certs/authd-server.crt ]; then bash certs/gen.sh; fi
+	@docker volume create $(SHARED_VOLUME) 2>&1 >/dev/null || true
+	@cp $$(mkcert -CAROOT)/rootCA.pem certs/ca.crt
+	@tar -cf - -C certs . | docker run --rm -i -v $(SHARED_VOLUME):/shared alpine:3.21 sh -c "mkdir -p /shared/certs && tar -xf - -C /shared/certs"
+	@rm -f certs/ca.crt
+
 # ── Dev ───────────────────────────────────────────────────────────────────────
 
 ## run: Build and start authd with dev defaults (auto-generates .env on first run)
-run: build
-	@if [ ! -f .env ]; then \
-	    KEY=$$($(AUTHD_BIN) keygen); \
-	    echo "AUTH_MASTER_KEY=$$KEY"                                                            > .env; \
-	    echo "AUTH_ISSUER=http://localhost:8080"                                               >> .env; \
-	    echo "AUTH_PORT=8080"                                                                  >> .env; \
-	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                          >> .env; \
-	    echo "AUTH_DATABASE_URL=postgres://authuser:changeme@localhost:$(POSTGRES_PORT)/authdb?sslmode=disable" >> .env; \
-	    echo "AUTH_ADMIN_DATABASE_URL=postgres://authuser:changeme@localhost:$(POSTGRES_PORT)/authdb?sslmode=disable" >> .env; \
-	    echo "AUTH_ALLOW_REGISTRATION=true"                                                    >> .env; \
-	    echo "  generated .env"; \
-	fi
-	@docker compose up -d postgres --wait 2>/dev/null || true
+run: _gen-env _sync-pg-scripts
+	@docker compose up -d db --wait 2>/dev/null || true
 	@export $$(grep -v '^#' .env | xargs) && $(AUTHD_BIN) serve
+
+## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
+run-mtls: _gen-env _sync-pg-scripts _sync-certs
+	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d db --wait 2>/dev/null || true
+	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
+	    export $$(grep -v '^#' .env | xargs) && \
+	    AUTH_TLS_CERT=certs/authd-server.crt \
+	    AUTH_TLS_KEY=certs/authd-server.key \
+	    AUTH_ADMIN_DB_CERT=certs/authd-admin-db-client.crt \
+	    AUTH_ADMIN_DB_KEY=certs/authd-admin-db-client.key \
+	    AUTH_ADMIN_DB_CA=$$CA_PEM \
+	    AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
+	    AUTH_DB_CERT=certs/authd-app-db-client.crt \
+	    AUTH_DB_KEY=certs/authd-app-db-client.key \
+	    AUTH_DB_CA=$$CA_PEM \
+	    AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
+	    $(AUTHD_BIN) serve
 
 ## keygen: Print a fresh random master key
 keygen: build
 	@$(AUTHD_BIN) keygen
+
+## gen-certs: Generate mTLS certificates for the docker compose overlay
+gen-certs:
+	@bash certs/gen.sh
 
 # ── Quality ───────────────────────────────────────────────────────────────────
 
@@ -144,12 +201,20 @@ docker-push: docker-build
 	docker push $(IMAGE_NAME):latest
 
 ## docker-up: Start auth + Postgres with docker compose
-docker-up:
+docker-up: _sync-pg-scripts
 	docker compose up -d
 
-## docker-down: Stop all compose services
+## docker-up-mtls: Start with docker compose + mTLS overlay (auto-generates certs on first run)
+docker-up-mtls: _sync-pg-scripts _sync-certs
+	docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d --remove-orphans
+
+## docker-down: Stop all compose services (overlay-aware; safe to run in any mode)
 docker-down:
-	docker compose down
+	docker compose -f docker-compose.yml -f docker-compose.mtls.yml down
+
+## docker-down-all: Stop + remove orphan containers AND named volumes (destroys DB data)
+docker-down-all:
+	docker compose -f docker-compose.yml -f docker-compose.mtls.yml down --remove-orphans -v
 
 ## docker-logs: Tail auth logs
 docker-logs:
@@ -167,6 +232,12 @@ install:
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BIN_DIR)
+
+## clean-all: Remove binaries, generated certs/keys under certs/, and .env
+clean-all: clean
+	rm -f certs/*.crt certs/*.key certs/ca.srl
+	rm -f .env
+	@echo "  removed certs/*.{crt,key}, certs/ca.srl, and .env"
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 

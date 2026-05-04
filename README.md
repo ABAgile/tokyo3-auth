@@ -104,7 +104,11 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
-| `AUTH_AWS_IAM_ENABLED` | No | `false` | Set to `true` to enable IAM provisioning |
+| `AUTH_AWS_IAM_ENABLED` | No | `false` | Deprecated. Configure AWS IAM via `/portal/admin/integrations` instead. |
+| `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set. |
+| `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
+| `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
+| `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
 | `AWS_REGION` | If IAM enabled | — | AWS region |
 | `AWS_ACCESS_KEY_ID` | If IAM enabled | — | AWS credentials (or use instance role) |
@@ -127,6 +131,7 @@ AUTH_MASTER_KEY="$(./authd keygen)" \
 | `authd migrate` | Apply pending database migrations |
 | `authd keygen` | Generate a random 32-byte master key |
 | `authd admin user create` | Create an admin user |
+| `authd admin sync --target=<name\|all>` | Backfill an integration (configured via `/portal/admin/integrations`) from auth's tables |
 
 ## Endpoint Reference
 
@@ -232,17 +237,29 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/users/new` | Create user |
 | `GET/POST` | `/portal/admin/users/{id}/edit` | Edit user (name, active, **admin role**) |
 | `POST` | `/portal/admin/users/{id}/delete` | Delete user |
+| `GET` | `/portal/admin/groups` | List groups (roles) |
+| `GET/POST` | `/portal/admin/groups/new` | Create group + assign members |
+| `GET/POST` | `/portal/admin/groups/{id}/edit` | Edit group display name + membership |
+| `POST` | `/portal/admin/groups/{id}/delete` | Delete group (members are not deleted) |
 | `GET` | `/portal/admin/clients` | List OAuth clients |
 | `GET/POST` | `/portal/admin/clients/new` | Create OAuth client |
 | `GET/POST` | `/portal/admin/clients/{id}/edit` | Edit client |
 | `POST` | `/portal/admin/clients/{id}/delete` | Delete client |
 | `POST` | `/portal/admin/clients/{id}/rotate-secret` | Rotate client secret |
+| `GET` | `/portal/admin/integrations` | List app integrations (Vault SCIM, AWS IAM, …) |
+| `GET/POST` | `/portal/admin/integrations/new` | Add a new integration |
+| `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
+| `POST` | `/portal/admin/integrations/{id}/delete` | Remove integration |
+| `POST` | `/portal/admin/integrations/{id}/test` | Probe SCIM ServiceProviderConfig with the stored token |
 | `GET` | `/portal/admin/scim-tokens` | List SCIM tokens |
 | `POST` | `/portal/admin/scim-tokens/new` | Generate SCIM token |
 | `POST` | `/portal/admin/scim-tokens/{id}/delete` | Delete SCIM token |
 | `GET` | `/portal/admin/audit` | Browse audit log (paginated) |
 
-**Role assignment:** Toggle the "Administrator" checkbox on any user's edit page. The change takes effect on their next portal login.
+**Role assignment:** Two layers of role management are available:
+
+- **Portal admin flag** — toggle the "Administrator" checkbox on any user's edit page. Grants access to `/portal/admin/*`. Effective on next portal login.
+- **Application roles via groups** — create groups under `/portal/admin/groups`, assign users, and the same group is fanned out to every enabled integration as a SCIM `Group` (or AWS IAM group via the integration's group map). Saving the group triggers an immediate downstream sync.
 
 ### Health
 
@@ -295,15 +312,19 @@ Attach a trust policy to your IAM role:
 
 ### SCIM provisioning setup
 
-1. Create a SCIM token: `POST /admin/scim-tokens`
+1. Create a SCIM token: `POST /admin/scim-tokens` (or via `/portal/admin/scim-tokens`).
 2. Configure your IdP (Okta, Azure AD) with:
    - SCIM base URL: `https://id.example.com/scim/v2`
    - Authentication: Bearer token from step 1
-3. Set `AUTH_AWS_IAM_ENABLED=true` to enable automatic IAM user creation on SCIM events.
+3. Add an `aws_iam` integration at `/portal/admin/integrations/new` to enable automatic IAM user creation on SCIM/portal events. Credentials come from the AWS SDK default credential chain on the host running authd.
 
 ## Outbound provisioning
 
 Auth fans out user and group lifecycle events to downstream systems whenever an authoritative mutation occurs — inbound SCIM, the admin API, self-registration, and the portal admin actions all trigger the same fan-out. Each downstream is a `provision.Provisioner` (`internal/provision/`); failures are logged but never block the originating request.
+
+Integrations are persisted in the `app_integrations` table and managed via `/portal/admin/integrations`. Saving or deleting an integration **hot-reloads** the in-memory provisioner registry — changes take effect immediately, no restart required. SCIM bearer tokens are envelope-encrypted with the master KEK (same DEK+KEK pattern as TOTP secrets); only `name`, `provider`, and the non-secret JSON config are queryable.
+
+Multiple rows of the same provider type are allowed (e.g. `vault-prod` + `vault-staging`). The integration `name` doubles as the cache key for `external_ids`, so do not rename a live integration — add a new one and disable/delete the old one instead.
 
 > See [`docs/integration-guide.md`](docs/integration-guide.md) for the full bring-up runbook (auth ↔ vault) and the recipe for adding any new SCIM/REST-capable downstream app.
 
@@ -321,19 +342,23 @@ The response includes the raw token once — store it.
 
 **2. Register vault as an OAuth2 client in auth** (for SSO; see "Vault SSO" below).
 
-**3. Configure auth env**:
-```
-AUTH_VAULT_SCIM_ENABLED=true
-AUTH_VAULT_SCIM_URL=https://vault.example.com/scim/v2
-AUTH_VAULT_SCIM_TOKEN=<token from step 1>
-AUTH_VAULT_SCIM_TIMEOUT=10s   # optional
-```
+**3. Add a Vault SCIM integration** at `/portal/admin/integrations/new`:
+- Name: `vault` (or any unique identifier; see note above)
+- Provider: `scim`
+- Base URL: `https://vault.example.com/scim/v2`
+- Token: paste the value from step 1
+- Enabled: yes
+
+Click **Test** on the integration row to confirm authd can reach the SCIM endpoint before sending real traffic.
 
 **4. Backfill existing users** (one-time, after first deployment or when recovering from drift):
 ```
-authd admin sync --target=vault
+authd admin sync --target=vault     # by integration name
+authd admin sync --target=all       # every enabled integration
 ```
-Iterates auth's `users` and `scim_groups` tables and pushes them all. Idempotent — vault's SCIM POST returns the existing record on duplicate email.
+Iterates auth's `users` and `scim_groups` tables and pushes them. Idempotent — vault's SCIM POST returns the existing record on duplicate email.
+
+**Legacy env vars**: `AUTH_VAULT_SCIM_ENABLED`/`URL`/`TOKEN`/`TIMEOUT` are deprecated. On the first boot after upgrading, if `app_integrations` is empty and `AUTH_VAULT_SCIM_ENABLED=true`, authd auto-imports the env vars into a row named `vault` and logs a deprecation warning. Subsequent boots ignore the env vars entirely — manage the row via the portal.
 
 **Self-heal**: external_ids is a best-effort cache. On a 404 from PUT/PATCH/DELETE the client invalidates the cache, re-resolves via `filter=externalId eq` (vault's Phase 2 filter subset), then either retries or falls through to POST (vault's POST is idempotent on email).
 

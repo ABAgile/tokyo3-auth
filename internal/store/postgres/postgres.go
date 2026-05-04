@@ -2,6 +2,7 @@
 package postgres
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"database/sql/driver"
 	"embed"
@@ -27,9 +28,10 @@ type DB struct {
 }
 
 // Migrate connects with the admin DSN and runs all pending schema migrations.
-// Call once at startup before opening the runtime connection via Open.
-func Migrate(dsn string) error {
-	db, err := sql.Open("pgx", dsn)
+// Call once at startup before opening the runtime connection via Open. tlsCfg
+// may be nil; when non-nil it enables client certificate auth (mTLS).
+func Migrate(dsn string, tlsCfg *tls.Config) error {
+	db, err := openWithTLS(dsn, tlsCfg)
 	if err != nil {
 		return fmt.Errorf("open admin postgres: %w", err)
 	}
@@ -40,13 +42,14 @@ func Migrate(dsn string) error {
 	return (&DB{db: db}).migrate()
 }
 
-// Open connects to PostgreSQL using the pgx v5 OpenDB API. Call Migrate first.
-func Open(dsn string) (*DB, error) {
-	config, err := pgx.ParseConfig(dsn)
+// OpenWithTLS connects using a custom TLS config, enabling client certificate
+// authentication when tlsCfg is non-nil. Pass nil for a plain (DSN-only) connection.
+// Call Migrate first.
+func OpenWithTLS(dsn string, tlsCfg *tls.Config) (*DB, error) {
+	db, err := openWithTLS(dsn, tlsCfg)
 	if err != nil {
-		return nil, fmt.Errorf("parse postgres dsn: %w", err)
+		return nil, err
 	}
-	db := pgxstdlib.OpenDB(*config)
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
@@ -54,6 +57,20 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	return &DB{db: db}, nil
+}
+
+func openWithTLS(dsn string, tlsCfg *tls.Config) (*sql.DB, error) {
+	connCfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres dsn: %w", err)
+	}
+	if tlsCfg != nil {
+		if tlsCfg.ServerName == "" {
+			tlsCfg.ServerName = connCfg.Host
+		}
+		connCfg.TLSConfig = tlsCfg
+	}
+	return pgxstdlib.OpenDB(*connCfg), nil
 }
 
 func (s *DB) Close() error { return s.db.Close() }
@@ -107,8 +124,7 @@ func isUnique(err error) bool {
 	if err == nil {
 		return false
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return pgErr.Code == "23505"
 	}
 	return false

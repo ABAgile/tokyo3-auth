@@ -23,6 +23,7 @@ type Store interface {
 	SigningKeyStore
 	AuditStore
 	ExternalIDStore
+	IntegrationStore
 }
 
 type UserStore interface {
@@ -30,6 +31,7 @@ type UserStore interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	GetUserByEmail(ctx context.Context, email string) (*model.User, error)
 	ListUsers(ctx context.Context) ([]*model.User, error)
+	CountUsers(ctx context.Context) (int, error)
 	UpdateUser(ctx context.Context, id uuid.UUID, name string, active bool) error
 	UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash string) error
 	UpdateUserMFAEnabled(ctx context.Context, id uuid.UUID, enabled bool) error
@@ -45,6 +47,7 @@ type ClientStore interface {
 	GetClientByID(ctx context.Context, id uuid.UUID) (*model.Client, error)
 	GetClientByClientID(ctx context.Context, clientID string) (*model.Client, error)
 	ListClients(ctx context.Context) ([]*model.Client, error)
+	UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool) error
 	UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error
 	DeleteClient(ctx context.Context, id uuid.UUID) error
 }
@@ -123,4 +126,17 @@ type ExternalIDStore interface {
 	GetExternalID(ctx context.Context, provider string, userID uuid.UUID) (string, error)
 	SetExternalID(ctx context.Context, provider string, userID uuid.UUID, externalID string) error
 	DeleteExternalID(ctx context.Context, provider string, userID uuid.UUID) error
+}
+
+// IntegrationStore manages outbound provisioner configurations (Vault SCIM,
+// AWS IAM, etc.). Tokens are encrypted/decrypted in the handler layer via
+// crypto.EncryptSecret; the store is intentionally oblivious to the KEK.
+type IntegrationStore interface {
+	CreateIntegration(ctx context.Context, i *model.AppIntegration) error
+	GetIntegration(ctx context.Context, id uuid.UUID) (*model.AppIntegration, error)
+	GetIntegrationByName(ctx context.Context, name string) (*model.AppIntegration, error)
+	ListIntegrations(ctx context.Context) ([]*model.AppIntegration, error)
+	ListEnabledIntegrations(ctx context.Context) ([]*model.AppIntegration, error)
+	UpdateIntegration(ctx context.Context, i *model.AppIntegration) error
+	DeleteIntegration(ctx context.Context, id uuid.UUID) error
 }

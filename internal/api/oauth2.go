@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,7 +87,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 		if user != nil {
 			s.incrementFailedAttempts(r, user)
 		}
-		s.logAudit(r, ActionLoginFailed, nil, uuidPtr(client.ID), logMeta("email", email))
+		s.logAudit(r, ActionLoginFailed, nil, &client.ID, logMeta("email", email))
 		showLoginErr("Invalid email or password.")
 		return
 	}
@@ -131,7 +132,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAudit(r, ActionLogin, uuidPtr(user.ID), uuidPtr(client.ID), nil)
+	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
 	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI)
 }
 
@@ -155,7 +156,7 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 
 	code := r.FormValue("code")
 	if err := mfa.VerifyTOTP(r.Context(), s.store, s.kp, user.ID, code); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, uuidPtr(user.ID), nil, nil)
+		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, nil)
 		s.ssoTmpl.render(w, "mfa_totp.html", struct{ AuthState, Error string }{Error: "Invalid code. Please try again."})
 		return
 	}
@@ -167,8 +168,8 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clearCookie(w, authStateCookie)
-	s.logAudit(r, ActionLoginMFA, uuidPtr(user.ID), uuidPtr(client.ID), nil)
-	s.logAudit(r, ActionLogin, uuidPtr(user.ID), uuidPtr(client.ID), nil)
+	s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, nil)
+	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
 	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI)
 }
 
@@ -276,7 +277,7 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
 	}
-	s.logAudit(r, ActionTokenIssued, uuidPtr(user.ID), uuidPtr(client.ID), logMeta("scopes", grant.Scopes))
+	s.logAudit(r, ActionTokenIssued, &user.ID, &client.ID, logMeta("scopes", grant.Scopes))
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
@@ -329,8 +330,10 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 
 	idToken := ""
 	if containsStr(sess.Scopes, "openid") {
+		// aud must be the OAuth client_id string the RP is configured with,
+		// not the database row UUID — RPs (e.g. go-oidc) reject otherwise.
 		idToken, err = s.signer.MintIDToken(
-			sess.UserID.String(), sess.ClientID.String(),
+			sess.UserID.String(), client.ClientID,
 			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, time.Now(),
 		)
 		if err != nil {
@@ -349,7 +352,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if idToken != "" {
 		resp["id_token"] = idToken
 	}
-	s.logAudit(r, ActionTokenRefreshed, uuidPtr(sess.UserID), uuidPtr(sess.ClientID), nil)
+	s.logAudit(r, ActionTokenRefreshed, &sess.UserID, &sess.ClientID, nil)
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
@@ -381,7 +384,7 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
-	s.logAudit(r, ActionTokenIssued, nil, uuidPtr(client.ID), logMeta("grant_type", "client_credentials"))
+	s.logAudit(r, ActionTokenIssued, nil, &client.ID, logMeta("grant_type", "client_credentials"))
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": rawAccess,
 		"token_type":   "Bearer",
@@ -418,10 +421,10 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		hash := auth.HashToken(token)
 		if sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), hash); err == nil {
-			s.logAudit(r, ActionTokenRevoked, uuidPtr(sess.UserID), uuidPtr(sess.ClientID), nil)
+			s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil)
 			_ = s.store.DeleteSession(r.Context(), sess.ID)
 		} else if sess, err := s.store.GetSessionByRefreshTokenHash(r.Context(), hash); err == nil {
-			s.logAudit(r, ActionTokenRevoked, uuidPtr(sess.UserID), uuidPtr(sess.ClientID), nil)
+			s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil)
 			_ = s.store.DeleteSession(r.Context(), sess.ID)
 		}
 	}
@@ -461,7 +464,7 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 	}
 	if containsStr(scopes, "openid") {
 		idToken, err := s.signer.MintIDToken(
-			user.ID.String(), client.ID.String(),
+			user.ID.String(), client.ClientID,
 			user.Email, user.Name, nonce, scopes, mfaVerified, nil, time.Now(),
 		)
 		if err != nil {
@@ -506,12 +509,7 @@ func (s *Server) incrementFailedAttempts(r *http.Request, user *model.User) {
 }
 
 func validRedirectURI(client *model.Client, uri string) bool {
-	for _, allowed := range client.RedirectURIs {
-		if allowed == uri {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(client.RedirectURIs, uri)
 }
 
 func verifyPKCE(challenge, verifier string) bool {

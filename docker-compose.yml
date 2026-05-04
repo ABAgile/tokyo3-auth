@@ -1,38 +1,68 @@
+# docker-compose.yml — sample deployment: authd + Postgres
+#
+# This sample wires the auth service to Postgres without inter-service mTLS.
+# For a production-style hardened deployment with TLS on every hop, layer the
+# mTLS overlay on top:
+#     docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d
+#
+# Required env vars (set in shell or .env file):
+#   AUTH_MASTER_KEY       64-char hex key  (authd keygen)
+#   AUTH_ADMIN_PASSWORD   admin DB password (DDL owner, runs migrations)
+#   AUTH_APP_PASSWORD     app DB password (DML-only)
+#
+# Optional (usernames default to auth_admin / auth_app):
+#   AUTH_ADMIN_DB_USERNAME  admin role username (default: auth_admin)
+#   AUTH_APP_USERNAME       app role username   (default: auth_app)
+#
+# Note: DB credentials and usernames above are only applied on first startup when
+# the data volume is empty (postgres initdb). Changing them after the volume is
+# built has no effect — use ALTER ROLE in psql to update an existing database,
+# then update .env to match.
+
 services:
-  postgres:
+
+  # ── Auth database ─────────────────────────────────────────────────────────
+  db:
     image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: authdb
-      POSTGRES_USER: authuser
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    entrypoint: ["sh", "/shared/pg-scripts/pg-entrypoint.sh"]
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      PG_INIT_SCRIPT:    /shared/pg-scripts/db-init.sh
+      POSTGRES_USER:     ${AUTH_ADMIN_DB_USERNAME:-auth_admin}
+      POSTGRES_PASSWORD: ${AUTH_ADMIN_PASSWORD:?AUTH_ADMIN_PASSWORD is required}
+      POSTGRES_DB:       authdb
+      AUTH_APP_USERNAME: ${AUTH_APP_USERNAME:-auth_app}
+      AUTH_APP_PASSWORD: ${AUTH_APP_PASSWORD:?AUTH_APP_PASSWORD is required}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - shared-data:/shared:ro
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_ADMIN_DB_USERNAME:-auth_admin} -d authdb"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 10s
 
+  # ── API server ────────────────────────────────────────────────────────────
+  # Exposes HTTPS on ${AUTH_PORT:-8443}. Browse https://localhost:8443; use
+  # mkcert (via certs/gen.sh) to issue a browser-trusted server cert.
   auth:
     build: .
     restart: unless-stopped
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
     ports:
-      - "${AUTH_PORT:-8080}:8080"
+      - "${AUTH_PORT:-8443}:8443"
     environment:
-      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
-      AUTH_PORT: "8080"
-      # App role DSN (DML only — used at runtime).
-      AUTH_DATABASE_URL: postgres://authuser:${POSTGRES_PASSWORD:-changeme}@postgres:5432/authdb?sslmode=disable
-      # Admin DSN (DDL — used for migrations on startup; defaults to same DSN here).
-      AUTH_ADMIN_DATABASE_URL: postgres://authuser:${POSTGRES_PASSWORD:-changeme}@postgres:5432/authdb?sslmode=disable
-      # Generate with: docker run --rm golang:1.26-alpine sh -c 'head -c32 /dev/urandom | xxd -p'
+      AUTH_ISSUER: ${AUTH_ISSUER:-https://localhost:8443}
+      AUTH_PORT: "8443"
+      # Admin DSN: schema migration only (DDL privileges).
+      AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_PASSWORD}@db:5432/authdb?sslmode=disable
+      # Runtime DSN: DML-only after schema is in place.
+      AUTH_DATABASE_URL: postgres://${AUTH_APP_USERNAME:-auth_app}:${AUTH_APP_PASSWORD}@db:5432/authdb?sslmode=disable
       AUTH_MASTER_KEY: ${AUTH_MASTER_KEY:?AUTH_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm auth keygen')}
       AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-false}
       AUTH_AWS_IAM_ENABLED: ${AUTH_AWS_IAM_ENABLED:-false}
@@ -41,11 +71,12 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
 
 volumes:
-  postgres_data:
+  shared-data:
+  db_data:

@@ -126,7 +126,8 @@ func (s *Server) handleRegisterPOST(w http.ResponseWriter, r *http.Request) {
 		showErr("An error occurred. Please try again.")
 		return
 	}
-	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", email, "via", "self-registration"))
+	s.promoteIfFirstUser(r.Context(), user)
+	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "via", "self-registration"))
 	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	// After registration, continue the OAuth2 flow by redirecting to /authorize.
@@ -210,8 +211,8 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 	}
 
 	clearCookie(w, authStateCookie)
-	s.logAudit(r, ActionLoginMFA, uuidPtr(user.ID), uuidPtr(client.ID), logMeta("method", "webauthn"))
-	s.logAudit(r, ActionLogin, uuidPtr(user.ID), uuidPtr(client.ID), nil)
+	s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, logMeta("method", "webauthn"))
+	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
 
 	rawCode, err := auth.GenerateRawToken()
 	if err != nil {

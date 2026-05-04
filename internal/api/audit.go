@@ -23,6 +23,7 @@ const (
 	ActionUserUpdated         = "admin.user.updated"
 	ActionUserDeleted         = "admin.user.deleted"
 	ActionClientCreated       = "admin.client.created"
+	ActionClientUpdated       = "admin.client.updated"
 	ActionClientDeleted       = "admin.client.deleted"
 	ActionClientSecretRotated = "admin.client.secret.rotated"
 	ActionSCIMUserCreated     = "scim.user.created"
@@ -35,6 +36,10 @@ const (
 	ActionMFATOTPDeleted      = "mfa.totp.deleted"
 	ActionMFAWebAuthnEnrolled = "mfa.webauthn.enrolled"
 	ActionMFAWebAuthnDeleted  = "mfa.webauthn.deleted"
+	ActionIntegrationCreated  = "admin.integration.created"
+	ActionIntegrationUpdated  = "admin.integration.updated"
+	ActionIntegrationDeleted  = "admin.integration.deleted"
+	ActionIntegrationTested   = "admin.integration.tested"
 )
 
 func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) {
@@ -69,8 +74,6 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 func (s *Server) writeError(w http.ResponseWriter, status int, errCode, desc string) {
 	s.writeJSON(w, status, map[string]string{"error": errCode, "error_description": desc})
 }
-
-func uuidPtr(id uuid.UUID) *uuid.UUID { return &id }
 
 func logMeta(kv ...any) map[string]any {
 	m := make(map[string]any, len(kv)/2)

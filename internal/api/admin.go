@@ -55,7 +55,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
 		return
 	}
-	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", req.Email, "admin", req.Admin))
+	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", req.Email, "admin", req.Admin))
 	s.provisionUser(r, provision.OpCreate, user, nil)
 	s.writeJSON(w, http.StatusCreated, toUserView(user))
 }
@@ -93,7 +93,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "update failed")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, uuidPtr(user.ID), nil, logMeta("name", name, "active", active))
+	s.logAudit(r, ActionUserUpdated, &user.ID, nil, logMeta("name", name, "active", active))
 	user, _ = s.store.GetUserByID(r.Context(), user.ID)
 	op := provision.OpUpdate
 	if !active {
@@ -113,7 +113,7 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
 	}
-	s.logAudit(r, ActionUserDeleted, uuidPtr(user.ID), nil, nil)
+	s.logAudit(r, ActionUserDeleted, &user.ID, nil, nil)
 	s.provisionUser(r, provision.OpDelete, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -185,7 +185,7 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
 		return
 	}
-	s.logAudit(r, ActionClientCreated, nil, uuidPtr(client.ID), logMeta("name", req.Name))
+	s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("name", req.Name))
 	resp := toClientView(client)
 	if rawSecret != "" {
 		resp["client_secret"] = rawSecret // shown once
@@ -210,7 +210,7 @@ func (s *Server) handleAdminDeleteClient(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
 	}
-	s.logAudit(r, ActionClientDeleted, nil, uuidPtr(client.ID), nil)
+	s.logAudit(r, ActionClientDeleted, nil, &client.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -232,7 +232,7 @@ func (s *Server) handleAdminRotateClientSecret(w http.ResponseWriter, r *http.Re
 		s.writeError(w, http.StatusInternalServerError, "server_error", "update failed")
 		return
 	}
-	s.logAudit(r, ActionClientSecretRotated, nil, uuidPtr(client.ID), nil)
+	s.logAudit(r, ActionClientSecretRotated, nil, &client.ID, nil)
 	s.writeJSON(w, http.StatusOK, map[string]string{
 		"client_id":     client.ClientID,
 		"client_secret": rawSecret,

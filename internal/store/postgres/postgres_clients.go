@@ -65,6 +65,13 @@ func (s *DB) ListClients(ctx context.Context) ([]*model.Client, error) {
 	return clients, rows.Err()
 }
 
+func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE clients SET name = $2, redirect_uris = $3, scopes = $4, public = $5 WHERE id = $1`,
+		id, name, stringArray(redirectURIs), stringArray(scopes), public)
+	return err
+}
+
 func (s *DB) UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE clients SET client_secret_hash = $2, secret_rotated_at = NOW() WHERE id = $1`,

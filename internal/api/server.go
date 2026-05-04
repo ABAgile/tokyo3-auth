@@ -21,7 +21,7 @@ type Server struct {
 	policy     *policy.Engine
 	wa         *mfa.WAHandler
 	kp         crypto.KeyProvider
-	provSet    *provision.Set // outbound user/group provisioning fan-out; may be nil
+	provReg    *provision.Registry // outbound user/group provisioning fan-out; may be nil
 	issuer     string
 	masterKey  []byte
 	log        *slog.Logger
@@ -37,7 +37,7 @@ type Config struct {
 	Policy            *policy.Engine
 	WAHandler         *mfa.WAHandler
 	KP                crypto.KeyProvider
-	Provisioners      *provision.Set
+	Provisioners      *provision.Registry
 	Issuer            string
 	MasterKey         []byte
 	Log               *slog.Logger
@@ -60,7 +60,7 @@ func New(cfg Config) (*Server, error) {
 		policy:     cfg.Policy,
 		wa:         cfg.WAHandler,
 		kp:         cfg.KP,
-		provSet:    cfg.Provisioners,
+		provReg:    cfg.Provisioners,
 		issuer:     cfg.Issuer,
 		masterKey:  cfg.MasterKey,
 		log:        cfg.Log,
@@ -197,6 +197,19 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/admin/scim-tokens", s.portalAdminAuth(s.handlePortalAdminSCIMTokens))
 	mux.HandleFunc("POST /portal/admin/scim-tokens/new", s.portalAdminAuth(s.handlePortalAdminSCIMTokenNew))
 	mux.HandleFunc("POST /portal/admin/scim-tokens/{id}/delete", s.portalAdminAuth(s.handlePortalAdminSCIMTokenDelete))
+	mux.HandleFunc("GET /portal/admin/integrations", s.portalAdminAuth(s.handlePortalAdminIntegrations))
+	mux.HandleFunc("GET /portal/admin/integrations/new", s.portalAdminAuth(s.handlePortalAdminIntegrationNew))
+	mux.HandleFunc("POST /portal/admin/integrations/new", s.portalAdminAuth(s.handlePortalAdminIntegrationNew))
+	mux.HandleFunc("GET /portal/admin/integrations/{id}/edit", s.portalAdminAuth(s.handlePortalAdminIntegrationEdit))
+	mux.HandleFunc("POST /portal/admin/integrations/{id}/edit", s.portalAdminAuth(s.handlePortalAdminIntegrationEdit))
+	mux.HandleFunc("POST /portal/admin/integrations/{id}/delete", s.portalAdminAuth(s.handlePortalAdminIntegrationDelete))
+	mux.HandleFunc("POST /portal/admin/integrations/{id}/test", s.portalAdminAuth(s.handlePortalAdminIntegrationTest))
+	mux.HandleFunc("GET /portal/admin/groups", s.portalAdminAuth(s.handlePortalAdminGroups))
+	mux.HandleFunc("GET /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))
+	mux.HandleFunc("POST /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))
+	mux.HandleFunc("GET /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
+	mux.HandleFunc("POST /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
+	mux.HandleFunc("POST /portal/admin/groups/{id}/delete", s.portalAdminAuth(s.handlePortalAdminGroupDelete))
 	mux.HandleFunc("GET /portal/admin/audit", s.portalAdminAuth(s.handlePortalAdminAudit))
 
 	// Health check

@@ -24,6 +24,30 @@ import (
 // Seeded by migration 005_portal_client.sql.
 var portalClientUUID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
+// promoteIfFirstUser flips u to admin when they are the only row in the users
+// table — bootstraps the very first admin from a self-registration without
+// requiring CLI access. No-op on every subsequent registration. Mutates u in
+// place so the caller's downstream provisioning sees the admin flag.
+func (s *Server) promoteIfFirstUser(ctx context.Context, u *model.User) {
+	if u == nil {
+		return
+	}
+	n, err := s.store.CountUsers(ctx)
+	if err != nil {
+		s.log.Warn("bootstrap admin: count users", "err", err)
+		return
+	}
+	if n != 1 {
+		return
+	}
+	if err := s.store.SetUserAdmin(ctx, u.ID, true); err != nil {
+		s.log.Warn("bootstrap admin: set admin", "err", err)
+		return
+	}
+	u.IsAdmin = true
+	s.log.Info("bootstrap admin: promoted first registered user", "user_id", u.ID, "email", u.Email)
+}
+
 const portalCookie = "portal_tok"
 const portalLoginCookie = "portal_login"
 const portalCookieTTL = 8 * time.Hour
@@ -286,7 +310,8 @@ func (s *Server) handlePortalRegisterPOST(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("via", "portal_register"))
+	s.promoteIfFirstUser(r.Context(), user)
+	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("via", "portal_register"))
 	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	if err := s.createPortalSession(w, r, user); err != nil {
@@ -396,7 +421,7 @@ func (s *Server) handlePortalLoginMFA(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	code := r.FormValue("code")
 	if err := iMFA.VerifyTOTP(r.Context(), s.store, s.kp, user.ID, code); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, uuidPtr(user.ID), nil, logMeta("via", "portal"))
+		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal"))
 		showErr("Invalid code. Please try again.")
 		return
 	}
@@ -450,7 +475,7 @@ func (s *Server) handlePortalLoginMFAWebAuthnFinish(w http.ResponseWriter, r *ht
 		return
 	}
 	if _, err := s.wa.FinishLogin(r.Context(), user, sessionID, r); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, uuidPtr(user.ID), nil, logMeta("via", "portal_webauthn"))
+		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal_webauthn"))
 		s.writeError(w, http.StatusUnauthorized, "unauthorized", "webauthn verification failed")
 		return
 	}
@@ -497,7 +522,7 @@ func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, use
 		s.log.Error("create portal session", "err", err)
 		return err
 	}
-	s.logAudit(r, ActionLogin, uuidPtr(user.ID), nil, logMeta("via", "portal"))
+	s.logAudit(r, ActionLogin, &user.ID, nil, logMeta("via", "portal"))
 	return s.setPortalCookie(w, rawAccess, portalCookieTTL, portalCookie)
 }
 
@@ -536,7 +561,7 @@ func (s *Server) handlePortalAccountProfile(w http.ResponseWriter, r *http.Reque
 		http.Redirect(w, r, "/portal/account?error=update+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, uuidPtr(pc.User.ID), nil, logMeta("field", "name"))
+	s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "name"))
 	http.Redirect(w, r, "/portal/account?success=Profile+updated.", http.StatusFound)
 }
 
@@ -571,7 +596,7 @@ func (s *Server) handlePortalAccountPassword(w http.ResponseWriter, r *http.Requ
 		showErr("An error occurred. Please try again.")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, uuidPtr(pc.User.ID), nil, logMeta("field", "password"))
+	s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "password"))
 	http.Redirect(w, r, "/portal/account?success=Password+updated.", http.StatusFound)
 }
 
@@ -634,7 +659,7 @@ func (s *Server) handlePortalMFATOTPConfirm(w http.ResponseWriter, r *http.Reque
 	if err := s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, true); err != nil {
 		s.log.Error("enable mfa", "err", err)
 	}
-	s.logAudit(r, ActionMFATOTPEnrolled, uuidPtr(pc.User.ID), nil, nil)
+	s.logAudit(r, ActionMFATOTPEnrolled, &pc.User.ID, nil, nil)
 	clearCookie(w, portalTOTPCookie)
 	http.Redirect(w, r, "/portal/mfa?success=TOTP+enrolled+successfully.", http.StatusFound)
 }
@@ -646,7 +671,7 @@ func (s *Server) handlePortalMFATOTPDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
-	s.logAudit(r, ActionMFATOTPDeleted, uuidPtr(pc.User.ID), nil, nil)
+	s.logAudit(r, ActionMFATOTPDeleted, &pc.User.ID, nil, nil)
 	http.Redirect(w, r, "/portal/mfa?success=Authenticator+app+removed.", http.StatusFound)
 }
 
@@ -680,7 +705,7 @@ func (s *Server) handlePortalMFAWebAuthnFinish(w http.ResponseWriter, r *http.Re
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, true)
-	s.logAudit(r, ActionMFAWebAuthnEnrolled, uuidPtr(pc.User.ID), nil, logMeta("credential_id", cred.ID))
+	s.logAudit(r, ActionMFAWebAuthnEnrolled, &pc.User.ID, nil, logMeta("credential_id", cred.ID))
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": cred.ID, "device_name": cred.DeviceName})
 }
 
@@ -705,7 +730,7 @@ func (s *Server) handlePortalMFAWebAuthnDelete(w http.ResponseWriter, r *http.Re
 	if len(creds) == 0 && totpErr != nil {
 		_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
 	}
-	s.logAudit(r, ActionMFAWebAuthnDeleted, uuidPtr(pc.User.ID), nil, logMeta("credential_id", credID))
+	s.logAudit(r, ActionMFAWebAuthnDeleted, &pc.User.ID, nil, logMeta("credential_id", credID))
 	http.Redirect(w, r, "/portal/mfa?success=Security+key+removed.", http.StatusFound)
 }
 
@@ -781,7 +806,7 @@ func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request
 	if isAdmin {
 		_ = s.store.SetUserAdmin(r.Context(), user.ID, true)
 	}
-	s.logAudit(r, ActionUserCreated, uuidPtr(user.ID), nil, logMeta("email", email, "by", pc.User.Email))
+	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "by", pc.User.Email))
 	user, _ = s.store.GetUserByID(r.Context(), user.ID)
 	s.provisionUser(r, provision.OpCreate, user, nil)
 	http.Redirect(w, r, "/portal/admin/users?success=User+created.", http.StatusFound)
@@ -830,7 +855,7 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		showErr("Update failed.")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, uuidPtr(id), nil, logMeta("by", pc.User.Email))
+	s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("by", pc.User.Email))
 	updated, _ := s.store.GetUserByID(r.Context(), id)
 	if updated != nil {
 		op := provision.OpUpdate
@@ -855,7 +880,7 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionUserDeleted, uuidPtr(id), nil, logMeta("by", pc.User.Email))
+	s.logAudit(r, ActionUserDeleted, &id, nil, logMeta("by", pc.User.Email))
 	if user != nil {
 		s.provisionUser(r, provision.OpDelete, user, nil)
 	}
@@ -928,7 +953,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		showErr("An error occurred.")
 		return
 	}
-	s.logAudit(r, ActionClientCreated, nil, uuidPtr(client.ID), logMeta("by", pc.User.Email))
+	s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email))
 	if rawSecret != "" {
 		http.Redirect(w, r, "/portal/admin/clients?success=Client+created.&secret="+rawSecret, http.StatusFound)
 	} else {
@@ -963,15 +988,24 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	_ = r.ParseForm()
-	// Only update name and redirect URIs for existing clients; scopes not editable here for safety.
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
 		showErr("Name is required.")
 		return
 	}
-	// We don't have an UpdateClient method, so just note the limitation.
-	// Log the intended update.
-	s.logAudit(r, ActionClientCreated, nil, uuidPtr(id), logMeta("action", "edit_attempted", "by", pc.User.Email))
+	redirectURIs := parseLines(r.FormValue("redirect_uris"))
+	scopes := strings.Fields(r.FormValue("scopes"))
+	if len(scopes) == 0 {
+		scopes = []string{"openid", "profile", "email"}
+	}
+	public := r.FormValue("public") == "1"
+
+	if err := s.store.UpdateClient(r.Context(), id, name, redirectURIs, scopes, public); err != nil {
+		s.log.Error("update client", "id", id, "err", err)
+		showErr("An error occurred. Please try again.")
+		return
+	}
+	s.logAudit(r, ActionClientUpdated, nil, &id, logMeta("by", pc.User.Email))
 	http.Redirect(w, r, "/portal/admin/clients?success=Client+details+saved.", http.StatusFound)
 }
 
@@ -986,7 +1020,7 @@ func (s *Server) handlePortalAdminClientDelete(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionClientDeleted, nil, uuidPtr(id), logMeta("by", pc.User.Email))
+	s.logAudit(r, ActionClientDeleted, nil, &id, logMeta("by", pc.User.Email))
 	http.Redirect(w, r, "/portal/admin/clients?success=Client+deleted.", http.StatusFound)
 }
 
@@ -1015,7 +1049,7 @@ func (s *Server) handlePortalAdminClientRotate(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=update+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionClientSecretRotated, nil, uuidPtr(id), logMeta("by", pc.User.Email))
+	s.logAudit(r, ActionClientSecretRotated, nil, &id, logMeta("by", pc.User.Email))
 	http.Redirect(w, r, "/portal/admin/clients?success=Secret+rotated.&secret="+rawSecret, http.StatusFound)
 }
 
@@ -1050,7 +1084,7 @@ func (s *Server) handlePortalAdminSCIMTokenNew(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/scim-tokens?error=create+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionLogin, uuidPtr(pc.User.ID), nil, logMeta("action", "scim_token_created"))
+	s.logAudit(r, ActionLogin, &pc.User.ID, nil, logMeta("action", "scim_token_created"))
 	http.Redirect(w, r, "/portal/admin/scim-tokens?token="+rawToken, http.StatusFound)
 }
 
@@ -1065,7 +1099,7 @@ func (s *Server) handlePortalAdminSCIMTokenDelete(w http.ResponseWriter, r *http
 		http.Redirect(w, r, "/portal/admin/scim-tokens?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionLogin, uuidPtr(pc.User.ID), nil, logMeta("action", "scim_token_deleted", "id", id))
+	s.logAudit(r, ActionLogin, &pc.User.ID, nil, logMeta("action", "scim_token_deleted", "id", id))
 	http.Redirect(w, r, "/portal/admin/scim-tokens", http.StatusFound)
 }
 
@@ -1108,7 +1142,7 @@ func (s *Server) handlePortalAdminAudit(w http.ResponseWriter, r *http.Request) 
 
 func parseLines(s string) []string {
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if t := strings.TrimSpace(line); t != "" {
 			out = append(out, t)
 		}

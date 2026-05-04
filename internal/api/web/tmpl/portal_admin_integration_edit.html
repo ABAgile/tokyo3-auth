@@ -1,0 +1,86 @@
+{{template "base" .}}
+
+{{define "title"}}{{if .IsNew}}New integration{{else}}Edit integration{{end}}{{end}}
+{{define "pagetitle"}}{{if .IsNew}}New integration{{else}}Edit integration{{end}}{{end}}
+
+{{define "content"}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card" style="max-width:680px">
+  <div class="card-body">
+    <form method="POST" action="{{if .IsNew}}/portal/admin/integrations/new{{else}}/portal/admin/integrations/{{.Integration.ID}}/edit{{end}}">
+      <div class="form-group">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" value="{{.Integration.Name}}" required autofocus>
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Used as the cache key for downstream user IDs &mdash; do not rename a live integration.</div>
+      </div>
+
+      <div class="form-group">
+        <label for="provider">Provider</label>
+        {{if .IsNew}}
+        <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
+          <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
+          <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM</option>
+        </select>
+        {{else}}
+        <input type="text" value="{{.Integration.Provider}}" readonly disabled>
+        <input type="hidden" name="provider" value="{{.Integration.Provider}}">
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Provider type cannot be changed after creation.</div>
+        {{end}}
+      </div>
+
+      <div class="form-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="enabled" name="enabled" value="1" {{if .Integration.Enabled}}checked{{end}}>
+          <label for="enabled" style="margin:0">Enabled (fan-out user/group changes to this target)</label>
+        </div>
+      </div>
+
+      <div data-provider="scim" {{if ne .Integration.Provider "scim"}}style="display:none"{{end}}>
+        <div class="form-group">
+          <label for="base_url">Base URL</label>
+          <input type="url" id="base_url" name="base_url" value="{{.Integration.Config.BaseURL}}" placeholder="https://vault.example.com/scim/v2">
+        </div>
+        <div class="form-group">
+          <label for="timeout_ms">HTTP timeout (ms, blank = 10000)</label>
+          <input type="number" id="timeout_ms" name="timeout_ms" value="{{if .Integration.Config.TimeoutMS}}{{.Integration.Config.TimeoutMS}}{{end}}" min="0">
+        </div>
+        <div class="form-group">
+          <label for="token">Bearer token</label>
+          {{if .IsNew}}
+          <input type="password" id="token" name="token" autocomplete="new-password">
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Stored AES-256-GCM-encrypted with the master KEK. Never echoed back.</div>
+          {{else}}
+          <div class="checkbox-row" style="margin-bottom:6px">
+            <input type="checkbox" id="update_token" name="update_token" value="1" onchange="document.getElementById('token').disabled = !this.checked">
+            <label for="update_token" style="margin:0">Replace token</label>
+          </div>
+          <input type="password" id="token" name="token" autocomplete="new-password" disabled placeholder="••••••••">
+          {{end}}
+        </div>
+      </div>
+
+      <div data-provider="aws_iam" {{if ne .Integration.Provider "aws_iam"}}style="display:none"{{end}}>
+        <div class="form-group">
+          <label for="group_map">Group mapping (one per line, format <code>scimGroup=iamGroup</code>)</label>
+          <textarea id="group_map" name="group_map" rows="4" placeholder="engineers=eng-iam-grp">{{.GroupMapStr}}</textarea>
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Credentials come from the AWS SDK default credential chain on the host running authd.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button type="submit" class="btn btn-primary">{{if .IsNew}}Create integration{{else}}Save changes{{end}}</button>
+        <a href="/portal/admin/integrations" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+
+    {{if not .IsNew}}
+    <div class="separator"></div>
+    <form method="POST" action="/portal/admin/integrations/{{.Integration.ID}}/delete"
+          onsubmit="return confirm('Delete this integration? Provisioning will stop fanning out to this target.')">
+      <button type="submit" class="btn btn-danger btn-sm">Delete integration</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{end}}

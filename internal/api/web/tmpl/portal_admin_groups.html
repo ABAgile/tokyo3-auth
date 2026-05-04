@@ -1,0 +1,63 @@
+{{template "base" .}}
+
+{{define "title"}}Groups{{end}}
+{{define "pagetitle"}}Groups (roles){{end}}
+
+{{define "topbar-right"}}
+<a href="/portal/admin/groups/new" class="btn btn-primary btn-sm">+ New group</a>
+{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Display name</th>
+          <th>ID</th>
+          <th>Members</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Groups}}
+        <tr>
+          <td>{{.Group.DisplayName}}</td>
+          <td>
+            <span class="mono truncate" title="{{.Group.ID}}">{{.Group.ID}}</span>
+            <button type="button" class="btn btn-secondary btn-sm" data-copy="{{.Group.ID}}" title="Copy ID">Copy</button>
+          </td>
+          <td>{{.Members}}</td>
+          <td class="text-muted">{{.Group.CreatedAt.Format "Jan 2, 2006"}}</td>
+          <td style="white-space:nowrap">
+            <a href="/portal/admin/groups/{{.Group.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
+            <form method="POST" action="/portal/admin/groups/{{.Group.ID}}/delete" style="display:inline"
+                  onsubmit="return confirm('Delete this group? Members are NOT deleted, but the group is removed from every enabled integration.')">
+              <button type="submit" class="btn btn-secondary btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" class="text-muted" style="text-align:center;padding:28px">No groups yet. Create one to push roles to enabled SCIM integrations.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('[data-copy]');
+  if (!btn) return;
+  navigator.clipboard.writeText(btn.dataset.copy).then(function() {
+    var original = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(function() { btn.textContent = original; }, 1200);
+  });
+});
+</script>
+{{end}}

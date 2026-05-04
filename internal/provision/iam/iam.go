@@ -20,18 +20,25 @@ import (
 
 // Provisioner provisions AWS IAM users and manages group membership.
 type Provisioner struct {
+	name     string
 	client   *iam.Client
 	log      *slog.Logger
 	GroupMap map[string]string // SCIM group display name → IAM group name
 }
 
-// New returns a Provisioner using the default AWS credential chain.
-func New(ctx context.Context, groupMap map[string]string, log *slog.Logger) (*Provisioner, error) {
+// New returns a Provisioner using the default AWS credential chain. name is
+// surfaced via Name() and identifies the integration row in audit/log output;
+// pass empty for the default "aws-iam".
+func New(ctx context.Context, name string, groupMap map[string]string, log *slog.Logger) (*Provisioner, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	if name == "" {
+		name = "aws-iam"
+	}
 	return &Provisioner{
+		name:     name,
 		client:   iam.NewFromConfig(cfg),
 		log:      log,
 		GroupMap: groupMap,
@@ -39,7 +46,7 @@ func New(ctx context.Context, groupMap map[string]string, log *slog.Logger) (*Pr
 }
 
 // Name implements provision.Provisioner.
-func (*Provisioner) Name() string { return "aws-iam" }
+func (p *Provisioner) Name() string { return p.name }
 
 // User implements provision.Provisioner. IAM usernames are the local-part of
 // the user's email (everything before the first '@').

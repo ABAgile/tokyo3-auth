@@ -118,6 +118,21 @@ func (r *MFARequiredRule) Evaluate(ctx PolicyContext) *PolicyViolation {
 	if ctx.Client == nil || ctx.Client.Public {
 		return nil
 	}
+	// During the credential-check phase (Password set), MFAVerified is always
+	// false because the MFA step happens *after* the password check. Treat
+	// MFA enrollment as sufficient at this stage — the OAuth flow will route
+	// the user through MFA before issuing tokens. Block only if the user has
+	// no MFA enrolled, since the redirect would have nothing to verify.
+	if ctx.Password != "" {
+		if ctx.User != nil && ctx.User.MFAEnabled {
+			return nil
+		}
+		return &PolicyViolation{
+			RuleID:      r.ID(),
+			Description: r.Description(),
+			Message:     "This client requires MFA. Enroll TOTP or a security key under /portal/mfa, then sign in again.",
+		}
+	}
 	if !ctx.MFAVerified {
 		return &PolicyViolation{RuleID: r.ID(), Description: r.Description(), Message: "MFA verification required"}
 	}

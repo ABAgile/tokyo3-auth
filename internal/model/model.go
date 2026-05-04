@@ -116,3 +116,37 @@ type AuditLog struct {
 	Metadata  map[string]any
 	CreatedAt time.Time
 }
+
+// AppIntegrationProvider enumerates the supported provider types stored in
+// AppIntegration.Provider. Keep in sync with the provisioner builders in
+// cmd/authd/main.go.
+const (
+	AppIntegrationProviderSCIM = "scim"
+	AppIntegrationProviderIAM  = "aws_iam"
+)
+
+// AppIntegrationConfig is the non-secret JSON payload persisted alongside an
+// AppIntegration. SCIM providers populate BaseURL + TimeoutMS; AWS IAM uses
+// GroupMap (SCIM display name → IAM group name). Unknown fields for the
+// chosen provider are ignored at runtime.
+type AppIntegrationConfig struct {
+	BaseURL   string            `json:"base_url,omitempty"`
+	TimeoutMS int               `json:"timeout_ms,omitempty"`
+	GroupMap  map[string]string `json:"group_map,omitempty"`
+}
+
+// AppIntegration is a single outbound provisioning target. Tokens are
+// envelope-encrypted via crypto.EncryptSecret (matching mfa/totp.go); the
+// EncryptedToken/EncryptedDEK pair is nil for IAM-style providers that source
+// credentials from elsewhere.
+type AppIntegration struct {
+	ID             uuid.UUID
+	Name           string
+	Provider       string
+	Enabled        bool
+	Config         AppIntegrationConfig
+	EncryptedToken []byte
+	EncryptedDEK   []byte
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
