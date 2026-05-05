@@ -1,8 +1,10 @@
 # docker-compose.mtls.yml — mTLS overlay
 #
 # Enables TLS on every inter-service connection:
-#   authd HTTPS API     AUTH_TLS_CERT / AUTH_TLS_KEY
-#   authd → postgres    client cert + cert auth (no password in DSN)
+#   authd HTTPS API         AUTH_TLS_CERT / AUTH_TLS_KEY
+#   authd → postgres        client cert + cert auth (no password in DSN)
+#   authd → outbound SCIM   AUTH_OUTBOUND_TLS_CERT / KEY / CA (used by
+#                           app_integrations rows with auth_mode=mtls)
 #
 # Prerequisites:
 #   1. make docker-up-mtls   # auto-generates leaf certs (signed by mkcert's
@@ -43,6 +45,11 @@ services:
       AUTH_DB_CERT:            /shared/certs/authd-app-db-client.crt
       AUTH_DB_KEY:             /shared/certs/authd-app-db-client.key
       AUTH_DB_CA:              /shared/certs/ca.crt
+      # Outbound SCIM mTLS — single shared identity (CN=authd) presented to
+      # every app_integrations row with auth_mode=mtls.
+      AUTH_OUTBOUND_TLS_CERT:  /shared/certs/authd-scim-client.crt
+      AUTH_OUTBOUND_TLS_KEY:   /shared/certs/authd-scim-client.key
+      AUTH_OUTBOUND_TLS_CA:    /shared/certs/ca.crt
       # Cert auth: no password; cert CN authenticates the role.
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full
       AUTH_DATABASE_URL:       postgres://${AUTH_APP_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full

@@ -29,19 +29,9 @@ The two channels are independent. An app can use either, both, or neither.
 
 ## Part 1 — Bring up the auth ↔ vault bridge
 
-Steps 1–2 are one-time HTTP calls. Steps 3–4 are env-var changes and a restart. Step 5 backfills existing users. Step 6 is an optional policy step. Step 7 verifies the result.
+Step 1 registers vault for OIDC SSO. Step 2 wires the SCIM provisioning channel — pick *one* of the two auth modes (bearer or mTLS; they're mutually exclusive per integration). Step 3 backfills existing users. Step 4 is an optional policy step. Step 5 verifies the result.
 
-### 1. Mint a SCIM bearer token on vault
-
-```sh
-curl -X POST -H "Authorization: Bearer $VAULT_ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
-     "$VAULT_URL/api/v1/scim/tokens" \
-     -d '{"description":"tokyo3-auth -> vault provisioner"}'
-# Response includes "token" — shown ONCE. Stash it.
-```
-
-### 2. Register vault as an OAuth2 client in auth
+### 1. Register vault as an OAuth2 client in auth
 
 ```sh
 curl -X POST -H "Authorization: Bearer $AUTH_ADMIN_TOKEN" \
@@ -56,30 +46,59 @@ curl -X POST -H "Authorization: Bearer $AUTH_ADMIN_TOKEN" \
 # Capture client_id + client_secret (secret shown ONCE).
 ```
 
-### 3. Configure vault server env
+Configure vault server env and restart:
 
 ```sh
 VAULT_OIDC_ISSUER=https://auth.example.com
-VAULT_OIDC_CLIENT_ID=<from step 2>
-VAULT_OIDC_CLIENT_SECRET=<from step 2>
+VAULT_OIDC_CLIENT_ID=<from above>
+VAULT_OIDC_CLIENT_SECRET=<from above>
 VAULT_OIDC_REDIRECT_URI=https://vault.example.com/api/v1/auth/oidc/callback
 VAULT_OIDC_ENFORCE=true     # optional — disables local /auth/login + /auth/signup
 ```
 
-Restart vault.
+### 2. Wire the SCIM provisioning channel — pick one auth mode
 
-### 4. Configure auth server env
+#### Option A — Bearer token
+
+Mint a SCIM token on vault:
 
 ```sh
-AUTH_VAULT_SCIM_ENABLED=true
-AUTH_VAULT_SCIM_URL=https://vault.example.com/scim/v2
-AUTH_VAULT_SCIM_TOKEN=<from step 1>
-AUTH_VAULT_SCIM_TIMEOUT=10s   # optional
+curl -X POST -H "Authorization: Bearer $VAULT_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     "$VAULT_URL/api/v1/scim/tokens" \
+     -d '{"description":"tokyo3-auth -> vault provisioner"}'
+# Response includes "token" — shown ONCE. Stash it.
 ```
 
-Restart auth.
+Add a Vault SCIM integration at `/portal/admin/integrations/new`:
+- Provider: `scim`
+- Authentication: **Bearer token**
+- Base URL: `https://vault.example.com/scim/v2`
+- Token: paste the value above
 
-### 5. Backfill existing users
+#### Option B — mTLS (no token bootstrap, cert infra required)
+
+Configure vault to require client certs on `/scim/v2/*` and allow-list auth's CA + the SAN/CN that identifies authd. Then point auth at its outbound cert/key/CA via env vars (one shared identity for every mTLS integration; no per-row secrets):
+
+```sh
+AUTH_OUTBOUND_TLS_CERT=/run/secrets/auth-outbound.crt
+AUTH_OUTBOUND_TLS_KEY=/run/secrets/auth-outbound.key
+AUTH_OUTBOUND_TLS_CA=/run/secrets/downstream-ca.crt    # optional; empty = system roots
+```
+
+Restart auth. The cert file is hot-reloaded (mtime polled at most once per second across SCIM requests), so pair this with tbot, cert-manager, or SPIFFE for automatic rotation without restarts.
+
+Add the integration at `/portal/admin/integrations/new`:
+- Provider: `scim`
+- Authentication: **mTLS (client cert)**
+- Base URL: `https://vault.example.com/scim/v2`
+  (The token field disappears in this mode.)
+
+#### After either option
+
+Click **Test** on the integration row to confirm authd can reach vault before sending real traffic.
+
+### 3. Backfill existing users
 
 ```sh
 authd admin sync --target=vault
@@ -88,7 +107,7 @@ authd admin sync --target=vault
 
 Required only the first time the bridge is enabled, or after a downstream restore from backup. The provisioner only fires on *new* mutations — it has no startup hook that scans existing rows. Idempotent: safe to re-run.
 
-### 6. (Optional) Pre-populate group → role mappings on vault
+### 4. (Optional) Pre-populate group → role mappings on vault
 
 Vault's policy decisions live in `scim_group_roles`. Operator must define them once:
 
@@ -105,7 +124,7 @@ curl -X POST -H "Authorization: Bearer $VAULT_ADMIN_TOKEN" \
 
 After this, when auth's "Engineering" group syncs over with members, vault auto-binds those users to `platform/production` with `editor`.
 
-### 7. Smoke test
+### 5. Smoke test
 
 ```sh
 # OIDC SSO
@@ -128,23 +147,14 @@ Three levels. Pick the lowest one that fits.
 
 ### Level A — same SCIM protocol, different downstream
 
-If the target speaks SCIM 2.0 over bearer auth (Okta-as-target, Azure-as-target, an internal app), the existing `internal/provision/scim` client works as-is. Register a new instance in `cmd/authd/main.go`:
+If the target speaks SCIM 2.0 over bearer auth or mTLS (Okta-as-target, Azure-as-target, an internal app), no Go code changes are required — the existing `internal/provision/scim` client handles it. Add a row at `/portal/admin/integrations/new`:
 
-```go
-if strings.EqualFold(os.Getenv("AUTH_FOOAPP_SCIM_ENABLED"), "true") {
-    fooProv := scimprov.New(scimprov.Config{
-        Provider: "fooapp",         // unique cache key in external_ids
-        Name:     "fooapp-scim",    // appears in audit logs
-        BaseURL:  os.Getenv("AUTH_FOOAPP_SCIM_URL"),
-        Token:    os.Getenv("AUTH_FOOAPP_SCIM_TOKEN"),
-        Store:    db,
-        Log:      log,
-    })
-    provSet.Provisioners = append(provSet.Provisioners, fooProv)
-}
-```
+- Provider: `scim`
+- Name: any unique identifier (used as the `external_ids` cache key — don't rename a live integration)
+- Base URL: the target's SCIM root
+- Authentication: `Bearer token` (paste the value the target issued) **or** `mTLS (client cert)` (uses the shared `AUTH_OUTBOUND_TLS_*` env vars; the target must allow-list auth's CA + SAN/CN)
 
-Add `fooapp` to the switch in `runAdminSync` (or generalize the switch to look up by `Provisioner.Name()`).
+Backfill existing users with `authd admin sync --target=<name>`. The integration is then live for all subsequent mutations.
 
 **Downstream compatibility checklist:**
 
@@ -186,13 +196,13 @@ func (p *Provisioner) Group(ctx context.Context, op provision.Op, g *model.SCIMG
 }
 ```
 
-Append it to `provSet.Provisioners` in `main.go`. The fan-out, all native-path hooks, and the `external_ids` cache work unchanged. Typical size: 150–300 LOC + tests.
+Wire it into `cmd/authd/main.go`'s `buildProvisioner` switch alongside the existing `scim` and `aws_iam` cases, and add a new `AppIntegrationProvider*` constant in `internal/model/model.go`. The fan-out, all native-path hooks, and the `external_ids` cache work unchanged. Typical size: 150–300 LOC + tests.
 
 ### Level C — no provisioning API, OIDC-only
 
 Some apps only support inbound SSO and have no programmatic provisioning. Two paths:
 
-- **OIDC** — register the app as a client in auth (Part 1 step 2). Users are created on the app side via JIT-on-first-login (mirroring how vault's `jitProvision` works).
+- **OIDC** — register the app as a client in auth (Part 1 step 1). Users are created on the app side via JIT-on-first-login (mirroring how vault's `jitProvision` works).
 - **SAML** — auth doesn't speak SAML today. Either add SAML support to auth, or front with an OIDC↔SAML bridge (`saml2aws`-style).
 
 No `Provisioner` impl needed. The trade-off: no proactive deactivation — when you disable a user in auth, the downstream app finds out only on the user's next login attempt (when SSO fails). For deprovisioning-sensitive apps (anything touching production), prefer Level A or B.
@@ -205,11 +215,11 @@ No `Provisioner` impl needed. The trade-off: no proactive deactivation — when 
 Adding a new app
 │
 ├─ Does it speak OIDC?
-│  ├─ Yes → register as OAuth2 client in auth (Part 1 step 2). Done for SSO.
+│  ├─ Yes → register as OAuth2 client in auth (Part 1 step 1). Done for SSO.
 │  └─ No  → add SAML support to auth, or front with a bridge.
 │
-└─ Does it speak SCIM 2.0 + bearer?
-   ├─ Yes  → Level A. Env vars + append to provSet. No new Go code.
+└─ Does it speak SCIM 2.0 (bearer or mTLS)?
+   ├─ Yes  → Level A. Add a row in /portal/admin/integrations. No code changes.
    ├─ Like-SCIM → Level B. Implement provision.Provisioner. ~200 LOC.
    └─ None → Level C. Rely on JIT-on-SSO; no proactive deprovisioning.
 ```
@@ -218,19 +228,24 @@ Adding a new app
 
 ## Operational notes
 
-- **Token rotation.** `AUTH_VAULT_SCIM_TOKEN` and other downstream tokens are long-lived. Rotate via the downstream's token endpoint (`POST /api/v1/scim/tokens` for vault) and update the env. No restart-coordination needed beyond the usual config reload.
+- **Credential rotation.**
+  - *Bearer mode:* tokens are long-lived. Rotate via the downstream's token endpoint, then click **Replace token** on the integration's edit page. The new token is encrypted with the master KEK and the registry hot-reloads on save.
+  - *mTLS mode:* the cert/key pointed at by `AUTH_OUTBOUND_TLS_CERT/KEY` is hot-reloaded automatically — replace the file on disk (tbot, cert-manager, SPIFFE) and the next SCIM request picks it up. No process restart, no portal save.
 - **Failure mode.** Provisioner errors are logged and audited but never block the originating request. A failed downstream sync is recoverable via `authd admin sync --target=<name>`.
 - **404 self-heal.** The SCIM client treats `external_ids` as a cache, not authority. On `404` from `PUT/PATCH/DELETE` it invalidates the cache and re-resolves via `filter=externalId eq`, then either retries or falls through to `POST` (idempotent on email).
 - **Order of operations on first deploy.** Provision before SSO. If a user logs in via OIDC before they've been SCIM-provisioned, the downstream JIT-creates them with no `externalId` — which still works via email fallback, but later updates take an extra round trip until the cache is populated. Run `authd admin sync` first.
-- **Audit trail.** Every provisioner call produces an audit entry on the auth side via the `Name()` field. Look for `target=vault-scim` (or whichever target name) in `audit_logs`.
+- **Audit trail.** Every provisioner call produces an audit entry on the auth side via the `Name()` field. Look for `target=<integration name>` in `audit_logs`.
+- **mTLS identity binding.** When using mTLS, the downstream MUST verify both the CA chain *and* the cert's SAN/CN identifies authd specifically. CA chain alone leaks trust to every other service in the same trust domain. Pin a stable identity (CN, SPIFFE ID) — never the cert hash, since the cert rotates.
 
 ---
 
 ## Reference
 
 - `auth/internal/provision/provision.go` — `Provisioner` interface + `Set` fan-out
-- `auth/internal/provision/scim/client.go` — generic SCIM 2.0 outbound client
+- `auth/internal/provision/registry.go` — hot-reloading wrapper around `Set` (rebuilt on integration save)
+- `auth/internal/provision/scim/client.go` — generic SCIM 2.0 outbound client (bearer + mTLS)
 - `auth/internal/provision/iam/iam.go` — AWS IAM provisioner (reference impl for non-SCIM targets)
-- `auth/internal/api/scim.go`, `admin.go`, `web_sso.go`, `web_portal.go` — native-path fan-out call sites
+- `auth/internal/api/admin.go`, `web_sso.go`, `web_portal.go`, `web_portal_groups.go` — native-path fan-out call sites
+- `auth/cmd/authd/main.go` — `buildProvisioner` (auth-mode dispatch), `outboundTLSFromEnv`, `admin sync` subcommand
 - `auth/cmd/authd/main.go` — provisioner construction + `admin sync` subcommand
 - `vault/docs/oidc-sso-design.md` — vault-side protocol details, SCIM filter subset, "tokyo3-auth as IdP" appendix

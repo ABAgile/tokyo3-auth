@@ -55,8 +55,12 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 	if r.Method == http.MethodGet {
 		s.portalTmpl.render(w, "portal_admin_integration_edit.html", integrationFormView{
 			portalBase:  newPortalBase(pc, "admin-integrations"),
-			Integration: &model.AppIntegration{Enabled: true, Provider: model.AppIntegrationProviderSCIM},
-			IsNew:       true,
+			Integration: &model.AppIntegration{
+				Enabled:  true,
+				Provider: model.AppIntegrationProviderSCIM,
+				Config:   model.AppIntegrationConfig{AuthMode: model.AppIntegrationAuthBearer},
+			},
+			IsNew: true,
 		})
 		return
 	}
@@ -79,7 +83,7 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 	}
 
 	row := form.row
-	if row.Provider == model.AppIntegrationProviderSCIM {
+	if row.Provider == model.AppIntegrationProviderSCIM && row.Config.AuthMode == model.AppIntegrationAuthBearer {
 		encToken, encDEK, err := crypto.EncryptSecret(r.Context(), s.kp, []byte(form.tokenPlain))
 		if err != nil {
 			showErr("Encryption failed.")
@@ -151,7 +155,12 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 		return
 	}
 
-	if form.row.Provider == model.AppIntegrationProviderSCIM && updateToken {
+	switch {
+	case form.row.Config.AuthMode == model.AppIntegrationAuthMTLS:
+		// Switching to mTLS clears any previously stored bearer token.
+		form.row.EncryptedToken = nil
+		form.row.EncryptedDEK = nil
+	case form.row.Provider == model.AppIntegrationProviderSCIM && updateToken:
 		encToken, encDEK, err := crypto.EncryptSecret(r.Context(), s.kp, []byte(form.tokenPlain))
 		if err != nil {
 			showErr("Encryption failed.")
@@ -159,7 +168,7 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 		}
 		form.row.EncryptedToken = encToken
 		form.row.EncryptedDEK = encDEK
-	} else {
+	default:
 		form.row.EncryptedToken = existing.EncryptedToken
 		form.row.EncryptedDEK = existing.EncryptedDEK
 	}
@@ -240,9 +249,9 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 	if row.Config.BaseURL == "" {
 		return 0, "", errors.New("missing base URL")
 	}
-	tokenBytes, err := crypto.DecryptSecret(ctx, s.kp, row.EncryptedDEK, row.EncryptedToken)
-	if err != nil {
-		return 0, "", err
+	authMode := row.Config.AuthMode
+	if authMode == "" {
+		authMode = model.AppIntegrationAuthBearer
 	}
 	timeout := time.Duration(row.Config.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
@@ -253,9 +262,25 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 	if err != nil {
 		return 0, "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
 	req.Header.Set("Accept", "application/scim+json")
+
 	client := &http.Client{Timeout: timeout}
+	switch authMode {
+	case model.AppIntegrationAuthBearer:
+		tokenBytes, err := crypto.DecryptSecret(ctx, s.kp, row.EncryptedDEK, row.EncryptedToken)
+		if err != nil {
+			return 0, "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
+	case model.AppIntegrationAuthMTLS:
+		if s.outboundTLS == nil {
+			return 0, "", errors.New("mtls auth_mode but AUTH_OUTBOUND_TLS_CERT/KEY are unset")
+		}
+		client.Transport = &http.Transport{TLSClientConfig: s.outboundTLS}
+	default:
+		return 0, "", errors.New("unsupported auth_mode: " + authMode)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", err
@@ -297,6 +322,10 @@ func readIntegrationForm(r *http.Request, isNew bool) integrationFormInput {
 	}
 	timeoutMS, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("timeout_ms")))
 	groupMapStr := r.FormValue("group_map")
+	authMode := strings.TrimSpace(r.FormValue("auth_mode"))
+	if authMode == "" {
+		authMode = model.AppIntegrationAuthBearer
+	}
 	row := &model.AppIntegration{
 		Name:     strings.TrimSpace(r.FormValue("name")),
 		Provider: provider,
@@ -305,6 +334,7 @@ func readIntegrationForm(r *http.Request, isNew bool) integrationFormInput {
 			BaseURL:   strings.TrimSpace(r.FormValue("base_url")),
 			TimeoutMS: timeoutMS,
 			GroupMap:  parseGroupMap(groupMapStr),
+			AuthMode:  authMode,
 		},
 	}
 	return integrationFormInput{
@@ -323,8 +353,17 @@ func (f integrationFormInput) validate(needToken bool) string {
 		if f.row.Config.BaseURL == "" {
 			return "Base URL is required for SCIM integrations."
 		}
-		if needToken && strings.TrimSpace(f.tokenPlain) == "" {
-			return "Token is required."
+		switch f.row.Config.AuthMode {
+		case model.AppIntegrationAuthBearer, "":
+			if needToken && strings.TrimSpace(f.tokenPlain) == "" {
+				return "Token is required for bearer auth."
+			}
+		case model.AppIntegrationAuthMTLS:
+			if strings.TrimSpace(f.tokenPlain) != "" {
+				return "Token must be empty when auth mode is mTLS — auth presents its client cert from AUTH_OUTBOUND_TLS_* env vars."
+			}
+		default:
+			return "Unsupported auth mode."
 		}
 	case model.AppIntegrationProviderIAM:
 		// no required fields beyond name

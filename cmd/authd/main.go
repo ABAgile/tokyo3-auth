@@ -30,6 +30,16 @@
 //	AUTH_ADMIN_DB_CERT    Client certificate PEM for the admin (migration) connection.
 //	AUTH_ADMIN_DB_KEY     Client key PEM.
 //	AUTH_ADMIN_DB_CA      CA PEM.
+//
+// Outbound mTLS (used by app_integrations rows with auth_mode=mtls):
+//
+//	AUTH_OUTBOUND_TLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
+//	                        downstreams. Hot-reloaded (mtime polled at most once
+//	                        per second across SCIM requests).
+//	AUTH_OUTBOUND_TLS_KEY   Client key PEM. Required iff AUTH_OUTBOUND_TLS_CERT is set.
+//	AUTH_OUTBOUND_TLS_CA    Optional CA bundle for verifying downstream servers.
+//	                        Empty falls back to the system root pool. A single
+//	                        cert/key pair is shared across every mTLS integration.
 package main
 
 import (
@@ -106,6 +116,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	outboundTLS, err := outboundTLSFromEnv()
+	if err != nil {
+		return fmt.Errorf("outbound TLS: %w", err)
+	}
 
 	// Run migrations with the admin DSN, then open the runtime connection.
 	if adminDBTLS != nil {
@@ -146,7 +160,7 @@ func runServe() error {
 	}
 
 	provReg := provision.NewRegistry(func(ctx context.Context) (*provision.Set, error) {
-		return buildProvSet(ctx, db, kp, log)
+		return buildProvSet(ctx, db, kp, outboundTLS, log)
 	})
 	if err := provReg.Reload(ctx); err != nil {
 		return fmt.Errorf("load provisioners: %w", err)
@@ -159,6 +173,7 @@ func runServe() error {
 		WAHandler:         waHandler,
 		KP:                kp,
 		Provisioners:      provReg,
+		OutboundTLS:       outboundTLS,
 		Issuer:            issuer,
 		MasterKey:         masterKey,
 		Log:               log,
@@ -280,6 +295,10 @@ func runAdminSync(target string) error {
 	if err != nil {
 		return err
 	}
+	outboundTLS, err := outboundTLSFromEnv()
+	if err != nil {
+		return fmt.Errorf("outbound TLS: %w", err)
+	}
 	if err := postgres.Migrate(adminDBURL, adminDBTLS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -318,7 +337,7 @@ func runAdminSync(target string) error {
 	}
 
 	for _, integration := range integrations {
-		prov, err := buildProvisioner(ctx, integration, db, kp, log)
+		prov, err := buildProvisioner(ctx, integration, db, kp, outboundTLS, log)
 		if err != nil {
 			log.Error("build provisioner", "integration", integration.Name, "err", err)
 			continue
@@ -371,14 +390,14 @@ func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisio
 // buildProvSet constructs a provision.Set from every enabled integration row.
 // Decryption errors are logged and the offending row is skipped so a single
 // corrupt config cannot wedge the whole fan-out.
-func buildProvSet(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, log *slog.Logger) (*provision.Set, error) {
+func buildProvSet(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (*provision.Set, error) {
 	rows, err := db.ListEnabledIntegrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list integrations: %w", err)
 	}
 	set := &provision.Set{Log: log}
 	for _, row := range rows {
-		prov, err := buildProvisioner(ctx, row, db, kp, log)
+		prov, err := buildProvisioner(ctx, row, db, kp, outboundTLS, log)
 		if err != nil {
 			log.Error("build provisioner", "integration", row.Name, "err", err)
 			continue
@@ -389,28 +408,43 @@ func buildProvSet(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, l
 	return set, nil
 }
 
-func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp crypto.KeyProvider, log *slog.Logger) (provision.Provisioner, error) {
+func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp crypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (provision.Provisioner, error) {
 	switch i.Provider {
 	case model.AppIntegrationProviderSCIM:
 		if i.Config.BaseURL == "" {
 			return nil, fmt.Errorf("scim integration %q missing base_url", i.Name)
 		}
-		if len(i.EncryptedToken) == 0 || len(i.EncryptedDEK) == 0 {
-			return nil, fmt.Errorf("scim integration %q missing token", i.Name)
+		authMode := i.Config.AuthMode
+		if authMode == "" {
+			authMode = model.AppIntegrationAuthBearer
 		}
-		token, err := crypto.DecryptSecret(ctx, kp, i.EncryptedDEK, i.EncryptedToken)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt token: %w", err)
-		}
-		return scimprov.New(scimprov.Config{
+		cfg := scimprov.Config{
 			Provider: i.Name,
 			Name:     i.Name,
 			BaseURL:  i.Config.BaseURL,
-			Token:    string(token),
 			Timeout:  time.Duration(i.Config.TimeoutMS) * time.Millisecond,
 			Store:    db,
 			Log:      log,
-		}), nil
+		}
+		switch authMode {
+		case model.AppIntegrationAuthBearer:
+			if len(i.EncryptedToken) == 0 || len(i.EncryptedDEK) == 0 {
+				return nil, fmt.Errorf("scim integration %q (bearer mode) missing token", i.Name)
+			}
+			token, err := crypto.DecryptSecret(ctx, kp, i.EncryptedDEK, i.EncryptedToken)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt token: %w", err)
+			}
+			cfg.Token = string(token)
+		case model.AppIntegrationAuthMTLS:
+			if outboundTLS == nil {
+				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_OUTBOUND_TLS_CERT/KEY are unset", i.Name)
+			}
+			cfg.TLSConfig = outboundTLS
+		default:
+			return nil, fmt.Errorf("scim integration %q unsupported auth_mode %q", i.Name, authMode)
+		}
+		return scimprov.New(cfg), nil
 	case model.AppIntegrationProviderIAM:
 		return iam.New(ctx, i.Name, i.Config.GroupMap, log)
 	default:
@@ -451,6 +485,7 @@ func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp crypto.Ke
 		Config: model.AppIntegrationConfig{
 			BaseURL:   baseURL,
 			TimeoutMS: int(timeout / time.Millisecond),
+			AuthMode:  model.AppIntegrationAuthBearer,
 		},
 		EncryptedToken: encToken,
 		EncryptedDEK:   encDEK,
@@ -545,6 +580,52 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
+// authenticate auth as a client to downstream SCIM endpoints. A single shared
+// cert/key pair is presented for every mtls integration (auth has one IdP
+// identity). Returns nil when no env vars are set; mtls-mode integrations then
+// fail at registry-build time with a clear error.
+//
+//	AUTH_OUTBOUND_TLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
+//	                        once per second across SCIM requests).
+//	AUTH_OUTBOUND_TLS_KEY   Client key PEM path. Required iff CERT is set.
+//	AUTH_OUTBOUND_TLS_CA    Optional CA bundle for verifying downstream servers.
+//	                        Empty falls back to the system root pool.
+func outboundTLSFromEnv() (*tls.Config, error) {
+	certFile := os.Getenv("AUTH_OUTBOUND_TLS_CERT")
+	keyFile := os.Getenv("AUTH_OUTBOUND_TLS_KEY")
+	caFile := os.Getenv("AUTH_OUTBOUND_TLS_CA")
+	if certFile == "" && keyFile == "" && caFile == "" {
+		return nil, nil
+	}
+	if (certFile == "") != (keyFile == "") {
+		return nil, fmt.Errorf("AUTH_OUTBOUND_TLS_CERT and AUTH_OUTBOUND_TLS_KEY must both be set or both unset")
+	}
+	cfg := &tls.Config{}
+	if certFile != "" {
+		// Cheap eager load — surfaces a misconfigured path at startup rather
+		// than at first SCIM request. The CertLoader still serves runtime
+		// requests with hot-reload semantics.
+		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return nil, fmt.Errorf("load outbound client cert pair: %w", err)
+		}
+		loader := tlsutil.NewCertLoader(certFile, keyFile)
+		cfg.GetClientCertificate = loader.GetClientCertificate
+	}
+	if caFile != "" {
+		data, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read AUTH_OUTBOUND_TLS_CA: %w", err)
+		}
+		pool, err := tlsutil.CertPoolFromPEM(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse AUTH_OUTBOUND_TLS_CA: %w", err)
+		}
+		cfg.RootCAs = pool
+	}
+	return cfg, nil
 }
 
 // dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*

@@ -19,6 +19,7 @@
         <tr>
           <th>Name</th>
           <th>Provider</th>
+          <th>Auth</th>
           <th>Status</th>
           <th>Endpoint</th>
           <th>Created</th>
@@ -30,6 +31,7 @@
         <tr>
           <td>{{.Name}}</td>
           <td><span class="badge badge-gray">{{.Provider}}</span></td>
+          <td>{{if eq .Provider "scim"}}{{if eq .Config.AuthMode "mtls"}}<span class="badge badge-gray">mtls</span>{{else}}<span class="badge badge-gray">bearer</span>{{end}}{{else}}<span class="text-muted">—</span>{{end}}</td>
           <td>{{if .Enabled}}<span class="badge badge-blue">Enabled</span>{{else}}<span class="badge badge-gray">Disabled</span>{{end}}</td>
           <td class="text-muted truncate">{{.Config.BaseURL}}</td>
           <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
@@ -43,7 +45,7 @@
           </td>
         </tr>
         {{else}}
-        <tr><td colspan="6" class="text-muted" style="text-align:center;padding:28px">No integrations configured. <a href="/portal/admin/integrations/new">Add one</a> to provision users to a downstream system via SCIM or AWS IAM.</td></tr>
+        <tr><td colspan="7" class="text-muted" style="text-align:center;padding:28px">No integrations configured. <a href="/portal/admin/integrations/new">Add one</a> to provision users to a downstream system via SCIM or AWS IAM.</td></tr>
         {{end}}
       </tbody>
     </table>

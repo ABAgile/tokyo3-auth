@@ -46,8 +46,21 @@ func NewCertLoader(certFile, keyFile string) *CertLoader {
 	return &CertLoader{certFile: certFile, keyFile: keyFile}
 }
 
-// GetCertificate satisfies tls.Config.GetCertificate.
+// GetCertificate satisfies tls.Config.GetCertificate (server-side).
 func (c *CertLoader) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return c.load()
+}
+
+// GetClientCertificate satisfies tls.Config.GetClientCertificate (client-side).
+// Used when auth presents a client cert to a downstream (e.g., mTLS-mode SCIM
+// integrations).
+func (c *CertLoader) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return c.load()
+}
+
+// load returns the cached cert when it's still up-to-date, otherwise re-reads
+// the cert/key pair from disk. The mtime poll is throttled by statInterval.
+func (c *CertLoader) load() (*tls.Certificate, error) {
 	c.mu.RLock()
 	if c.cert != nil && time.Since(c.lastStat) < statInterval {
 		cert := c.cert

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,18 +17,19 @@ import (
 
 // Server holds all dependencies for the HTTP API.
 type Server struct {
-	store      store.Store
-	signer     *internaljwt.Signer
-	policy     *policy.Engine
-	wa         *mfa.WAHandler
-	kp         crypto.KeyProvider
-	provReg    *provision.Registry // outbound user/group provisioning fan-out; may be nil
-	issuer     string
-	masterKey  []byte
-	log        *slog.Logger
-	ssoTmpl    *tmplManager
-	portalTmpl *tmplManager
-	allowReg   bool
+	store       store.Store
+	signer      *internaljwt.Signer
+	policy      *policy.Engine
+	wa          *mfa.WAHandler
+	kp          crypto.KeyProvider
+	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
+	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
+	issuer      string
+	masterKey   []byte
+	log         *slog.Logger
+	ssoTmpl     *tmplManager
+	portalTmpl  *tmplManager
+	allowReg    bool
 }
 
 // Config holds server constructor options.
@@ -38,6 +40,7 @@ type Config struct {
 	WAHandler         *mfa.WAHandler
 	KP                crypto.KeyProvider
 	Provisioners      *provision.Registry
+	OutboundTLS       *tls.Config
 	Issuer            string
 	MasterKey         []byte
 	Log               *slog.Logger
@@ -55,18 +58,19 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("portal template: %w", err)
 	}
 	return &Server{
-		store:      cfg.Store,
-		signer:     cfg.Signer,
-		policy:     cfg.Policy,
-		wa:         cfg.WAHandler,
-		kp:         cfg.KP,
-		provReg:    cfg.Provisioners,
-		issuer:     cfg.Issuer,
-		masterKey:  cfg.MasterKey,
-		log:        cfg.Log,
-		ssoTmpl:    ssoTmpl,
-		portalTmpl: portalTmpl,
-		allowReg:   cfg.AllowRegistration,
+		store:       cfg.Store,
+		signer:      cfg.Signer,
+		policy:      cfg.Policy,
+		wa:          cfg.WAHandler,
+		kp:          cfg.KP,
+		provReg:     cfg.Provisioners,
+		outboundTLS: cfg.OutboundTLS,
+		issuer:      cfg.Issuer,
+		masterKey:   cfg.MasterKey,
+		log:         cfg.Log,
+		ssoTmpl:     ssoTmpl,
+		portalTmpl:  portalTmpl,
+		allowReg:    cfg.AllowRegistration,
 	}, nil
 }
 
@@ -111,22 +115,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v3/user", s.bearerAuth(s.handleGitHubUser))
 	mux.HandleFunc("GET /api/v3/user/emails", s.bearerAuth(s.handleGitHubUserEmails))
 
-	// SCIM v2.0
-	mux.HandleFunc("GET /scim/v2/ServiceProviderConfig", s.handleSCIMServiceProviderConfig)
-	mux.HandleFunc("GET /scim/v2/Schemas", s.handleSCIMSchemas)
-	mux.HandleFunc("GET /scim/v2/Users", s.scimAuth(s.handleSCIMListUsers))
-	mux.HandleFunc("POST /scim/v2/Users", s.scimAuth(s.handleSCIMCreateUser))
-	mux.HandleFunc("GET /scim/v2/Users/{id}", s.scimAuth(s.handleSCIMGetUser))
-	mux.HandleFunc("PUT /scim/v2/Users/{id}", s.scimAuth(s.handleSCIMReplaceUser))
-	mux.HandleFunc("PATCH /scim/v2/Users/{id}", s.scimAuth(s.handleSCIMPatchUser))
-	mux.HandleFunc("DELETE /scim/v2/Users/{id}", s.scimAuth(s.handleSCIMDeleteUser))
-	mux.HandleFunc("GET /scim/v2/Groups", s.scimAuth(s.handleSCIMListGroups))
-	mux.HandleFunc("POST /scim/v2/Groups", s.scimAuth(s.handleSCIMCreateGroup))
-	mux.HandleFunc("GET /scim/v2/Groups/{id}", s.scimAuth(s.handleSCIMGetGroup))
-	mux.HandleFunc("PUT /scim/v2/Groups/{id}", s.scimAuth(s.handleSCIMReplaceGroup))
-	mux.HandleFunc("PATCH /scim/v2/Groups/{id}", s.scimAuth(s.handleSCIMPatchGroup))
-	mux.HandleFunc("DELETE /scim/v2/Groups/{id}", s.scimAuth(s.handleSCIMDeleteGroup))
-
 	// MFA — TOTP
 	mux.HandleFunc("POST /mfa/totp/enroll", s.bearerAuth(s.handleTOTPEnroll))
 	mux.HandleFunc("POST /mfa/totp/confirm", s.bearerAuth(s.handleTOTPConfirm))
@@ -151,9 +139,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/clients/{id}", s.adminAuth(s.handleAdminGetClient))
 	mux.HandleFunc("DELETE /admin/clients/{id}", s.adminAuth(s.handleAdminDeleteClient))
 	mux.HandleFunc("POST /admin/clients/{id}/rotate-secret", s.adminAuth(s.handleAdminRotateClientSecret))
-	mux.HandleFunc("GET /admin/scim-tokens", s.adminAuth(s.handleAdminListSCIMTokens))
-	mux.HandleFunc("POST /admin/scim-tokens", s.adminAuth(s.handleAdminCreateSCIMToken))
-	mux.HandleFunc("DELETE /admin/scim-tokens/{id}", s.adminAuth(s.handleAdminDeleteSCIMToken))
 	mux.HandleFunc("GET /admin/audit", s.adminAuth(s.handleAdminAuditLogs))
 
 	// Portal — login / logout / register
@@ -194,9 +179,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /portal/admin/clients/{id}/edit", s.portalAdminAuth(s.handlePortalAdminClientEdit))
 	mux.HandleFunc("POST /portal/admin/clients/{id}/delete", s.portalAdminAuth(s.handlePortalAdminClientDelete))
 	mux.HandleFunc("POST /portal/admin/clients/{id}/rotate-secret", s.portalAdminAuth(s.handlePortalAdminClientRotate))
-	mux.HandleFunc("GET /portal/admin/scim-tokens", s.portalAdminAuth(s.handlePortalAdminSCIMTokens))
-	mux.HandleFunc("POST /portal/admin/scim-tokens/new", s.portalAdminAuth(s.handlePortalAdminSCIMTokenNew))
-	mux.HandleFunc("POST /portal/admin/scim-tokens/{id}/delete", s.portalAdminAuth(s.handlePortalAdminSCIMTokenDelete))
 	mux.HandleFunc("GET /portal/admin/integrations", s.portalAdminAuth(s.handlePortalAdminIntegrations))
 	mux.HandleFunc("GET /portal/admin/integrations/new", s.portalAdminAuth(s.handlePortalAdminIntegrationNew))
 	mux.HandleFunc("POST /portal/admin/integrations/new", s.portalAdminAuth(s.handlePortalAdminIntegrationNew))

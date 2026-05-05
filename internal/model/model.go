@@ -81,13 +81,6 @@ type WebAuthnCredential struct {
 	LastUsedAt   time.Time
 }
 
-type SCIMToken struct {
-	ID          uuid.UUID
-	TokenHash   string
-	Description string
-	CreatedAt   time.Time
-}
-
 type SCIMGroup struct {
 	ID          uuid.UUID
 	DisplayName string
@@ -125,14 +118,26 @@ const (
 	AppIntegrationProviderIAM  = "aws_iam"
 )
 
+// AppIntegrationAuthMode enumerates the mutually-exclusive ways auth proves
+// itself to a downstream SCIM endpoint. AWS IAM ignores this field — credentials
+// always come from the AWS SDK's default chain.
+const (
+	AppIntegrationAuthBearer = "bearer" // RP-issued bearer token; stored encrypted on the row
+	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTH_OUTBOUND_TLS_* env vars
+)
+
 // AppIntegrationConfig is the non-secret JSON payload persisted alongside an
-// AppIntegration. SCIM providers populate BaseURL + TimeoutMS; AWS IAM uses
-// GroupMap (SCIM display name → IAM group name). Unknown fields for the
-// chosen provider are ignored at runtime.
+// AppIntegration. SCIM providers populate BaseURL + TimeoutMS + AuthMode;
+// AWS IAM uses GroupMap (SCIM display name → IAM group name). Unknown fields
+// for the chosen provider are ignored at runtime.
 type AppIntegrationConfig struct {
 	BaseURL   string            `json:"base_url,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	GroupMap  map[string]string `json:"group_map,omitempty"`
+	// AuthMode applies to SCIM integrations only: "bearer" or "mtls".
+	// Empty defaults to "bearer" for backward compatibility with rows
+	// created before this field was added.
+	AuthMode string `json:"auth_mode,omitempty"`
 }
 
 // AppIntegration is a single outbound provisioning target. Tokens are

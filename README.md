@@ -14,7 +14,7 @@ A minimal self-hosted Identity Provider (IdP) for internal applications.
 
 1. **OAuth2/OIDC** — Authorization Code + PKCE (S256), ID tokens (RS256), JWKS rotation, UserInfo, token revocation.
 2. **GitHub OAuth compatibility** — Drop-in replacement for GitHub OAuth so existing integrations work without code changes.
-3. **SCIM v2.0 + AWS IAM** — Automated user provisioning from your IdP (Okta, Azure AD, etc.) to AWS IAM.
+3. **Outbound provisioning** — auth pushes user/group lifecycle events to downstream systems via SCIM 2.0 (Vault, Okta-as-target, custom REST) and the AWS IAM SDK. Per-integration auth is bearer token *or* mTLS (mutually exclusive).
 4. **PCI-DSS v4.0.1 policy engine** — Pluggable rule engine enforcing password complexity, MFA, lockout, session timeout, and audit logging.
 
 ## Design Concepts
@@ -45,8 +45,8 @@ The `internal/policy` package provides a pluggable `Rule` interface. PCI-DSS v4.
 ### Audit
 Every authentication event writes an `AuditLog` row. Failures are recorded even when the overall operation fails (fail-closed pattern). Structured JSON logs via `log/slog`.
 
-### SCIM→IAM bridge
-SCIM user create/update/deactivate/delete events trigger matching AWS IAM SDK calls. IAM group names are mapped from SCIM group display names via a configurable group map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
+### Outbound provisioning
+Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
 
 ### Crypto
 - Passwords: bcrypt cost 12.
@@ -105,10 +105,13 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTH_AWS_IAM_ENABLED` | No | `false` | Deprecated. Configure AWS IAM via `/portal/admin/integrations` instead. |
-| `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set. |
+| `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
+| `AUTH_OUTBOUND_TLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
+| `AUTH_OUTBOUND_TLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_OUTBOUND_TLS_CERT` is set. |
+| `AUTH_OUTBOUND_TLS_CA` | No | system roots | CA bundle PEM for verifying downstream SCIM servers. |
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
 | `AWS_REGION` | If IAM enabled | — | AWS region |
 | `AWS_ACCESS_KEY_ID` | If IAM enabled | — | AWS credentials (or use instance role) |
@@ -166,19 +169,6 @@ To use an existing GitHub OAuth app with this IdP:
 2. Set the app's Homepage URL to your application
 3. Point `GITHUB_API_URL` / equivalent in your app to this IdP's base URL
 
-### SCIM v2.0
-
-All SCIM endpoints require a Bearer token issued via `POST /admin/scim-tokens`.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/scim/v2/ServiceProviderConfig` | SCIM service provider config |
-| `GET` | `/scim/v2/Schemas` | SCIM schema definitions |
-| `GET/POST` | `/scim/v2/Users` | List / create users |
-| `GET/PUT/PATCH/DELETE` | `/scim/v2/Users/{id}` | Get / replace / patch / delete user |
-| `GET/POST` | `/scim/v2/Groups` | List / create groups |
-| `GET/PUT/PATCH/DELETE` | `/scim/v2/Groups/{id}` | Get / replace / patch / delete group |
-
 ### MFA
 
 | Method | Path | Auth | Description |
@@ -204,8 +194,6 @@ All admin endpoints require a Bearer token belonging to a session with the `admi
 | `GET/POST` | `/admin/clients` | List / create OAuth2 clients |
 | `GET/DELETE` | `/admin/clients/{id}` | Get / delete client |
 | `POST` | `/admin/clients/{id}/rotate-secret` | Rotate client secret |
-| `GET/POST` | `/admin/scim-tokens` | List / create SCIM tokens |
-| `DELETE` | `/admin/scim-tokens/{id}` | Delete SCIM token |
 | `GET` | `/admin/audit` | Query audit logs (`?limit=100&offset=0`) |
 
 ### Portal (Web UI)
@@ -250,10 +238,7 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/integrations/new` | Add a new integration |
 | `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
 | `POST` | `/portal/admin/integrations/{id}/delete` | Remove integration |
-| `POST` | `/portal/admin/integrations/{id}/test` | Probe SCIM ServiceProviderConfig with the stored token |
-| `GET` | `/portal/admin/scim-tokens` | List SCIM tokens |
-| `POST` | `/portal/admin/scim-tokens/new` | Generate SCIM token |
-| `POST` | `/portal/admin/scim-tokens/{id}/delete` | Delete SCIM token |
+| `POST` | `/portal/admin/integrations/{id}/test` | Probe SCIM ServiceProviderConfig using the integration's auth mode |
 | `GET` | `/portal/admin/audit` | Browse audit log (paginated) |
 
 **Role assignment:** Two layers of role management are available:
@@ -310,13 +295,9 @@ Attach a trust policy to your IAM role:
 }
 ```
 
-### SCIM provisioning setup
+### IAM provisioning setup
 
-1. Create a SCIM token: `POST /admin/scim-tokens` (or via `/portal/admin/scim-tokens`).
-2. Configure your IdP (Okta, Azure AD) with:
-   - SCIM base URL: `https://id.example.com/scim/v2`
-   - Authentication: Bearer token from step 1
-3. Add an `aws_iam` integration at `/portal/admin/integrations/new` to enable automatic IAM user creation on SCIM/portal events. Credentials come from the AWS SDK default credential chain on the host running authd.
+Add an `aws_iam` integration at `/portal/admin/integrations/new` to enable automatic IAM user creation when users/groups change in auth (admin API or portal). Credentials come from the AWS SDK default credential chain on the host running authd. SCIM display name → IAM group name mapping is configured per-integration via the `Group mapping` field.
 
 ## Outbound provisioning
 
@@ -330,9 +311,11 @@ Multiple rows of the same provider type are allowed (e.g. `vault-prod` + `vault-
 
 ### Vault SCIM (auth as IdP for vault)
 
-Vault is the canonical example: auth pushes users and groups to vault's SCIM server so vault membership stays in lockstep with auth's identity.
+Vault is the canonical example: auth pushes users and groups to vault's SCIM server so vault membership stays in lockstep with auth's identity. Pick *one* of the two auth modes below — they're mutually exclusive per integration.
 
-**1. Mint a SCIM token in vault** (run on the vault side):
+#### Option A — Bearer token (SaaS-friendly, simplest)
+
+**1. Mint a SCIM token in vault**:
 ```
 POST $VAULT/api/v1/scim/tokens
 Authorization: Bearer <vault server-admin token>
@@ -340,16 +323,29 @@ Authorization: Bearer <vault server-admin token>
 ```
 The response includes the raw token once — store it.
 
-**2. Register vault as an OAuth2 client in auth** (for SSO; see "Vault SSO" below).
-
-**3. Add a Vault SCIM integration** at `/portal/admin/integrations/new`:
+**2. Add a Vault SCIM integration** at `/portal/admin/integrations/new`:
 - Name: `vault` (or any unique identifier; see note above)
 - Provider: `scim`
 - Base URL: `https://vault.example.com/scim/v2`
+- Authentication: `Bearer token`
 - Token: paste the value from step 1
 - Enabled: yes
 
-Click **Test** on the integration row to confirm authd can reach the SCIM endpoint before sending real traffic.
+#### Option B — mTLS (no token bootstrap; cert infra required)
+
+**1. Configure vault** to require client certs on `/scim/v2/*` and allow-list auth's CA + the SAN/CN that identifies authd. Vault verifies the cert at the TLS handshake; no SCIM token needed.
+
+**2. Set the env vars on the authd process**:
+```
+AUTH_OUTBOUND_TLS_CERT=/run/secrets/auth-outbound.crt
+AUTH_OUTBOUND_TLS_KEY=/run/secrets/auth-outbound.key
+AUTH_OUTBOUND_TLS_CA=/run/secrets/downstream-ca.crt   # optional; falls back to system roots
+```
+The cert file is hot-reloaded — pair this with tbot/cert-manager/SPIFFE for automatic rotation.
+
+**3. Add the integration** the same way as Option A, but pick `mTLS (client cert)` for Authentication. The token field disappears; the cert/key/CA come from the env vars above (one shared identity for every mTLS integration).
+
+After either option: register vault as an OAuth2 client (for SSO; see "Vault SSO" below) and click **Test** on the integration row to confirm authd can reach the SCIM endpoint before sending real traffic.
 
 **4. Backfill existing users** (one-time, after first deployment or when recovering from drift):
 ```

@@ -46,17 +46,35 @@
           <input type="number" id="timeout_ms" name="timeout_ms" value="{{if .Integration.Config.TimeoutMS}}{{.Integration.Config.TimeoutMS}}{{end}}" min="0">
         </div>
         <div class="form-group">
-          <label for="token">Bearer token</label>
-          {{if .IsNew}}
-          <input type="password" id="token" name="token" autocomplete="new-password">
-          <div class="text-muted" style="font-size:12px;margin-top:4px">Stored AES-256-GCM-encrypted with the master KEK. Never echoed back.</div>
-          {{else}}
-          <div class="checkbox-row" style="margin-bottom:6px">
-            <input type="checkbox" id="update_token" name="update_token" value="1" onchange="document.getElementById('token').disabled = !this.checked">
-            <label for="update_token" style="margin:0">Replace token</label>
+          <label for="auth_mode">Authentication</label>
+          <select id="auth_mode" name="auth_mode"
+                  onchange="document.querySelectorAll('[data-auth-mode]').forEach(el=>el.style.display=el.dataset.authMode===this.value?'':'none')">
+            <option value="bearer" {{if or (eq .Integration.Config.AuthMode "bearer") (eq .Integration.Config.AuthMode "")}}selected{{end}}>Bearer token</option>
+            <option value="mtls" {{if eq .Integration.Config.AuthMode "mtls"}}selected{{end}}>mTLS (client cert)</option>
+          </select>
+        </div>
+        <div data-auth-mode="bearer" {{if eq .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
+          <div class="form-group">
+            <label for="token">Bearer token</label>
+            {{if .IsNew}}
+            <input type="password" id="token" name="token" autocomplete="new-password">
+            <div class="text-muted" style="font-size:12px;margin-top:4px">Stored AES-256-GCM-encrypted with the master KEK. Never echoed back.</div>
+            {{else}}
+            <div class="checkbox-row" style="margin-bottom:6px">
+              <input type="checkbox" id="update_token" name="update_token" value="1" onchange="document.getElementById('token').disabled = !this.checked">
+              <label for="update_token" style="margin:0">Replace token</label>
+            </div>
+            <input type="password" id="token" name="token" autocomplete="new-password" disabled placeholder="••••••••">
+            {{end}}
           </div>
-          <input type="password" id="token" name="token" autocomplete="new-password" disabled placeholder="••••••••">
-          {{end}}
+        </div>
+        <div data-auth-mode="mtls" {{if ne .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
+          <div class="alert alert-info" style="font-size:13px">
+            mTLS auth uses the client cert/key/CA configured at process level via
+            <code>AUTH_OUTBOUND_TLS_CERT</code>, <code>AUTH_OUTBOUND_TLS_KEY</code>, and
+            <code>AUTH_OUTBOUND_TLS_CA</code> (env vars, not portal-managed). The cert is
+            hot-reloaded; the downstream must allow-list auth's CA + SAN/CN.
+          </div>
         </div>
       </div>
 

@@ -257,69 +257,6 @@ func (s *Server) adminParseClient(w http.ResponseWriter, r *http.Request) (*mode
 	return client, true
 }
 
-// ── SCIM Tokens ───────────────────────────────────────────────────────────────
-
-func (s *Server) handleAdminListSCIMTokens(w http.ResponseWriter, r *http.Request) {
-	tokens, err := s.store.ListSCIMTokens(r.Context())
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "server_error", "list failed")
-		return
-	}
-	views := make([]map[string]any, len(tokens))
-	for i, t := range tokens {
-		views[i] = map[string]any{
-			"id":          t.ID,
-			"description": t.Description,
-			"created_at":  t.CreatedAt,
-		}
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"scim_tokens": views})
-}
-
-func (s *Server) handleAdminCreateSCIMToken(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Description string `json:"description"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	rawToken, err := auth.GenerateRawToken()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "server_error", "generation failed")
-		return
-	}
-	t := &model.SCIMToken{
-		ID:          uuid.New(),
-		TokenHash:   auth.HashToken(rawToken),
-		Description: req.Description,
-	}
-	if err := s.store.CreateSCIMToken(r.Context(), t); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
-		return
-	}
-	s.writeJSON(w, http.StatusCreated, map[string]any{
-		"id":          t.ID,
-		"token":       rawToken, // shown once
-		"description": t.Description,
-		"created_at":  t.CreatedAt,
-	})
-}
-
-func (s *Server) handleAdminDeleteSCIMToken(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "invalid_request", "invalid token id")
-		return
-	}
-	if err := s.store.DeleteSCIMToken(r.Context(), id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			s.writeError(w, http.StatusNotFound, "not_found", "token not found")
-			return
-		}
-		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {

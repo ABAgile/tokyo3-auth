@@ -74,28 +74,6 @@ func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// scimAuth validates the SCIM bearer token.
-func (s *Server) scimAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if raw == "" {
-			writeSCIMError(w, http.StatusUnauthorized, "missing token")
-			return
-		}
-		_, err := s.store.GetSCIMTokenByHash(r.Context(), auth.HashToken(raw))
-		if errors.Is(err, store.ErrNotFound) {
-			writeSCIMError(w, http.StatusUnauthorized, "invalid token")
-			return
-		}
-		if err != nil {
-			s.log.Error("scim auth", "err", err)
-			writeSCIMError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		next(w, r)
-	}
-}
-
 func containsStr(ss []string, target string) bool {
 	for _, s := range ss {
 		if strings.EqualFold(s, target) {

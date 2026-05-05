@@ -13,6 +13,7 @@ package scim
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,10 +63,15 @@ type Config struct {
 	Name string
 	// BaseURL is vault's SCIM root, e.g. https://vault.example.com/scim/v2.
 	BaseURL string
-	// Token is the bearer credential issued by vault.
+	// Token is the bearer credential issued by the downstream. Leave empty
+	// when authenticating via mTLS (TLSConfig must then be non-nil).
 	Token string
 	// Timeout is the per-request HTTP timeout (default 10s).
 	Timeout time.Duration
+	// TLSConfig is used as the HTTP transport's TLSClientConfig when non-nil.
+	// In mTLS mode it carries GetClientCertificate (hot-reloading) and an
+	// optional RootCAs bundle. nil = stdlib defaults (system roots, no client cert).
+	TLSConfig *tls.Config
 	// Store is the auth-side cache for downstream UUIDs.
 	Store IDStore
 	// Log receives non-fatal warnings (cache write failures, member resolution).
@@ -98,12 +104,16 @@ func New(cfg Config) *Provisioner {
 	if name == "" {
 		name = "vault-scim"
 	}
+	client := &http.Client{Timeout: timeout}
+	if cfg.TLSConfig != nil {
+		client.Transport = &http.Transport{TLSClientConfig: cfg.TLSConfig}
+	}
 	return &Provisioner{
 		provider: provider,
 		name:     name,
 		baseURL:  strings.TrimRight(cfg.BaseURL, "/"),
 		token:    cfg.Token,
-		client:   &http.Client{Timeout: timeout},
+		client:   client,
 		store:    cfg.Store,
 		log:      cfg.Log,
 	}
@@ -383,7 +393,9 @@ func (p *Provisioner) do(ctx context.Context, method, path string, body, out any
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	if p.token != "" {
+		req.Header.Set("Authorization", "Bearer "+p.token)
+	}
 	req.Header.Set("Accept", contentTypeSCIM)
 	if body != nil {
 		req.Header.Set("Content-Type", contentTypeSCIM)

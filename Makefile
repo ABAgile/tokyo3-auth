@@ -137,6 +137,9 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    AUTH_DB_KEY=certs/authd-app-db-client.key \
 	    AUTH_DB_CA=$$CA_PEM \
 	    AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
+	    AUTH_OUTBOUND_TLS_CERT=certs/authd-scim-client.crt \
+	    AUTH_OUTBOUND_TLS_KEY=certs/authd-scim-client.key \
+	    AUTH_OUTBOUND_TLS_CA=$$CA_PEM \
 	    $(AUTHD_BIN) serve
 
 ## keygen: Print a fresh random master key

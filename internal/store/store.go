@@ -18,7 +18,6 @@ type Store interface {
 	GrantStore
 	SessionStore
 	MFAStore
-	SCIMTokenStore
 	GroupStore
 	SigningKeyStore
 	AuditStore
@@ -85,13 +84,6 @@ type MFAStore interface {
 	CreateWebAuthnSession(ctx context.Context, userID uuid.UUID, data []byte, purpose string) (uuid.UUID, error)
 	GetWebAuthnSession(ctx context.Context, id uuid.UUID, userID uuid.UUID, purpose string) ([]byte, error)
 	DeleteWebAuthnSession(ctx context.Context, id uuid.UUID) error
-}
-
-type SCIMTokenStore interface {
-	CreateSCIMToken(ctx context.Context, t *model.SCIMToken) error
-	GetSCIMTokenByHash(ctx context.Context, hash string) (*model.SCIMToken, error)
-	ListSCIMTokens(ctx context.Context) ([]*model.SCIMToken, error)
-	DeleteSCIMToken(ctx context.Context, id uuid.UUID) error
 }
 
 type GroupStore interface {

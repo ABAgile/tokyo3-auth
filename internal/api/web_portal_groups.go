@@ -89,7 +89,7 @@ func (s *Server) handlePortalAdminGroupNew(w http.ResponseWriter, r *http.Reques
 			s.log.Error("set group members", "err", err)
 		}
 	}
-	s.logAudit(r, ActionSCIMGroupCreated, &pc.User.ID, nil,
+	s.logAudit(r, ActionGroupCreated, &pc.User.ID, nil,
 		logMeta("name", displayName, "members", len(memberIDs)))
 
 	g.Members = memberIDs
@@ -143,7 +143,7 @@ func (s *Server) handlePortalAdminGroupEdit(w http.ResponseWriter, r *http.Reque
 	if err := s.store.ReplaceGroupMembers(r.Context(), id, memberIDs); err != nil {
 		s.log.Error("replace group members", "err", err)
 	}
-	s.logAudit(r, ActionSCIMGroupUpdated, &pc.User.ID, nil,
+	s.logAudit(r, ActionGroupUpdated, &pc.User.ID, nil,
 		logMeta("name", displayName, "members", len(memberIDs)))
 
 	g.DisplayName = displayName
@@ -169,7 +169,7 @@ func (s *Server) handlePortalAdminGroupDelete(w http.ResponseWriter, r *http.Req
 		http.Redirect(w, r, "/portal/admin/groups?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionSCIMGroupDeleted, &pc.User.ID, nil,
+	s.logAudit(r, ActionGroupDeleted, &pc.User.ID, nil,
 		logMeta("name", g.DisplayName))
 	s.provisionGroup(r, provision.OpDelete, g, nil)
 	http.Redirect(w, r, "/portal/admin/groups?success=Group+deleted.", http.StatusFound)

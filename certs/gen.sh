@@ -83,6 +83,14 @@ mkc_server "db-server"     db     db.localhost    localhost  127.0.0.1
 mkc_client "authd-admin-db-client"  "$ADMIN_USERNAME"  authd
 mkc_client "authd-app-db-client"    "$APP_USERNAME"    authd
 
+# ── Client cert — outbound SCIM provisioning ─────────────────────────────────
+# Used by AUTH_OUTBOUND_TLS_CERT/KEY when an app_integrations row is in mTLS
+# mode. CN=authd is the stable identity downstreams allow-list as "the IdP";
+# SANs are advisory (servers don't validate client-cert hostnames). Same root
+# CA as everything else, so a downstream that already trusts the mkcert CA for
+# its own server cert will accept this client cert with no extra config.
+mkc_client "authd-scim-client"  authd  auth.localhost
+
 echo ""
 echo "leaf certs written to certs/"
 echo "CA: $CAROOT/rootCA.pem (mkcert root, trusted via mkcert -install)"

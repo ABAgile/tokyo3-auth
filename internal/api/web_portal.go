@@ -1053,56 +1053,6 @@ func (s *Server) handlePortalAdminClientRotate(w http.ResponseWriter, r *http.Re
 	http.Redirect(w, r, "/portal/admin/clients?success=Secret+rotated.&secret="+rawSecret, http.StatusFound)
 }
 
-// ── Admin — SCIM Tokens ───────────────────────────────────────────────────────
-
-func (s *Server) handlePortalAdminSCIMTokens(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-	tokens, _ := s.store.ListSCIMTokens(r.Context())
-	s.portalTmpl.render(w, "portal_admin_scim_tokens.html", struct {
-		portalBase
-		Tokens   []*model.SCIMToken
-		NewToken string
-		Error    string
-	}{newPortalBase(pc, "admin-scim"), tokens, r.URL.Query().Get("token"), r.URL.Query().Get("error")})
-}
-
-func (s *Server) handlePortalAdminSCIMTokenNew(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-	_ = r.ParseForm()
-	description := strings.TrimSpace(r.FormValue("description"))
-	rawToken, err := auth.GenerateRawToken()
-	if err != nil {
-		http.Redirect(w, r, "/portal/admin/scim-tokens?error=generation+failed", http.StatusFound)
-		return
-	}
-	t := &model.SCIMToken{
-		ID:          uuid.New(),
-		TokenHash:   auth.HashToken(rawToken),
-		Description: description,
-	}
-	if err := s.store.CreateSCIMToken(r.Context(), t); err != nil {
-		http.Redirect(w, r, "/portal/admin/scim-tokens?error=create+failed", http.StatusFound)
-		return
-	}
-	s.logAudit(r, ActionLogin, &pc.User.ID, nil, logMeta("action", "scim_token_created"))
-	http.Redirect(w, r, "/portal/admin/scim-tokens?token="+rawToken, http.StatusFound)
-}
-
-func (s *Server) handlePortalAdminSCIMTokenDelete(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		http.Redirect(w, r, "/portal/admin/scim-tokens?error=invalid+id", http.StatusFound)
-		return
-	}
-	if err := s.store.DeleteSCIMToken(r.Context(), id); err != nil {
-		http.Redirect(w, r, "/portal/admin/scim-tokens?error=delete+failed", http.StatusFound)
-		return
-	}
-	s.logAudit(r, ActionLogin, &pc.User.ID, nil, logMeta("action", "scim_token_deleted", "id", id))
-	http.Redirect(w, r, "/portal/admin/scim-tokens", http.StatusFound)
-}
-
 // ── Admin — Audit Log ─────────────────────────────────────────────────────────
 
 func (s *Server) handlePortalAdminAudit(w http.ResponseWriter, r *http.Request) {
