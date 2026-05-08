@@ -43,7 +43,26 @@ The `internal/policy` package provides a pluggable `Rule` interface. PCI-DSS v4.
 - **WebAuthn/FIDO2**: `go-webauthn/webauthn` library. Supports biometric devices and YubiKeys. Session data stored in DB with 5-minute TTL.
 
 ### Audit
-Every authentication event writes an `AuditLog` row. Failures are recorded even when the overall operation fails (fail-closed pattern). Structured JSON logs via `log/slog`.
+Every authentication event writes an `AuditLog` row in the local auth DB and is published to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). Failures are recorded even when the overall operation fails (fail-closed pattern). Structured JSON logs via `log/slog`.
+
+The JetStream stream is the authoritative, tamper-resistant record (FileStorage, DenyDelete, DenyPurge, 13-month retention floor for PCI-DSS 10.5). A separate `auth-audit` binary subscribes to the stream and projects events into a dedicated audit Postgres database — the auth process cannot read or mutate this projection.
+
+| Identity | Subject perms | DB perms |
+| --- | --- | --- |
+| `authd-nats-client` (publisher) | PUBLISH `auth.audit.events` | (n/a) |
+| `auth-audit-nats-client` (consumer) | SUBSCRIBE + consumer mgmt | (n/a) |
+| `auth-audit-db-client` | (n/a) | DDL + INSERT + SELECT on `auth_audit.audit_logs` |
+
+Operating the pipeline:
+
+```
+make docker-up                              # nats + natsbox + audit-db + auth-audit + auth all wired up
+docker compose exec natsbox nats stream info auth_audit
+docker compose exec natsbox nats sub 'auth.audit.events'
+docker compose exec auth-audit auth-audit query --action auth.login --limit 20
+```
+
+Required env vars on `authd` to enable JetStream publishing: `AUTH_NATS_URL`, plus `AUTH_NATS_CERT/KEY/CA` for mTLS. With `AUTH_NATS_URL` unset, audit publishing is disabled and only the local DB write happens (still fine for dev).
 
 ### Outbound provisioning
 Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.

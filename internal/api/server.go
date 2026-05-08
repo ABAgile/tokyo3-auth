@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/abagile/tokyo3-auth/internal/audit"
 	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
@@ -24,6 +25,7 @@ type Server struct {
 	kp          crypto.KeyProvider
 	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
 	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
+	audit       audit.Sink          // JetStream publisher; NoopSink when AUTH_NATS_URL is unset
 	issuer      string
 	masterKey   []byte
 	log         *slog.Logger
@@ -41,6 +43,7 @@ type Config struct {
 	KP                crypto.KeyProvider
 	Provisioners      *provision.Registry
 	OutboundTLS       *tls.Config
+	Audit             audit.Sink
 	Issuer            string
 	MasterKey         []byte
 	Log               *slog.Logger
@@ -57,6 +60,10 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("portal template: %w", err)
 	}
+	auditSink := cfg.Audit
+	if auditSink == nil {
+		auditSink = audit.NoopSink{}
+	}
 	return &Server{
 		store:       cfg.Store,
 		signer:      cfg.Signer,
@@ -65,6 +72,7 @@ func New(cfg Config) (*Server, error) {
 		kp:          cfg.KP,
 		provReg:     cfg.Provisioners,
 		outboundTLS: cfg.OutboundTLS,
+		audit:       auditSink,
 		issuer:      cfg.Issuer,
 		masterKey:   cfg.MasterKey,
 		log:         cfg.Log,

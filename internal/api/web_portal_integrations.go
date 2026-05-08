@@ -54,7 +54,7 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 	pc := portalFromCtx(r)
 	if r.Method == http.MethodGet {
 		s.portalTmpl.render(w, "portal_admin_integration_edit.html", integrationFormView{
-			portalBase:  newPortalBase(pc, "admin-integrations"),
+			portalBase: newPortalBase(pc, "admin-integrations"),
 			Integration: &model.AppIntegration{
 				Enabled:  true,
 				Provider: model.AppIntegrationProviderSCIM,

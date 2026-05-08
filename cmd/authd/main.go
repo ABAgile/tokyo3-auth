@@ -40,6 +40,14 @@
 //	AUTH_OUTBOUND_TLS_CA    Optional CA bundle for verifying downstream servers.
 //	                        Empty falls back to the system root pool. A single
 //	                        cert/key pair is shared across every mTLS integration.
+//
+// Audit log shipping (publishes events to NATS JetStream stream "auth_audit"):
+//
+//	AUTH_NATS_URL    NATS server URL (e.g. nats://nats:4222 or tls://nats:4222).
+//	                 Empty disables JetStream publishing (NoopSink).
+//	AUTH_NATS_CERT   Publisher client certificate PEM path (mTLS).
+//	AUTH_NATS_KEY    Publisher client key PEM path. Required iff AUTH_NATS_CERT is set.
+//	AUTH_NATS_CA     CA certificate PEM path for verifying the NATS server cert.
 package main
 
 import (
@@ -56,6 +64,7 @@ import (
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/api"
+	"github.com/abagile/tokyo3-auth/internal/audit"
 	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
@@ -120,6 +129,11 @@ func runServe() error {
 	if err != nil {
 		return fmt.Errorf("outbound TLS: %w", err)
 	}
+	auditSink, err := openAuditSink(log)
+	if err != nil {
+		return fmt.Errorf("audit sink: %w", err)
+	}
+	defer auditSink.Close()
 
 	// Run migrations with the admin DSN, then open the runtime connection.
 	if adminDBTLS != nil {
@@ -174,6 +188,7 @@ func runServe() error {
 		KP:                kp,
 		Provisioners:      provReg,
 		OutboundTLS:       outboundTLS,
+		Audit:             auditSink,
 		Issuer:            issuer,
 		MasterKey:         masterKey,
 		Log:               log,
@@ -626,6 +641,40 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 		cfg.RootCAs = pool
 	}
 	return cfg, nil
+}
+
+// openAuditSink builds the JetStream publisher Sink from AUTH_NATS_URL and
+// the AUTH_NATS_CERT/KEY/CA env vars. When AUTH_NATS_URL is empty, returns
+// audit.NoopSink — keeps the dev/no-NATS path working without a broker.
+//
+//	AUTH_NATS_URL    NATS server URL. Empty disables JetStream publishing.
+//	AUTH_NATS_CERT   Publisher client cert PEM path (mTLS).
+//	AUTH_NATS_KEY    Publisher client key PEM. Required iff AUTH_NATS_CERT set.
+//	AUTH_NATS_CA     CA bundle for verifying the NATS server cert.
+func openAuditSink(log *slog.Logger) (audit.Sink, error) {
+	url := os.Getenv("AUTH_NATS_URL")
+	if url == "" {
+		log.Info("audit sink: noop (AUTH_NATS_URL not set)")
+		return audit.NoopSink{}, nil
+	}
+	tlsCfg, err := tlsutil.FromFiles(
+		os.Getenv("AUTH_NATS_CERT"),
+		os.Getenv("AUTH_NATS_KEY"),
+		os.Getenv("AUTH_NATS_CA"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("nats publisher TLS: %w", err)
+	}
+	if tlsCfg != nil {
+		log.Info("audit sink: jetstream with mTLS", "url", url)
+	} else {
+		log.Warn("audit sink: jetstream without mTLS (not for production)", "url", url)
+	}
+	sink, err := audit.NewJetStreamSink(url, tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	return sink, nil
 }
 
 // dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*

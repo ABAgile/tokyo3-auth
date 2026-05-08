@@ -1,18 +1,20 @@
-# docker-compose.yml — sample deployment: authd + Postgres
+# docker-compose.yml — sample deployment: authd + Postgres + NATS JetStream + auth-audit
 #
-# This sample wires the auth service to Postgres without inter-service mTLS.
+# This sample wires all four components together without inter-service mTLS.
 # For a production-style hardened deployment with TLS on every hop, layer the
 # mTLS overlay on top:
 #     docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d
 #
 # Required env vars (set in shell or .env file):
-#   AUTH_MASTER_KEY       64-char hex key  (authd keygen)
-#   AUTH_ADMIN_PASSWORD   admin DB password (DDL owner, runs migrations)
-#   AUTH_APP_PASSWORD     app DB password (DML-only)
+#   AUTH_MASTER_KEY          64-char hex key  (authd keygen)
+#   AUTH_ADMIN_PASSWORD      auth DB admin password (DDL owner, runs migrations)
+#   AUTH_APP_PASSWORD        auth DB app password   (DML-only)
+#   AUTH_AUDIT_DB_PASSWORD   audit DB password (audit owner)
 #
-# Optional (usernames default to auth_admin / auth_app):
-#   AUTH_ADMIN_DB_USERNAME  admin role username (default: auth_admin)
-#   AUTH_APP_USERNAME       app role username   (default: auth_app)
+# Optional (usernames default to auth_admin / auth_app / auth_audit):
+#   AUTH_ADMIN_DB_USERNAME   auth DB admin username  (default: auth_admin)
+#   AUTH_APP_USERNAME        auth DB app username    (default: auth_app)
+#   AUTH_AUDIT_DB_USERNAME   audit DB username       (default: auth_audit)
 #
 # Note: DB credentials and usernames above are only applied on first startup when
 # the data volume is empty (postgres initdb). Changing them after the volume is
@@ -45,6 +47,80 @@ services:
       retries: 10
       start_period: 10s
 
+  # ── Dedicated audit database (separate from the main auth DB) ─────────────
+  audit-db:
+    image: postgres:17-alpine
+    entrypoint: ["sh", "/shared/pg-scripts/pg-entrypoint.sh"]
+    ports:
+      - "${AUTH_AUDIT_DB_PORT:-5435}:5432"
+    environment:
+      PG_INIT_SCRIPT:    /shared/pg-scripts/audit-db-init.sh
+      POSTGRES_USER:     ${AUTH_AUDIT_DB_USERNAME:-auth_audit}
+      POSTGRES_PASSWORD: ${AUTH_AUDIT_DB_PASSWORD:?AUTH_AUDIT_DB_PASSWORD is required}
+      POSTGRES_DB:       auth_audit
+    volumes:
+      - shared-data:/shared:ro
+      - audit-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_AUDIT_DB_USERNAME:-auth_audit} -d auth_audit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── NATS JetStream (authoritative audit event stream) ─────────────────────
+  nats:
+    image: nats:2-alpine
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── nats-box: stream provisioner + interactive shell ──────────────────────
+  # On startup, ensures the auth_audit JetStream stream exists. Without this
+  # step, authd's first audit publish would fail (no stream covers the subject)
+  # and every audit-emitting handler would log a publish error until auth-audit
+  # ran and created the stream. Provisioning it here keeps authd's publisher
+  # credential PUBLISH-only and prevents event loss when auth-audit is offline.
+  #
+  # After provisioning the container stays alive (tail -f /dev/null) so you can:
+  #   docker compose exec natsbox nats stream info auth_audit
+  #   docker compose exec natsbox nats sub 'auth.audit.events'
+  natsbox:
+    image: natsio/nats-box:latest
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://nats:4222
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        nats stream info auth_audit > /dev/null 2>&1 || \
+          nats stream add auth_audit \
+            --subjects 'auth.audit.events' \
+            --retention limits \
+            --storage file \
+            --max-age 9600h \
+            --deny-delete \
+            --deny-purge \
+            --defaults
+        exec tail -f /dev/null
+    healthcheck:
+      test: ["CMD-SHELL", "nats stream info auth_audit > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   # ── API server ────────────────────────────────────────────────────────────
   # Exposes HTTPS on ${AUTH_PORT:-8443}. Browse https://localhost:8443; use
   # mkcert (via certs/gen.sh) to issue a browser-trusted server cert.
@@ -53,6 +129,10 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      natsbox:
         condition: service_healthy
     ports:
       - "${AUTH_PORT:-8443}:8443"
@@ -70,6 +150,8 @@ services:
       AWS_REGION: ${AWS_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Audit sink: publish events to NATS JetStream.
+      AUTH_NATS_URL: nats://nats:4222
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/health || exit 1"]
       interval: 10s
@@ -77,6 +159,26 @@ services:
       retries: 5
       start_period: 15s
 
+  # ── auth-audit: NATS → audit DB projection writer ─────────────────────────
+  auth-audit:
+    image: ${IMAGE_NAME:-abagile/tokyo3-auth}:${IMAGE_TAG:-latest}
+    build: .
+    entrypoint: ["/usr/local/bin/auth-audit", "consume"]
+    environment:
+      AUTH_AUDIT_NATS_URL:     nats://nats:4222
+      # Single DSN: auth_audit owner has DDL + INSERT + SELECT rights.
+      AUTH_AUDIT_DATABASE_URL: postgres://${AUTH_AUDIT_DB_USERNAME:-auth_audit}:${AUTH_AUDIT_DB_PASSWORD}@audit-db:5432/auth_audit?sslmode=disable
+    depends_on:
+      audit-db:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      natsbox:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   shared-data:
   db_data:
+  audit-db-data:
+  nats-data:
