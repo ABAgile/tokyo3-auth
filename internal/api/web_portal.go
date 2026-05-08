@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
-	icrypto "github.com/abagile/tokyo3-auth/internal/crypto"
 	iMFA "github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 )
 
@@ -97,7 +97,7 @@ func (s *Server) portalAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
 		}
-		raw, err := icrypto.OpenBytes(s.masterKey, enc)
+		raw, err := bcrypto.Open(s.masterKey, enc)
 		if err != nil {
 			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
@@ -141,7 +141,7 @@ func (s *Server) portalAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 // ── Cookie helpers ────────────────────────────────────────────────────────────
 
 func (s *Server) setPortalCookie(w http.ResponseWriter, rawToken string, ttl time.Duration, name string) error {
-	enc, err := icrypto.SealBytes(s.masterKey, []byte(rawToken))
+	enc, err := bcrypto.Seal(s.masterKey, []byte(rawToken))
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ type portalLoginState struct {
 
 func (s *Server) setPortalLoginCookie(w http.ResponseWriter, userID uuid.UUID) error {
 	data, _ := json.Marshal(portalLoginState{UserID: userID, Exp: time.Now().Add(portalLoginCookieTTL)})
-	enc, err := icrypto.SealBytes(s.masterKey, data)
+	enc, err := bcrypto.Seal(s.masterKey, data)
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func (s *Server) getPortalLoginCookie(r *http.Request) (*portalLoginState, error
 	if err != nil {
 		return nil, err
 	}
-	raw, err := icrypto.OpenBytes(s.masterKey, enc)
+	raw, err := bcrypto.Open(s.masterKey, enc)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ type totpPending struct {
 
 func (s *Server) setTOTPPendingCookie(w http.ResponseWriter, uri, secret string) error {
 	data, _ := json.Marshal(totpPending{OTPURI: uri, Secret: secret, Exp: time.Now().Add(10 * time.Minute)})
-	enc, err := icrypto.SealBytes(s.masterKey, data)
+	enc, err := bcrypto.Seal(s.masterKey, data)
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func (s *Server) getTOTPPendingCookie(r *http.Request) *totpPending {
 	if err != nil {
 		return nil
 	}
-	raw, err := icrypto.OpenBytes(s.masterKey, enc)
+	raw, err := bcrypto.Open(s.masterKey, enc)
 	if err != nil {
 		return nil
 	}

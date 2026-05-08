@@ -7,19 +7,23 @@ import (
 	"time"
 )
 
-// TestNoopSink_Log tests that NoopSink.Log always returns nil.
-func TestNoopSink_Log(t *testing.T) {
-	s := NoopSink{}
-	err := s.Log(context.Background(), Entry{ID: "e1", Action: "test.action", OccurredAt: time.Now()})
+// TestNoopSink_Append confirms the shared NoopSink discards events without
+// error — the contract the dev / no-NATS path relies on.
+func TestNoopSink_Append(t *testing.T) {
+	err := NoopSink.Append(context.Background(), Entry{
+		ID:         "e1",
+		Action:     "test.action",
+		OccurredAt: time.Now(),
+	})
 	if err != nil {
-		t.Errorf("Log returned non-nil error: %v", err)
+		t.Errorf("Append returned non-nil error: %v", err)
 	}
 }
 
-// TestNoopSink_Close tests that NoopSink.Close always returns nil.
+// TestNoopSink_Close ensures Close is callable on the shared NoopSink (dev
+// shutdown path defers it).
 func TestNoopSink_Close(t *testing.T) {
-	s := NoopSink{}
-	if err := s.Close(); err != nil {
+	if err := NoopSink.Close(); err != nil {
 		t.Errorf("Close returned non-nil error: %v", err)
 	}
 }

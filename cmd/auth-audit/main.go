@@ -38,7 +38,9 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/audit"
 	auditpg "github.com/abagile/tokyo3-auth/internal/audit/postgres"
 	auditsqlite "github.com/abagile/tokyo3-auth/internal/audit/sqlite"
-	"github.com/abagile/tokyo3-auth/internal/tlsutil"
+	"github.com/abagile/tokyo3-base/applog"
+	bnats "github.com/abagile/tokyo3-base/nats"
+	btls "github.com/abagile/tokyo3-base/tls"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
@@ -47,7 +49,7 @@ import (
 const consumerName = "audit-db-writer"
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log, _ := applog.AppLogger("auth-audit", applog.WithStdout())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -73,7 +75,7 @@ func main() {
 // explicit path (query command) or a fallback (consume command).
 func openAuditDB(log *slog.Logger, defaultPath string) (audit.Store, error) {
 	if dsn := os.Getenv("AUTH_AUDIT_DATABASE_URL"); dsn != "" {
-		tlsCfg, err := tlsutil.FromFiles(
+		tlsCfg, err := btls.FromFiles(
 			os.Getenv("AUTH_AUDIT_DB_CERT"),
 			os.Getenv("AUTH_AUDIT_DB_KEY"),
 			os.Getenv("AUTH_AUDIT_DB_CA"),
@@ -241,22 +243,15 @@ func connectConsumerNATS(log *slog.Logger) (*nats.Conn, error) {
 	if url == "" {
 		return nil, fmt.Errorf("AUTH_AUDIT_NATS_URL is required for consume")
 	}
-	tlsCfg, err := tlsutil.FromFiles(
-		os.Getenv("AUTH_AUDIT_NATS_CERT"),
-		os.Getenv("AUTH_AUDIT_NATS_KEY"),
-		os.Getenv("AUTH_AUDIT_NATS_CA"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("nats consumer TLS: %w", err)
-	}
-	var opts []nats.Option
-	if tlsCfg != nil {
+	certFile := os.Getenv("AUTH_AUDIT_NATS_CERT")
+	keyFile := os.Getenv("AUTH_AUDIT_NATS_KEY")
+	caFile := os.Getenv("AUTH_AUDIT_NATS_CA")
+	if certFile != "" {
 		log.Info("consume: NATS mTLS enabled", "url", url)
-		opts = append(opts, nats.Secure(tlsCfg))
 	} else {
 		log.Warn("consume: AUTH_AUDIT_NATS_CERT not set — connecting without mTLS (not for production)")
 	}
-	return nats.Connect(url, opts...)
+	return bnats.Dial(url, certFile, keyFile, caFile)
 }
 
 // ── query ─────────────────────────────────────────────────────────────────────
@@ -284,7 +279,7 @@ func runQuery(ctx context.Context, userID, clientID, action string, limit int) e
 		return fmt.Errorf("--limit must be between 1 and 500")
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log, _ := applog.AppLogger("auth-audit", applog.WithStdout())
 	db, err := openAuditDB(log, "")
 	if err != nil {
 		return fmt.Errorf("open audit db: %w", err)

@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	gojwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -41,7 +41,7 @@ type Signer struct {
 
 // LoadOrCreate loads the active signing key from the store, decrypts it,
 // and returns a Signer. If no active key exists, it generates a new one.
-func LoadOrCreate(ctx context.Context, st store.SigningKeyStore, kp crypto.KeyProvider, issuer string) (*Signer, error) {
+func LoadOrCreate(ctx context.Context, st store.SigningKeyStore, kp bcrypto.KeyProvider, issuer string) (*Signer, error) {
 	k, err := st.GetActiveSigningKey(ctx)
 	if err == nil {
 		return decryptKey(ctx, k, kp, issuer)
@@ -52,8 +52,8 @@ func LoadOrCreate(ctx context.Context, st store.SigningKeyStore, kp crypto.KeyPr
 	return generateAndStore(ctx, st, kp, issuer)
 }
 
-func decryptKey(ctx context.Context, k *model.SigningKey, kp crypto.KeyProvider, issuer string) (*Signer, error) {
-	der, err := crypto.DecryptSecret(ctx, kp, k.EncryptedDEK, k.EncryptedPrivateKey)
+func decryptKey(ctx context.Context, k *model.SigningKey, kp bcrypto.KeyProvider, issuer string) (*Signer, error) {
+	der, err := bcrypto.DecryptEnvelope(ctx, kp, k.EncryptedDEK, k.EncryptedPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt signing key: %w", err)
 	}
@@ -68,7 +68,7 @@ func decryptKey(ctx context.Context, k *model.SigningKey, kp crypto.KeyProvider,
 	return &Signer{privateKey: rsaKey, kid: k.KID, issuer: issuer}, nil
 }
 
-func generateAndStore(ctx context.Context, st store.SigningKeyStore, kp crypto.KeyProvider, issuer string) (*Signer, error) {
+func generateAndStore(ctx context.Context, st store.SigningKeyStore, kp bcrypto.KeyProvider, issuer string) (*Signer, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
 	if err != nil {
 		return nil, fmt.Errorf("generate RSA key: %w", err)
@@ -77,7 +77,7 @@ func generateAndStore(ctx context.Context, st store.SigningKeyStore, kp crypto.K
 	if err != nil {
 		return nil, fmt.Errorf("marshal private key: %w", err)
 	}
-	encVal, encDEK, err := crypto.EncryptSecret(ctx, kp, der)
+	encVal, encDEK, err := bcrypto.EncryptEnvelope(ctx, kp, der)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt signing key: %w", err)
 	}

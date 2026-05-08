@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 )
 
@@ -534,7 +534,7 @@ func (s *Server) setAuthStateCookie(w http.ResponseWriter, st *authState) error 
 	if err != nil {
 		return err
 	}
-	enc, err := crypto.SealBytes(s.masterKey, data)
+	enc, err := bcrypto.Seal(s.masterKey, data)
 	if err != nil {
 		return err
 	}
@@ -554,7 +554,7 @@ func (s *Server) getAuthStateCookie(r *http.Request) (*authState, error) {
 	if err != nil {
 		return nil, err
 	}
-	plain, err := crypto.OpenBytes(s.masterKey, enc)
+	plain, err := bcrypto.Open(s.masterKey, enc)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt auth state: %w", err)
 	}

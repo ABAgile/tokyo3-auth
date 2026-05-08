@@ -8,12 +8,12 @@ import (
 	"net/http"
 
 	"github.com/abagile/tokyo3-auth/internal/audit"
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -22,7 +22,7 @@ type Server struct {
 	signer      *internaljwt.Signer
 	policy      *policy.Engine
 	wa          *mfa.WAHandler
-	kp          crypto.KeyProvider
+	kp          bcrypto.KeyProvider
 	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
 	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
 	audit       audit.Sink          // JetStream publisher; NoopSink when AUTH_NATS_URL is unset
@@ -40,7 +40,7 @@ type Config struct {
 	Signer            *internaljwt.Signer
 	Policy            *policy.Engine
 	WAHandler         *mfa.WAHandler
-	KP                crypto.KeyProvider
+	KP                bcrypto.KeyProvider
 	Provisioners      *provision.Registry
 	OutboundTLS       *tls.Config
 	Audit             audit.Sink
@@ -62,7 +62,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	auditSink := cfg.Audit
 	if auditSink == nil {
-		auditSink = audit.NoopSink{}
+		auditSink = audit.NoopSink
 	}
 	return &Server{
 		store:       cfg.Store,

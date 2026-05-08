@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 )
 
 // JWK is a JSON Web Key (RFC 7517) for an RSA public key.
@@ -29,7 +29,7 @@ type JWKS struct {
 }
 
 // BuildJWKS loads all active signing keys and returns the key set.
-func BuildJWKS(ctx context.Context, st store.SigningKeyStore, kp crypto.KeyProvider) (*JWKS, error) {
+func BuildJWKS(ctx context.Context, st store.SigningKeyStore, kp bcrypto.KeyProvider) (*JWKS, error) {
 	keys, err := st.ListActiveSigningKeys(ctx)
 	if err != nil {
 		return nil, err
@@ -45,8 +45,8 @@ func BuildJWKS(ctx context.Context, st store.SigningKeyStore, kp crypto.KeyProvi
 	return set, nil
 }
 
-func keyToJWK(ctx context.Context, k *model.SigningKey, kp crypto.KeyProvider) (JWK, error) {
-	der, err := crypto.DecryptSecret(ctx, kp, k.EncryptedDEK, k.EncryptedPrivateKey)
+func keyToJWK(ctx context.Context, k *model.SigningKey, kp bcrypto.KeyProvider) (JWK, error) {
+	der, err := bcrypto.DecryptEnvelope(ctx, kp, k.EncryptedDEK, k.EncryptedPrivateKey)
 	if err != nil {
 		return JWK{}, fmt.Errorf("decrypt key %s: %w", k.KID, err)
 	}

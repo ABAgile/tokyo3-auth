@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 )
 
@@ -84,7 +84,7 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 
 	row := form.row
 	if row.Provider == model.AppIntegrationProviderSCIM && row.Config.AuthMode == model.AppIntegrationAuthBearer {
-		encToken, encDEK, err := crypto.EncryptSecret(r.Context(), s.kp, []byte(form.tokenPlain))
+		encToken, encDEK, err := bcrypto.EncryptEnvelope(r.Context(), s.kp, []byte(form.tokenPlain))
 		if err != nil {
 			showErr("Encryption failed.")
 			return
@@ -161,7 +161,7 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 		form.row.EncryptedToken = nil
 		form.row.EncryptedDEK = nil
 	case form.row.Provider == model.AppIntegrationProviderSCIM && updateToken:
-		encToken, encDEK, err := crypto.EncryptSecret(r.Context(), s.kp, []byte(form.tokenPlain))
+		encToken, encDEK, err := bcrypto.EncryptEnvelope(r.Context(), s.kp, []byte(form.tokenPlain))
 		if err != nil {
 			showErr("Encryption failed.")
 			return
@@ -267,7 +267,7 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 	client := &http.Client{Timeout: timeout}
 	switch authMode {
 	case model.AppIntegrationAuthBearer:
-		tokenBytes, err := crypto.DecryptSecret(ctx, s.kp, row.EncryptedDEK, row.EncryptedToken)
+		tokenBytes, err := bcrypto.DecryptEnvelope(ctx, s.kp, row.EncryptedDEK, row.EncryptedToken)
 		if err != nil {
 			return 0, "", err
 		}

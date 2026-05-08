@@ -122,7 +122,7 @@ type ExternalIDStore interface {
 
 // IntegrationStore manages outbound provisioner configurations (Vault SCIM,
 // AWS IAM, etc.). Tokens are encrypted/decrypted in the handler layer via
-// crypto.EncryptSecret; the store is intentionally oblivious to the KEK.
+// bcrypto.EncryptEnvelope; the store is intentionally oblivious to the KEK.
 type IntegrationStore interface {
 	CreateIntegration(ctx context.Context, i *model.AppIntegration) error
 	GetIntegration(ctx context.Context, id uuid.UUID) (*model.AppIntegration, error)

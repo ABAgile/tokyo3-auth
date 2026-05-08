@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
@@ -24,7 +24,7 @@ type TOTPEnrollResponse struct {
 }
 
 // EnrollTOTP generates a new TOTP secret for the user and stores it (disabled until confirmed).
-func EnrollTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, user *model.User) (*TOTPEnrollResponse, error) {
+func EnrollTOTP(ctx context.Context, st store.MFAStore, kp bcrypto.KeyProvider, user *model.User) (*TOTPEnrollResponse, error) {
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      totpIssuer,
 		AccountName: user.Email,
@@ -36,7 +36,7 @@ func EnrollTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, u
 		return nil, fmt.Errorf("generate totp key: %w", err)
 	}
 
-	encSecret, encDEK, err := crypto.EncryptSecret(ctx, kp, []byte(key.Secret()))
+	encSecret, encDEK, err := bcrypto.EncryptEnvelope(ctx, kp, []byte(key.Secret()))
 	if err != nil {
 		return nil, fmt.Errorf("encrypt totp secret: %w", err)
 	}
@@ -62,7 +62,7 @@ func EnrollTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, u
 }
 
 // ConfirmTOTP verifies the first code after enrollment and enables the credential.
-func ConfirmTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, userID uuid.UUID, code string) error {
+func ConfirmTOTP(ctx context.Context, st store.MFAStore, kp bcrypto.KeyProvider, userID uuid.UUID, code string) error {
 	cred, err := st.GetTOTPByUserID(ctx, userID)
 	if err != nil {
 		return err
@@ -78,7 +78,7 @@ func ConfirmTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, 
 }
 
 // VerifyTOTP checks a TOTP code for an already-enrolled user.
-func VerifyTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, userID uuid.UUID, code string) error {
+func VerifyTOTP(ctx context.Context, st store.MFAStore, kp bcrypto.KeyProvider, userID uuid.UUID, code string) error {
 	cred, err := st.GetTOTPByUserID(ctx, userID)
 	if err != nil {
 		return err
@@ -96,8 +96,8 @@ func VerifyTOTP(ctx context.Context, st store.MFAStore, kp crypto.KeyProvider, u
 	return nil
 }
 
-func decryptTOTPSecret(ctx context.Context, kp crypto.KeyProvider, cred *model.TOTPCredential) (string, error) {
-	plain, err := crypto.DecryptSecret(ctx, kp, cred.EncryptedDEK, cred.EncryptedSecret)
+func decryptTOTPSecret(ctx context.Context, kp bcrypto.KeyProvider, cred *model.TOTPCredential) (string, error) {
+	plain, err := bcrypto.DecryptEnvelope(ctx, kp, cred.EncryptedDEK, cred.EncryptedSecret)
 	if err != nil {
 		return "", fmt.Errorf("decrypt totp secret: %w", err)
 	}

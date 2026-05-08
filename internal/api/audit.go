@@ -58,7 +58,7 @@ func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid
 	// Best-effort publish to JetStream. The local DB has already captured the
 	// row; if NATS is offline we still have a record. Tighten to fail-closed
 	// once the projection becomes the read source.
-	if err := s.audit.Log(r.Context(), toAuditEntry(log)); err != nil {
+	if err := s.audit.Append(r.Context(), toAuditEntry(log)); err != nil {
 		s.log.Error("audit publish failed", "action", action, "err", err)
 	}
 }

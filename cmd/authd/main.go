@@ -66,7 +66,6 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/api"
 	"github.com/abagile/tokyo3-auth/internal/audit"
 	"github.com/abagile/tokyo3-auth/internal/auth"
-	"github.com/abagile/tokyo3-auth/internal/crypto"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
@@ -75,7 +74,11 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/provision/iam"
 	scimprov "github.com/abagile/tokyo3-auth/internal/provision/scim"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
-	"github.com/abagile/tokyo3-auth/internal/tlsutil"
+	"github.com/abagile/tokyo3-base/applog"
+	bcrypto "github.com/abagile/tokyo3-base/crypto"
+	"github.com/abagile/tokyo3-base/journal"
+	"github.com/abagile/tokyo3-base/journal/jetstream"
+	btls "github.com/abagile/tokyo3-base/tls"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -108,7 +111,7 @@ func serveCmd() *cobra.Command {
 }
 
 func runServe() error {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log, _ := applog.AppLogger("authd", applog.WithStdout())
 
 	issuer := mustEnv("AUTH_ISSUER")
 	dbURL := mustEnv("AUTH_DATABASE_URL")
@@ -116,7 +119,7 @@ func runServe() error {
 	masterKeyHex := mustEnv("AUTH_MASTER_KEY")
 	port := envOr("AUTH_PORT", "8443")
 
-	masterKey, err := crypto.ParseKEK(masterKeyHex)
+	masterKey, err := bcrypto.ParseKEK(masterKeyHex)
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -152,7 +155,7 @@ func runServe() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	kp := crypto.NewLocalKeyProvider(masterKey)
+	kp := bcrypto.NewLocalKeyProvider(masterKey)
 
 	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, issuer)
 	if err != nil {
@@ -236,7 +239,7 @@ func migrateCmd() *cobra.Command {
 		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dbURL := mustEnv("AUTH_ADMIN_DATABASE_URL")
-			adminDBTLS, err := tlsutil.FromFiles(
+			adminDBTLS, err := btls.FromFiles(
 				os.Getenv("AUTH_ADMIN_DB_CERT"),
 				os.Getenv("AUTH_ADMIN_DB_KEY"),
 				os.Getenv("AUTH_ADMIN_DB_CA"),
@@ -260,7 +263,7 @@ func keygenCmd() *cobra.Command {
 		Use:   "keygen",
 		Short: "Generate a random 32-byte master key (printed as 64 hex chars)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			key, err := crypto.GenerateKEK()
+			key, err := bcrypto.GenerateKEK()
 			if err != nil {
 				return err
 			}
@@ -301,7 +304,7 @@ func adminSyncCmd() *cobra.Command {
 func runAdminSync(target string) error {
 	dbURL := mustEnv("AUTH_DATABASE_URL")
 	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
-	masterKey, err := crypto.ParseKEK(mustEnv("AUTH_MASTER_KEY"))
+	masterKey, err := bcrypto.ParseKEK(mustEnv("AUTH_MASTER_KEY"))
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -323,8 +326,8 @@ func runAdminSync(target string) error {
 	}
 	defer db.Close()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	kp := crypto.NewLocalKeyProvider(masterKey)
+	log, _ := applog.AppLogger("authd", applog.WithStdout())
+	kp := bcrypto.NewLocalKeyProvider(masterKey)
 	ctx := context.Background()
 
 	if err := autoImportLegacyVaultEnv(ctx, db, kp, log); err != nil {
@@ -405,7 +408,7 @@ func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisio
 // buildProvSet constructs a provision.Set from every enabled integration row.
 // Decryption errors are logged and the offending row is skipped so a single
 // corrupt config cannot wedge the whole fan-out.
-func buildProvSet(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (*provision.Set, error) {
+func buildProvSet(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (*provision.Set, error) {
 	rows, err := db.ListEnabledIntegrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list integrations: %w", err)
@@ -423,7 +426,7 @@ func buildProvSet(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, o
 	return set, nil
 }
 
-func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp crypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (provision.Provisioner, error) {
+func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp bcrypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (provision.Provisioner, error) {
 	switch i.Provider {
 	case model.AppIntegrationProviderSCIM:
 		if i.Config.BaseURL == "" {
@@ -446,7 +449,7 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			if len(i.EncryptedToken) == 0 || len(i.EncryptedDEK) == 0 {
 				return nil, fmt.Errorf("scim integration %q (bearer mode) missing token", i.Name)
 			}
-			token, err := crypto.DecryptSecret(ctx, kp, i.EncryptedDEK, i.EncryptedToken)
+			token, err := bcrypto.DecryptEnvelope(ctx, kp, i.EncryptedDEK, i.EncryptedToken)
 			if err != nil {
 				return nil, fmt.Errorf("decrypt token: %w", err)
 			}
@@ -471,7 +474,7 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 // env vars on the very first boot after the 007 migration. Subsequent boots
 // (table non-empty) ignore the env vars entirely. This preserves rows in the
 // external_ids cache by reusing the legacy provider name "vault".
-func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp crypto.KeyProvider, log *slog.Logger) error {
+func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, log *slog.Logger) error {
 	if !strings.EqualFold(os.Getenv("AUTH_VAULT_SCIM_ENABLED"), "true") {
 		return nil
 	}
@@ -488,7 +491,7 @@ func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp crypto.Ke
 		log.Warn("AUTH_VAULT_SCIM_ENABLED=true but URL/token missing; skipping auto-import")
 		return nil
 	}
-	encToken, encDEK, err := crypto.EncryptSecret(ctx, kp, []byte(token))
+	encToken, encDEK, err := bcrypto.EncryptEnvelope(ctx, kp, []byte(token))
 	if err != nil {
 		return fmt.Errorf("encrypt token: %w", err)
 	}
@@ -626,15 +629,19 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
 			return nil, fmt.Errorf("load outbound client cert pair: %w", err)
 		}
-		loader := tlsutil.NewCertLoader(certFile, keyFile)
-		cfg.GetClientCertificate = loader.GetClientCertificate
+		loader := btls.NewCertLoader(certFile, keyFile)
+		// btls.CertLoader exposes GetCertificate (server-side); reuse the same
+		// hot-reloaded cert for client-side presentation.
+		cfg.GetClientCertificate = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return loader.GetCertificate(nil)
+		}
 	}
 	if caFile != "" {
 		data, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, fmt.Errorf("read AUTH_OUTBOUND_TLS_CA: %w", err)
 		}
-		pool, err := tlsutil.CertPoolFromPEM(data)
+		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse AUTH_OUTBOUND_TLS_CA: %w", err)
 		}
@@ -654,27 +661,31 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 	url := os.Getenv("AUTH_NATS_URL")
 	if url == "" {
-		log.Info("audit sink: noop (AUTH_NATS_URL not set)")
-		return audit.NoopSink{}, nil
+		log.Warn("AUTH_NATS_URL not set — audit sink is no-op; not for production")
+		return audit.NoopSink, nil
 	}
-	tlsCfg, err := tlsutil.FromFiles(
+	tlsCfg, err := btls.FromFiles(
 		os.Getenv("AUTH_NATS_CERT"),
 		os.Getenv("AUTH_NATS_KEY"),
 		os.Getenv("AUTH_NATS_CA"),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("nats publisher TLS: %w", err)
+		return nil, fmt.Errorf("nats audit TLS: %w", err)
 	}
 	if tlsCfg != nil {
-		log.Info("audit sink: jetstream with mTLS", "url", url)
+		log.Info("audit sink: NATS JetStream with mTLS", "url", url)
 	} else {
-		log.Warn("audit sink: jetstream without mTLS (not for production)", "url", url)
+		log.Warn("audit sink: AUTH_NATS_CERT not set — connecting without mTLS (not for production)")
 	}
-	sink, err := audit.NewJetStreamSink(url, tlsCfg)
+	jSink, err := jetstream.New(jetstream.Config{
+		URL:     url,
+		Subject: audit.Subject,
+		TLS:     tlsCfg,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return sink, nil
+	return journal.NewJSONSink[audit.Entry](jSink), nil
 }
 
 // dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*
@@ -682,7 +693,7 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 // which case the connection falls back to plain TLS / non-TLS as the DSN's
 // sslmode dictates.
 func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
-	admin, err = tlsutil.FromFiles(
+	admin, err = btls.FromFiles(
 		os.Getenv("AUTH_ADMIN_DB_CERT"),
 		os.Getenv("AUTH_ADMIN_DB_KEY"),
 		os.Getenv("AUTH_ADMIN_DB_CA"),
@@ -690,7 +701,7 @@ func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("admin db TLS: %w", err)
 	}
-	runtime, err = tlsutil.FromFiles(
+	runtime, err = btls.FromFiles(
 		os.Getenv("AUTH_DB_CERT"),
 		os.Getenv("AUTH_DB_KEY"),
 		os.Getenv("AUTH_DB_CA"),
@@ -719,11 +730,11 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	cfg := &tls.Config{}
 	if certFile != "" {
 		log.Info("TLS: using certificate files (hot-reload enabled)", "cert", certFile)
-		loader := tlsutil.NewCertLoader(certFile, keyFile)
+		loader := btls.NewCertLoader(certFile, keyFile)
 		cfg.GetCertificate = loader.GetCertificate
 	} else {
 		log.Warn("TLS: no certificate configured, using self-signed (not for production)")
-		cert, err := tlsutil.SelfSignedCert()
+		cert, err := btls.SelfSignedCert()
 		if err != nil {
 			return nil, fmt.Errorf("generate self-signed cert: %w", err)
 		}
@@ -735,7 +746,7 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read AUTH_TLS_CLIENT_CA: %w", err)
 		}
-		pool, err := tlsutil.CertPoolFromPEM(data)
+		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse AUTH_TLS_CLIENT_CA: %w", err)
 		}

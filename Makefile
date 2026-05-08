@@ -40,9 +40,9 @@ GOFLAGS :=
 
 IMAGE_NAME         ?= abagile/tokyo3-auth
 IMAGE_TAG          ?= $(VERSION)
-POSTGRES_PORT      ?= 5433
-AUTH_AUDIT_DB_PORT ?= 5435
-NATS_PORT          ?= 4222
+POSTGRES_PORT      ?= 35432
+AUTH_AUDIT_DB_PORT ?= 35433
+NATS_PORT          ?= 34222
 AUTH_PORT          ?= 8443
 
 # Docker Compose project name (defaults to directory basename, matching Compose behaviour).

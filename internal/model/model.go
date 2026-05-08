@@ -141,7 +141,7 @@ type AppIntegrationConfig struct {
 }
 
 // AppIntegration is a single outbound provisioning target. Tokens are
-// envelope-encrypted via crypto.EncryptSecret (matching mfa/totp.go); the
+// envelope-encrypted via bcrypto.EncryptEnvelope (matching mfa/totp.go); the
 // EncryptedToken/EncryptedDEK pair is nil for IAM-style providers that source
 // credentials from elsewhere.
 type AppIntegration struct {
