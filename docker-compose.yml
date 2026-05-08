@@ -135,10 +135,10 @@ services:
       natsbox:
         condition: service_healthy
     ports:
-      - "${AUTH_PORT:-8443}:8443"
+      - "${AUTH_PORT:-8443}:443"
     environment:
       AUTH_ISSUER: ${AUTH_ISSUER:-https://localhost:8443}
-      AUTH_PORT: "8443"
+      AUTH_ADDR: :443
       # Admin DSN: schema migration only (DDL privileges).
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_PASSWORD}@db:5432/authdb?sslmode=disable
       # Runtime DSN: DML-only after schema is in place.
@@ -153,7 +153,7 @@ services:
       # Audit sink: publish events to NATS JetStream.
       AUTH_NATS_URL: nats://nats:4222
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:443/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

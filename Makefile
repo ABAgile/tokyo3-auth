@@ -44,6 +44,7 @@ POSTGRES_PORT      ?= 35432
 AUTH_AUDIT_DB_PORT ?= 35433
 NATS_PORT          ?= 34222
 AUTH_PORT          ?= 8443
+AUTH_ADDR          ?= :$(AUTH_PORT)
 
 # Docker Compose project name (defaults to directory basename, matching Compose behaviour).
 # Used to derive the shared named volume name for pre-population via tar pipe (no bind mounts).
@@ -99,7 +100,7 @@ _gen-env: build
 	    KEY=$$($(AUTHD_BIN) keygen); \
 	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                            > .env; \
 	    echo "AUTH_ISSUER=https://localhost:$(AUTH_PORT)"                                                                                      >> .env; \
-	    echo "AUTH_PORT=$(AUTH_PORT)"                                                                                                          >> .env; \
+	    echo "AUTH_ADDR=$(AUTH_ADDR)"                                                                                                          >> .env; \
 	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                  >> .env; \
 	    echo "AUTH_ADMIN_PASSWORD=changeme"                                                                                                    >> .env; \
 	    echo "AUTH_APP_PASSWORD=changeme"                                                                                                      >> .env; \

@@ -10,7 +10,7 @@
 //
 //	AUTH_ADMIN_DATABASE_URL  Admin DSN used for schema migrations (DDL).
 //	                         Falls back to AUTH_DATABASE_URL when unset.
-//	AUTH_PORT                HTTPS listen port (default: 8443).
+//	AUTH_ADDR                HTTPS listen address (default: :8443).
 //	AUTH_ALLOW_REGISTRATION  Set to "true" to enable self-registration at /register.
 //
 // TLS — the API always serves HTTPS (IdP requirement):
@@ -117,7 +117,7 @@ func runServe() error {
 	dbURL := mustEnv("AUTH_DATABASE_URL")
 	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
 	masterKeyHex := mustEnv("AUTH_MASTER_KEY")
-	port := envOr("AUTH_PORT", "8443")
+	addr := envOr("AUTH_ADDR", ":8443")
 
 	masterKey, err := bcrypto.ParseKEK(masterKeyHex)
 	if err != nil {
@@ -206,7 +206,6 @@ func runServe() error {
 		return fmt.Errorf("server TLS: %w", err)
 	}
 
-	addr := ":" + port
 	httpSrv := &http.Server{
 		Addr:      addr,
 		Handler:   srv.Routes(),

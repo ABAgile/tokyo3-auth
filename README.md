@@ -118,7 +118,7 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `AUTH_ISSUER` | Yes | — | IdP base URL, e.g. `https://id.example.com` |
-| `AUTH_PORT` | No | `8080` | HTTP listen port |
+| `AUTH_ADDR` | No | `:8443` | HTTPS listen address (`host:port`; empty host = all interfaces) |
 | `AUTH_DATABASE_URL` | Yes | — | PostgreSQL DSN (app role, DML only) |
 | `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
