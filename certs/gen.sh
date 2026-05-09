@@ -18,7 +18,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Load .env from the repo root if present — mirrors docker compose behaviour so
-# AUTH_ADMIN_DB_USERNAME / AUTH_APP_USERNAME stay in sync with the DSNs.
+# AUTH_ADMIN_DB_USERNAME / AUTH_DB_USERNAME stay in sync with the DSNs.
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a
@@ -27,7 +27,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 ADMIN_USERNAME="${AUTH_ADMIN_DB_USERNAME:-auth_admin}"
-APP_USERNAME="${AUTH_APP_USERNAME:-auth_app}"
+APP_USERNAME="${AUTH_DB_USERNAME:-auth_app}"
 AUDIT_USERNAME="${AUTH_AUDIT_DB_USERNAME:-auth_audit}"
 
 step() { printf '  %-34s' "$1..."; }

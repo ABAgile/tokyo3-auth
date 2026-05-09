@@ -7,13 +7,13 @@
 #
 # Required env vars (set in shell or .env file):
 #   AUTH_MASTER_KEY          64-char hex key  (authd keygen)
-#   AUTH_ADMIN_PASSWORD      auth DB admin password (DDL owner, runs migrations)
-#   AUTH_APP_PASSWORD        auth DB app password   (DML-only)
+#   AUTH_ADMIN_DB_PASSWORD   auth DB admin password (DDL owner, runs migrations)
+#   AUTH_DB_PASSWORD         auth DB app password   (DML-only)
 #   AUTH_AUDIT_DB_PASSWORD   audit DB password (audit owner)
 #
 # Optional (usernames default to auth_admin / auth_app / auth_audit):
 #   AUTH_ADMIN_DB_USERNAME   auth DB admin username  (default: auth_admin)
-#   AUTH_APP_USERNAME        auth DB app username    (default: auth_app)
+#   AUTH_DB_USERNAME        auth DB app username    (default: auth_app)
 #   AUTH_AUDIT_DB_USERNAME   audit DB username       (default: auth_audit)
 #
 # Note: DB credentials and usernames above are only applied on first startup when
@@ -32,12 +32,12 @@ services:
     environment:
       PG_INIT_SCRIPT:    /shared/pg-scripts/db-init.sh
       POSTGRES_USER:     ${AUTH_ADMIN_DB_USERNAME:-auth_admin}
-      POSTGRES_PASSWORD: ${AUTH_ADMIN_PASSWORD:?AUTH_ADMIN_PASSWORD is required}
+      POSTGRES_PASSWORD: ${AUTH_ADMIN_DB_PASSWORD:?AUTH_ADMIN_DB_PASSWORD is required}
       POSTGRES_DB:       authdb
-      AUTH_APP_USERNAME: ${AUTH_APP_USERNAME:-auth_app}
-      AUTH_APP_PASSWORD: ${AUTH_APP_PASSWORD:?AUTH_APP_PASSWORD is required}
+      AUTH_DB_USERNAME:  ${AUTH_DB_USERNAME:-auth_app}
+      AUTH_DB_PASSWORD:  ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}
     volumes:
-      - shared-data:/shared:ro
+      - shared_data:/shared:ro
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
@@ -59,8 +59,8 @@ services:
       POSTGRES_PASSWORD: ${AUTH_AUDIT_DB_PASSWORD:?AUTH_AUDIT_DB_PASSWORD is required}
       POSTGRES_DB:       auth_audit
     volumes:
-      - shared-data:/shared:ro
-      - audit-db-data:/var/lib/postgresql/data
+      - shared_data:/shared:ro
+      - audit_db_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${AUTH_AUDIT_DB_USERNAME:-auth_audit} -d auth_audit"]
@@ -75,7 +75,7 @@ services:
     ports:
       - "${NATS_PORT:-4222}:4222"
     volumes:
-      - nats-data:/data
+      - nats_data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
@@ -137,21 +137,21 @@ services:
     ports:
       - "${AUTH_PORT:-8443}:443"
     environment:
-      AUTH_ISSUER: ${AUTH_ISSUER:-https://auth.localhost:8443}
-      AUTH_ADDR: :443
-      # Admin DSN: schema migration only (DDL privileges).
-      AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_PASSWORD}@db:5432/authdb?sslmode=disable
-      # Runtime DSN: DML-only after schema is in place.
-      AUTH_DATABASE_URL: postgres://${AUTH_APP_USERNAME:-auth_app}:${AUTH_APP_PASSWORD}@db:5432/authdb?sslmode=disable
       AUTH_MASTER_KEY: ${AUTH_MASTER_KEY:?AUTH_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm auth keygen')}
+      AUTH_ADDR: :443
+      AUTH_ISSUER: ${AUTH_ISSUER:-https://auth.localhost:8443}
+      # Admin DSN: schema migration only (DDL privileges).
+      AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable
+      # Runtime DSN: DML-only after schema is in place.
+      AUTH_DATABASE_URL: postgres://${AUTH_DB_USERNAME:-auth_app}:${AUTH_DB_PASSWORD}@db:5432/authdb?sslmode=disable
+      # Audit sink: publish events to NATS JetStream.
+      AUTH_NATS_URL: nats://nats:4222
       AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-false}
-      AUTH_AWS_IAM_ENABLED: ${AUTH_AWS_IAM_ENABLED:-false}
       AUTH_WEBAUTHN_ORIGINS: ${AUTH_WEBAUTHN_ORIGINS:-}
+      AUTH_AWS_IAM_ENABLED: ${AUTH_AWS_IAM_ENABLED:-false}
       AWS_REGION: ${AWS_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      # Audit sink: publish events to NATS JetStream.
-      AUTH_NATS_URL: nats://nats:4222
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:443/health || exit 1"]
       interval: 10s
@@ -165,9 +165,9 @@ services:
     build: .
     entrypoint: ["/usr/local/bin/auth-audit", "consume"]
     environment:
-      AUTH_AUDIT_NATS_URL:     nats://nats:4222
       # Single DSN: auth_audit owner has DDL + INSERT + SELECT rights.
       AUTH_AUDIT_DATABASE_URL: postgres://${AUTH_AUDIT_DB_USERNAME:-auth_audit}:${AUTH_AUDIT_DB_PASSWORD}@audit-db:5432/auth_audit?sslmode=disable
+      AUTH_AUDIT_NATS_URL:     nats://nats:4222
     depends_on:
       audit-db:
         condition: service_healthy
@@ -178,7 +178,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  shared-data:
+  shared_data:
   db_data:
-  audit-db-data:
-  nats-data:
+  audit_db_data:
+  nats_data:

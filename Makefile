@@ -49,7 +49,7 @@ NATS_PORT     ?= 34222
 # Docker Compose project name (defaults to directory basename, matching Compose behaviour).
 # Used to derive the shared named volume name for pre-population via tar pipe (no bind mounts).
 COMPOSE_PROJECT := $(notdir $(CURDIR))
-SHARED_VOLUME   := $(COMPOSE_PROJECT)_shared-data
+SHARED_VOLUME   := $(COMPOSE_PROJECT)_shared_data
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
 
@@ -93,32 +93,37 @@ build-darwin: $(BIN_DIR)
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-# Generate .env with dev defaults on first run. Used by run / run-mtls.
-# DSNs use password auth; the mTLS run target overrides with cert-auth DSNs at process launch time.
+# Generate .env with dev defaults on first run. Used by all four run targets.
+# DSNs use password auth; the mTLS run targets override with cert-auth DSNs at process launch time.
 _gen-env: build
 	@if [ ! -f .env ]; then \
 	    KEY=$$($(AUTHD_BIN) keygen); \
-	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                            > .env; \
-	    echo "AUTH_ISSUER=https://auth.localhost:$(AUTH_PORT)"                                                                                 >> .env; \
-	    echo "AUTH_ADDR=$(AUTH_ADDR)"                                                                                                          >> .env; \
-	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                  >> .env; \
-	    echo "AUTH_ADMIN_PASSWORD=changeme"                                                                                                    >> .env; \
-	    echo "AUTH_APP_PASSWORD=changeme"                                                                                                      >> .env; \
-	    echo "AUTH_AUDIT_DB_PASSWORD=changeme"                                                                                                 >> .env; \
-	    echo "AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable" >> .env; \
-	    echo "AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"        >> .env; \
-	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                    >> .env; \
+	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                                              > .env; \
+	    echo "AUTH_ADDR=$(AUTH_ADDR)"                                                                                                                            >> .env; \
+	    echo "AUTH_ISSUER=https://auth.localhost:$(AUTH_PORT)"                                                                                                   >> .env; \
+	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                                    >> .env; \
+	    echo "AUTH_ADMIN_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
+	    echo "AUTH_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
+	    echo "AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"           >> .env; \
+	    echo "AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"                         >> .env; \
+	    echo "AUDIT_DB_PORT=$(AUDIT_DB_PORT)"                                                                                                                    >> .env; \
+	    echo "AUTH_AUDIT_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
+	    echo "AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}:changeme@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=disable" >> .env; \
+	    echo "NATS_PORT=$(NATS_PORT)"                                                                                                                            >> .env; \
+	    echo "AUTH_NATS_URL=nats://nats.localhost:$(NATS_PORT)"                                                                                                  >> .env; \
+	    echo "AUTH_AUDIT_NATS_URL=nats://nats.localhost:$(NATS_PORT)"                                                                                            >> .env; \
+	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
 	    echo "  generated .env"; \
 	fi
 
-# Push local postgres/ scripts into shared-data:/shared/pg-scripts (no bind mount needed).
+# Push local postgres/ scripts into shared_data:/shared/pg-scripts (no bind mount needed).
 # Re-runs on every invoke so changes to init scripts are always picked up.
 _sync-pg-scripts:
 	@docker volume create $(SHARED_VOLUME) 2>&1 >/dev/null || true
 	@tar -cf - -C postgres . | docker run --rm -i -v $(SHARED_VOLUME):/shared alpine:3.21 sh -c "mkdir -p /shared/pg-scripts && tar -xf - -C /shared/pg-scripts && chmod +x /shared/pg-scripts/*.sh"
 
 # Generate leaf certs if absent, then push local certs/ + mkcert's root CA
-# into shared-data:/shared/certs (root CA staged as ca.crt for compose mounts;
+# into shared_data:/shared/certs (root CA staged as ca.crt for compose mounts;
 # removed locally after the volume copy so certs/ stays free of the CA).
 _sync-certs:
 	@if [ ! -f certs/authd-server.crt ]; then bash certs/gen.sh; fi
@@ -132,9 +137,7 @@ _sync-certs:
 ## run: Build and start authd with dev defaults (auto-generates .env on first run)
 run: _gen-env _sync-pg-scripts
 	@docker compose up -d db nats natsbox --wait 2>/dev/null || true
-	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_NATS_URL=nats://nats.localhost:$(NATS_PORT) \
-	    $(AUTHD_BIN) serve
+	@export $$(grep -v '^#' .env | xargs) && $(AUTHD_BIN) serve
 
 ## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
 run-mtls: _gen-env _sync-pg-scripts _sync-certs
@@ -150,37 +153,34 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    AUTH_DB_CERT=certs/authd-app-db-client.crt \
 	    AUTH_DB_KEY=certs/authd-app-db-client.key \
 	    AUTH_DB_CA=$$CA_PEM \
-	    AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
+	    AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
 	    AUTH_SCIM_CERT=certs/authd-scim-client.crt \
 	    AUTH_SCIM_KEY=certs/authd-scim-client.key \
 	    AUTH_SCIM_CA=$$CA_PEM \
-	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    AUTH_NATS_CERT=certs/authd-nats-client.crt \
 	    AUTH_NATS_KEY=certs/authd-nats-client.key \
 	    AUTH_NATS_CA=$$CA_PEM \
+	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    $(AUTHD_BIN) serve
 
 ## run-audit: Build and start auth-audit with dev defaults (uses the same .env)
 run-audit: _gen-env _sync-pg-scripts
 	@docker compose up -d audit-db nats natsbox --wait 2>/dev/null || true
-	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_AUDIT_NATS_URL=nats://nats.localhost:$(NATS_PORT) \
-	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}:$${AUTH_AUDIT_DB_PASSWORD:-changeme}@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=disable \
-	    $(AUTH_AUDIT_BIN) consume
+	@export $$(grep -v '^#' .env | xargs) && $(AUTH_AUDIT_BIN) consume
 
 ## run-audit-mtls: Build and start auth-audit with mTLS
 run-audit-mtls: _gen-env _sync-pg-scripts _sync-certs
 	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d audit-db nats natsbox --wait 2>/dev/null || true
 	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
 	    export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_AUDIT_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
-	    AUTH_AUDIT_NATS_CERT=certs/auth-audit-nats-client.crt \
-	    AUTH_AUDIT_NATS_KEY=certs/auth-audit-nats-client.key \
-	    AUTH_AUDIT_NATS_CA=$$CA_PEM \
 	    AUTH_AUDIT_DB_CERT=certs/auth-audit-db-client.crt \
 	    AUTH_AUDIT_DB_KEY=certs/auth-audit-db-client.key \
 	    AUTH_AUDIT_DB_CA=$$CA_PEM \
 	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=verify-full \
+	    AUTH_AUDIT_NATS_CERT=certs/auth-audit-nats-client.crt \
+	    AUTH_AUDIT_NATS_KEY=certs/auth-audit-nats-client.key \
+	    AUTH_AUDIT_NATS_CA=$$CA_PEM \
+	    AUTH_AUDIT_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    $(AUTH_AUDIT_BIN) consume
 
 ## keygen: Print a fresh random master key
