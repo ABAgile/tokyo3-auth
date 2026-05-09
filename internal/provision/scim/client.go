@@ -194,9 +194,15 @@ func (p *Provisioner) createUser(ctx context.Context, u *model.User) (string, er
 }
 
 func (p *Provisioner) patchUser(ctx context.Context, vaultID string, u *model.User) error {
+	// externalId is replayed on every PATCH so a target that didn't see this
+	// user via SCIM-POST first (e.g. JIT-created via OIDC, then linked to this
+	// SCIM client via cache) gets the externalId backfilled. POST sets it
+	// initially; without this op, every subsequent cached-hit PATCH would
+	// leave externalId stale or absent on rows the IdP first met via JIT.
 	body := map[string]any{
 		"schemas": []string{schemaPatchOp},
 		"Operations": []map[string]any{
+			{"op": "Replace", "path": "externalId", "value": u.ID.String()},
 			{"op": "Replace", "path": "active", "value": u.Active},
 			{"op": "Replace", "path": "name.formatted", "value": u.Name},
 		},

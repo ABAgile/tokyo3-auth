@@ -155,11 +155,17 @@ func TestUserCreate_PostsAndCachesID(t *testing.T) {
 func TestUserUpdate_CacheHitPatches(t *testing.T) {
 	fv := newFakeVault(t)
 	patched := false
+	var ops []map[string]any
 	fv.on(http.MethodPatch, "/Users/", func(w http.ResponseWriter, r *http.Request) {
 		patched = true
 		if r.URL.Path != "/Users/vault-existing" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
+		var body struct {
+			Operations []map[string]any `json:"Operations"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		ops = body.Operations
 		writeJSON(w, http.StatusOK, map[string]any{"id": "vault-existing"})
 	})
 
@@ -174,6 +180,27 @@ func TestUserUpdate_CacheHitPatches(t *testing.T) {
 	if !patched {
 		t.Error("expected PATCH, got nothing")
 	}
+	// Body must include a Replace externalId op so a JIT'd downstream row gets
+	// scim_external_id backfilled even when the cached path skips POST.
+	var sawExtID bool
+	for _, op := range ops {
+		if strings.EqualFold(asString(op["op"]), "Replace") && strings.EqualFold(asString(op["path"]), "externalId") {
+			sawExtID = true
+			if got, want := asString(op["value"]), u.ID.String(); got != want {
+				t.Errorf("externalId op value = %q, want %q", got, want)
+			}
+		}
+	}
+	if !sawExtID {
+		t.Errorf("PATCH body missing Replace externalId op; got ops = %+v", ops)
+	}
+}
+
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // ── User: 404 self-heal — PATCH falls through to POST ─────────────────────────
