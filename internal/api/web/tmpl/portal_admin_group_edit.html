@@ -15,7 +15,7 @@
         <input type="text" value="{{.Group.ID}}" readonly class="mono" style="flex:1" onclick="this.select()">
         <button type="button" class="btn btn-secondary btn-sm" data-copy="{{.Group.ID}}" title="Copy ID">Copy</button>
       </div>
-      <div class="text-muted" style="font-size:12px;margin-top:4px">Use this UUID when wiring downstream integrations (e.g. vault's <code>POST /api/v1/scim/group-roles</code> <code>group_id</code>).</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px">Use this UUID when wiring downstream integrations (e.g. vault's <code>POST /api/v1/scim/group-roles</code> <code>scim_external_id</code>).</div>
     </div>
     {{end}}
 

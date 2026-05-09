@@ -115,6 +115,7 @@ Vault's policy decisions live in `scim_group_roles`. Operator must define them o
 curl -X POST -H "Authorization: Bearer $VAULT_ADMIN_TOKEN" \
      "$VAULT_URL/api/v1/scim/group-roles" \
      -d '{
+       "scim_external_id": "<auth-group-uuid>",
        "display_name": "Engineering",
        "project_slug": "platform",
        "env_slug": "production",
@@ -122,7 +123,7 @@ curl -X POST -H "Authorization: Bearer $VAULT_ADMIN_TOKEN" \
      }'
 ```
 
-After this, when auth's "Engineering" group syncs over with members, vault auto-binds those users to `platform/production` with `editor`.
+`scim_external_id` is the auth-side group UUID — copy it from `Admin → Groups → edit` in the auth portal, or from `GET /api/v1/admin/groups`. After this, when auth's "Engineering" group syncs over with members, vault auto-binds those users to `platform/production` with `editor`.
 
 ### 5. Smoke test
 

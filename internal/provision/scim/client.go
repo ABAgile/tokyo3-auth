@@ -297,54 +297,30 @@ func (p *Provisioner) upsertGroup(ctx context.Context, g *model.SCIMGroup, membe
 	if err != nil {
 		return err
 	}
-	vaultGroupID, err := p.findGroupByDisplayName(ctx, g.DisplayName)
-	if err != nil {
-		return err
-	}
+	// Address the group by its auth-side UUID. Vault keys scim_group_roles by
+	// scim_external_id, so this UUID flows straight through and stays stable
+	// across renames in either system.
+	groupID := g.ID.String()
 	body := map[string]any{
 		"schemas":     []string{schemaGroup},
+		"externalId":  groupID,
 		"displayName": g.DisplayName,
 		"members":     memberRefs,
 	}
-	if vaultGroupID == "" {
-		_, err := p.do(ctx, http.MethodPost, "/Groups", body, nil)
-		return err
-	}
-	_, err = p.do(ctx, http.MethodPut, "/Groups/"+url.PathEscape(vaultGroupID), body, nil)
+	_, err = p.do(ctx, http.MethodPut, "/Groups/"+url.PathEscape(groupID), body, nil)
 	if errors.Is(err, errStatusNotFound) {
-		// Vault no longer has this group; recreate.
+		// Target hasn't seen this group before; fall through to POST.
 		_, err = p.do(ctx, http.MethodPost, "/Groups", body, nil)
 	}
 	return err
 }
 
 func (p *Provisioner) deleteGroup(ctx context.Context, g *model.SCIMGroup) error {
-	vaultGroupID, err := p.findGroupByDisplayName(ctx, g.DisplayName)
-	if err != nil || vaultGroupID == "" {
-		return err
-	}
-	_, err = p.do(ctx, http.MethodDelete, "/Groups/"+url.PathEscape(vaultGroupID), nil, nil)
+	_, err := p.do(ctx, http.MethodDelete, "/Groups/"+url.PathEscape(g.ID.String()), nil, nil)
 	if errors.Is(err, errStatusNotFound) {
 		return nil
 	}
 	return err
-}
-
-func (p *Provisioner) findGroupByDisplayName(ctx context.Context, displayName string) (string, error) {
-	q := url.Values{}
-	q.Set("filter", `displayName eq `+jsonString(displayName))
-	var resp struct {
-		Resources []struct {
-			ID string `json:"id"`
-		} `json:"Resources"`
-	}
-	if _, err := p.do(ctx, http.MethodGet, "/Groups?"+q.Encode(), nil, &resp); err != nil {
-		return "", err
-	}
-	if len(resp.Resources) == 0 {
-		return "", nil
-	}
-	return resp.Resources[0].ID, nil
 }
 
 // resolveGroupMembers maps each auth user to its vault UUID. Members that

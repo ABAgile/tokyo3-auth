@@ -329,17 +329,19 @@ func TestUserCreate_ServerErrorReturned(t *testing.T) {
 	}
 }
 
-// ── Group: create resolves members and POSTs ──────────────────────────────────
+// ── Group: PUT addresses the group by its auth-side UUID ──────────────────────
 
-func TestGroupCreate_ResolvesMembersAndPosts(t *testing.T) {
+func TestGroupUpsert_PutsByGroupUUIDWithExternalID(t *testing.T) {
 	fv := newFakeVault(t)
-	fv.on(http.MethodGet, "/Groups", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"Resources": []map[string]any{}, "totalResults": 0})
-	})
-	var posted map[string]any
-	fv.on(http.MethodPost, "/Groups", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&posted)
-		writeJSON(w, http.StatusCreated, map[string]any{"id": "grp-1"})
+	gID := uuid.New()
+	var (
+		put     map[string]any
+		putPath string
+	)
+	fv.on(http.MethodPut, "/Groups/", func(w http.ResponseWriter, r *http.Request) {
+		putPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&put)
+		writeJSON(w, http.StatusOK, map[string]any{"id": gID.String()})
 	})
 
 	st := newMemStore()
@@ -349,41 +351,42 @@ func TestGroupCreate_ResolvesMembersAndPosts(t *testing.T) {
 	_ = st.SetExternalID(context.Background(), "vault", m2.ID, "vault-jack")
 
 	p := newClient(t, fv, st)
-	g := &model.SCIMGroup{ID: uuid.New(), DisplayName: "Engineering"}
+	g := &model.SCIMGroup{ID: gID, DisplayName: "Engineering"}
 
 	if err := p.Group(context.Background(), provision.OpCreate, g, []*model.User{m1, m2}); err != nil {
 		t.Fatalf("Group: %v", err)
 	}
-	if posted["displayName"] != "Engineering" {
-		t.Errorf("displayName = %v", posted["displayName"])
+	if want := "/Groups/" + gID.String(); putPath != want {
+		t.Errorf("put path = %q, want %q", putPath, want)
 	}
-	mems, _ := posted["members"].([]any)
+	if put["externalId"] != gID.String() {
+		t.Errorf("externalId = %v, want %s", put["externalId"], gID)
+	}
+	if put["displayName"] != "Engineering" {
+		t.Errorf("displayName = %v", put["displayName"])
+	}
+	mems, _ := put["members"].([]any)
 	if len(mems) != 2 {
 		t.Fatalf("members = %v, want 2", mems)
 	}
 }
 
-// ── Group: PUT replaces existing group; 404 falls through to POST ─────────────
+// ── Group: PUT 404 falls through to POST /Groups ──────────────────────────────
 
-func TestGroupUpdate_404FallsThroughToPost(t *testing.T) {
+func TestGroupUpsert_404FallsThroughToPost(t *testing.T) {
 	fv := newFakeVault(t)
-	fv.on(http.MethodGet, "/Groups", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"Resources":    []map[string]any{{"id": "stale-grp"}},
-			"totalResults": 1,
-		})
-	})
-	fv.on(http.MethodPut, "/Groups/stale-grp", func(w http.ResponseWriter, _ *http.Request) {
+	gID := uuid.New()
+	fv.on(http.MethodPut, "/Groups/"+gID.String(), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	posted := false
 	fv.on(http.MethodPost, "/Groups", func(w http.ResponseWriter, _ *http.Request) {
 		posted = true
-		writeJSON(w, http.StatusCreated, map[string]any{"id": "fresh-grp"})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": gID.String()})
 	})
 
 	p := newClient(t, fv, newMemStore())
-	g := &model.SCIMGroup{ID: uuid.New(), DisplayName: "Marketing"}
+	g := &model.SCIMGroup{ID: gID, DisplayName: "Marketing"}
 	if err := p.Group(context.Background(), provision.OpUpdate, g, nil); err != nil {
 		t.Fatalf("Group: %v", err)
 	}
@@ -392,29 +395,24 @@ func TestGroupUpdate_404FallsThroughToPost(t *testing.T) {
 	}
 }
 
-// ── Group: delete looks up by displayName ─────────────────────────────────────
+// ── Group: delete addresses the group by its auth-side UUID ───────────────────
 
-func TestGroupDelete_LooksUpAndDeletes(t *testing.T) {
+func TestGroupDelete_DeletesByGroupUUID(t *testing.T) {
 	fv := newFakeVault(t)
-	fv.on(http.MethodGet, "/Groups", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"Resources":    []map[string]any{{"id": "grp-x"}},
-			"totalResults": 1,
-		})
-	})
-	deleted := false
-	fv.on(http.MethodDelete, "/Groups/grp-x", func(w http.ResponseWriter, _ *http.Request) {
-		deleted = true
+	gID := uuid.New()
+	deletedPath := ""
+	fv.on(http.MethodDelete, "/Groups/", func(w http.ResponseWriter, r *http.Request) {
+		deletedPath = r.URL.Path
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	p := newClient(t, fv, newMemStore())
-	g := &model.SCIMGroup{ID: uuid.New(), DisplayName: "Sales"}
+	g := &model.SCIMGroup{ID: gID, DisplayName: "Sales"}
 	if err := p.Group(context.Background(), provision.OpDelete, g, nil); err != nil {
 		t.Fatalf("Group: %v", err)
 	}
-	if !deleted {
-		t.Error("expected DELETE to be called")
+	if want := "/Groups/" + gID.String(); deletedPath != want {
+		t.Errorf("delete path = %q, want %q", deletedPath, want)
 	}
 }
 
