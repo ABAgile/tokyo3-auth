@@ -123,6 +123,7 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
+| `AUTH_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
 | `AUTH_AWS_IAM_ENABLED` | No | `false` | Deprecated. Configure AWS IAM via `/portal/admin/integrations` instead. |
 | `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |

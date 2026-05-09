@@ -42,6 +42,12 @@
               <button type="submit" class="btn btn-secondary btn-sm">Test</button>
             </form>
             {{end}}
+            {{if .Enabled}}
+            <form method="POST" action="/portal/admin/integrations/{{.ID}}/sync" style="display:inline"
+                  onsubmit="return confirm('Re-push every user and group to {{.Name}} now? Idempotent on the downstream — safe to repeat.')">
+              <button type="submit" class="btn btn-secondary btn-sm">Sync now</button>
+            </form>
+            {{end}}
           </td>
         </tr>
         {{else}}

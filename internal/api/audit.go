@@ -40,6 +40,7 @@ const (
 	ActionIntegrationUpdated  = "admin.integration.updated"
 	ActionIntegrationDeleted  = "admin.integration.deleted"
 	ActionIntegrationTested   = "admin.integration.tested"
+	ActionIntegrationSynced   = "admin.integration.synced"
 )
 
 func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) {

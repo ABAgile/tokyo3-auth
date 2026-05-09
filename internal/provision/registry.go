@@ -67,3 +67,21 @@ func (r *Registry) Group(ctx context.Context, op Op, g *model.SCIMGroup, members
 	r.mu.RUnlock()
 	set.Group(ctx, op, g, members)
 }
+
+// Snapshot returns a copy of the live provisioner slice under a read lock.
+// Used by background tasks (periodic full sync, manual portal-triggered sync)
+// that need to iterate provisioners without holding the lock for the whole
+// run. Returns nil when the registry is nil or unloaded.
+func (r *Registry) Snapshot() []Provisioner {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.set == nil || len(r.set.Provisioners) == 0 {
+		return nil
+	}
+	out := make([]Provisioner, len(r.set.Provisioners))
+	copy(out, r.set.Provisioners)
+	return out
+}

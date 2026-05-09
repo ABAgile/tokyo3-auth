@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
@@ -295,6 +297,62 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 	}
 	_ = json.Unmarshal(excerpt, &doc)
 	return resp.StatusCode, doc.DocumentationURI, nil
+}
+
+// handlePortalAdminIntegrationSync runs a full sync against a single
+// integration on demand: re-pushes every user and group to that target as
+// OpCreate (idempotent — PATCH-or-POST per user, full-list PUT per group).
+// Reuses the live provisioner from the registry rather than rebuilding,
+// matching what the periodic-sync goroutine does.
+func (s *Server) handlePortalAdminIntegrationSync(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Redirect(w, r, "/portal/admin/integrations?error=invalid+id", http.StatusFound)
+		return
+	}
+	row, err := s.store.GetIntegration(r.Context(), id)
+	if err != nil {
+		http.Redirect(w, r, "/portal/admin/integrations?error=integration+not+found", http.StatusFound)
+		return
+	}
+	if !row.Enabled {
+		http.Redirect(w, r, "/portal/admin/integrations?error="+url.QueryEscape("Integration "+row.Name+" is disabled — enable it before syncing."), http.StatusFound)
+		return
+	}
+	prov := s.lookupProvisioner(row.Name)
+	if prov == nil {
+		http.Redirect(w, r, "/portal/admin/integrations?error="+url.QueryEscape("Provisioner for "+row.Name+" not loaded — try saving the integration to reload."), http.StatusFound)
+		return
+	}
+	userOK, userFail, groupOK, groupFail := provision.SyncAll(r.Context(), s.store, prov, s.log)
+	s.logAudit(r, ActionIntegrationSynced, &pc.User.ID, nil, logMeta(
+		"name", row.Name,
+		"users_ok", userOK, "users_failed", userFail,
+		"groups_ok", groupOK, "groups_failed", groupFail,
+		"trigger", "manual",
+	))
+	msg := fmt.Sprintf("Sync %s done: users %d ok / %d failed; groups %d ok / %d failed", row.Name, userOK, userFail, groupOK, groupFail)
+	flashKey := "success"
+	if userFail+groupFail > 0 {
+		flashKey = "error"
+	}
+	http.Redirect(w, r, "/portal/admin/integrations?"+flashKey+"="+url.QueryEscape(msg), http.StatusFound)
+}
+
+// lookupProvisioner returns the loaded provisioner whose Name matches `name`,
+// or nil if none. Used by the manual-sync handler to dispatch against the
+// already-built provisioner without re-decrypting the integration's token.
+func (s *Server) lookupProvisioner(name string) provision.Provisioner {
+	if s.provReg == nil {
+		return nil
+	}
+	for _, p := range s.provReg.Snapshot() {
+		if p.Name() == name {
+			return p
+		}
+	}
+	return nil
 }
 
 func (s *Server) reloadProvisioners(ctx context.Context) {

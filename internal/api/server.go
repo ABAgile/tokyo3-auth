@@ -194,6 +194,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/edit", s.portalAdminAuth(s.handlePortalAdminIntegrationEdit))
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/delete", s.portalAdminAuth(s.handlePortalAdminIntegrationDelete))
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/test", s.portalAdminAuth(s.handlePortalAdminIntegrationTest))
+	mux.HandleFunc("POST /portal/admin/integrations/{id}/sync", s.portalAdminAuth(s.handlePortalAdminIntegrationSync))
 	mux.HandleFunc("GET /portal/admin/groups", s.portalAdminAuth(s.handlePortalAdminGroups))
 	mux.HandleFunc("GET /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))
 	mux.HandleFunc("POST /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))

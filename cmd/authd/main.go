@@ -8,10 +8,19 @@
 //
 // Optional:
 //
-//	AUTH_ADMIN_DATABASE_URL  Admin DSN used for schema migrations (DDL).
-//	                         Falls back to AUTH_DATABASE_URL when unset.
-//	AUTH_ADDR                HTTPS listen address (default: :8443).
-//	AUTH_ALLOW_REGISTRATION  Set to "true" to enable self-registration at /register.
+//	AUTH_ADMIN_DATABASE_URL    Admin DSN used for schema migrations (DDL).
+//	                           Falls back to AUTH_DATABASE_URL when unset.
+//	AUTH_ADDR                  HTTPS listen address (default: :8443).
+//	AUTH_ALLOW_REGISTRATION    Set to "true" to enable self-registration at /register.
+//	AUTH_PROVISION_SYNC_INTERVAL  Period for the background full-sync goroutine
+//	                              that re-pushes every user/group to every enabled
+//	                              integration (defaults to 1h; set to 0 or a
+//	                              negative duration to disable). Belt-and-suspenders
+//	                              for the event-driven push path: catches drift from
+//	                              missed events, downstream restores, and split-brain
+//	                              after restarts. Each tick is idempotent on the
+//	                              downstream (PATCH-or-POST on users, full-list PUT
+//	                              on groups).
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
@@ -79,7 +88,6 @@ import (
 	"github.com/abagile/tokyo3-base/journal"
 	"github.com/abagile/tokyo3-base/journal/jetstream"
 	btls "github.com/abagile/tokyo3-base/tls"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -210,6 +218,10 @@ func runServe() error {
 		Addr:      addr,
 		Handler:   srv.Routes(),
 		TLSConfig: tlsCfg,
+	}
+
+	if interval := provisionSyncInterval(log); interval > 0 {
+		go runPeriodicProvisionSync(ctx, db, provReg, interval, log)
 	}
 
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
@@ -366,42 +378,65 @@ func runAdminSync(target string) error {
 	return nil
 }
 
-func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisioner, log *slog.Logger) (userOK, userFail, groupOK, groupFail int) {
-	users, err := db.ListUsers(ctx)
+// provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the
+// default of 1 hour. A zero/negative value disables the background sync.
+func provisionSyncInterval(log *slog.Logger) time.Duration {
+	v := strings.TrimSpace(os.Getenv("AUTH_PROVISION_SYNC_INTERVAL"))
+	if v == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Error("list users", "err", err)
-		return
+		log.Warn("AUTH_PROVISION_SYNC_INTERVAL is not a valid duration; periodic sync disabled",
+			"value", v, "err", err)
+		return 0
 	}
-	usersByID := make(map[uuid.UUID]*model.User, len(users))
-	for _, u := range users {
-		usersByID[u.ID] = u
-		if err := prov.User(ctx, provision.OpCreate, u, nil); err != nil {
-			log.Error("sync user", "target", prov.Name(), "email", u.Email, "err", err)
-			userFail++
-			continue
-		}
-		userOK++
-	}
-	groups, err := db.ListGroups(ctx)
-	if err != nil {
-		log.Error("list groups", "err", err)
-		return
-	}
-	for _, g := range groups {
-		members := make([]*model.User, 0, len(g.Members))
-		for _, mid := range g.Members {
-			if m, ok := usersByID[mid]; ok {
-				members = append(members, m)
+	return d
+}
+
+// runPeriodicProvisionSync runs a full sync against every live provisioner on
+// the configured interval, exiting when ctx is cancelled. The first tick fires
+// after `interval` (not at startup) so a cold restart doesn't pile a sync run
+// on top of migrations + token pruning + audit-sink connect.
+//
+// Each tick reuses the live registry's provisioners — no rebuild — so an
+// integration the admin disabled mid-tick is dropped on the next snapshot.
+// User/group iteration is the same as `authd admin sync`: idempotent
+// PATCH-or-POST per user, full-list PUT per group.
+func runPeriodicProvisionSync(ctx context.Context, db *postgres.DB, reg *provision.Registry, interval time.Duration, log *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Info("periodic provision sync enabled", "interval", interval)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("periodic provision sync stopped")
+			return
+		case <-ticker.C:
+			provs := reg.Snapshot()
+			if len(provs) == 0 {
+				log.Debug("periodic provision sync — no enabled integrations, skipping tick")
+				continue
 			}
+			start := time.Now()
+			for _, prov := range provs {
+				if ctx.Err() != nil {
+					return
+				}
+				userOK, userFail, groupOK, groupFail := syncOneTarget(ctx, db, prov, log)
+				log.Info("periodic provision sync — target done",
+					"target", prov.Name(),
+					"users_ok", userOK, "users_failed", userFail,
+					"groups_ok", groupOK, "groups_failed", groupFail)
+			}
+			log.Info("periodic provision sync — tick done",
+				"targets", len(provs), "elapsed", time.Since(start))
 		}
-		if err := prov.Group(ctx, provision.OpCreate, g, members); err != nil {
-			log.Error("sync group", "target", prov.Name(), "displayName", g.DisplayName, "err", err)
-			groupFail++
-			continue
-		}
-		groupOK++
 	}
-	return
+}
+
+func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisioner, log *slog.Logger) (userOK, userFail, groupOK, groupFail int) {
+	return provision.SyncAll(ctx, db, prov, log)
 }
 
 // buildProvSet constructs a provision.Set from every enabled integration row.
