@@ -38,13 +38,13 @@ LDFLAGS := -s -w
 GO      := go
 GOFLAGS :=
 
-IMAGE_NAME         ?= abagile/tokyo3-auth
-IMAGE_TAG          ?= $(VERSION)
-POSTGRES_PORT      ?= 35432
-AUTH_AUDIT_DB_PORT ?= 35433
-NATS_PORT          ?= 34222
-AUTH_PORT          ?= 8443
-AUTH_ADDR          ?= :$(AUTH_PORT)
+IMAGE_NAME    ?= abagile/tokyo3-auth
+IMAGE_TAG     ?= $(VERSION)
+AUTH_PORT     ?= 8443
+AUTH_ADDR     ?= :$(AUTH_PORT)
+POSTGRES_PORT ?= 35432
+AUDIT_DB_PORT ?= 35433
+NATS_PORT     ?= 34222
 
 # Docker Compose project name (defaults to directory basename, matching Compose behaviour).
 # Used to derive the shared named volume name for pre-population via tar pipe (no bind mounts).
@@ -99,7 +99,7 @@ _gen-env: build
 	@if [ ! -f .env ]; then \
 	    KEY=$$($(AUTHD_BIN) keygen); \
 	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                            > .env; \
-	    echo "AUTH_ISSUER=https://localhost:$(AUTH_PORT)"                                                                                      >> .env; \
+	    echo "AUTH_ISSUER=https://auth.localhost:$(AUTH_PORT)"                                                                                 >> .env; \
 	    echo "AUTH_ADDR=$(AUTH_ADDR)"                                                                                                          >> .env; \
 	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                  >> .env; \
 	    echo "AUTH_ADMIN_PASSWORD=changeme"                                                                                                    >> .env; \
@@ -133,7 +133,7 @@ _sync-certs:
 run: _gen-env _sync-pg-scripts
 	@docker compose up -d db nats natsbox --wait 2>/dev/null || true
 	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_NATS_URL=nats://localhost:$(NATS_PORT) \
+	    AUTH_NATS_URL=nats://nats.localhost:$(NATS_PORT) \
 	    $(AUTHD_BIN) serve
 
 ## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
@@ -164,8 +164,8 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 run-audit: _gen-env _sync-pg-scripts
 	@docker compose up -d audit-db nats natsbox --wait 2>/dev/null || true
 	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_AUDIT_NATS_URL=nats://localhost:$(NATS_PORT) \
-	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}:$${AUTH_AUDIT_DB_PASSWORD:-changeme}@db.localhost:$(AUTH_AUDIT_DB_PORT)/auth_audit?sslmode=disable \
+	    AUTH_AUDIT_NATS_URL=nats://nats.localhost:$(NATS_PORT) \
+	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}:$${AUTH_AUDIT_DB_PASSWORD:-changeme}@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=disable \
 	    $(AUTH_AUDIT_BIN) consume
 
 ## run-audit-mtls: Build and start auth-audit with mTLS
@@ -180,7 +180,7 @@ run-audit-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    AUTH_AUDIT_DB_CERT=certs/auth-audit-db-client.crt \
 	    AUTH_AUDIT_DB_KEY=certs/auth-audit-db-client.key \
 	    AUTH_AUDIT_DB_CA=$$CA_PEM \
-	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}@audit-db.localhost:$(AUTH_AUDIT_DB_PORT)/auth_audit?sslmode=verify-full \
+	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=verify-full \
 	    $(AUTH_AUDIT_BIN) consume
 
 ## keygen: Print a fresh random master key

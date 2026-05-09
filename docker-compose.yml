@@ -52,7 +52,7 @@ services:
     image: postgres:17-alpine
     entrypoint: ["sh", "/shared/pg-scripts/pg-entrypoint.sh"]
     ports:
-      - "${AUTH_AUDIT_DB_PORT:-5435}:5432"
+      - "${AUDIT_DB_PORT:-5435}:5432"
     environment:
       PG_INIT_SCRIPT:    /shared/pg-scripts/audit-db-init.sh
       POSTGRES_USER:     ${AUTH_AUDIT_DB_USERNAME:-auth_audit}
@@ -122,8 +122,8 @@ services:
     restart: unless-stopped
 
   # ── API server ────────────────────────────────────────────────────────────
-  # Exposes HTTPS on ${AUTH_PORT:-8443}. Browse https://localhost:8443; use
-  # mkcert (via certs/gen.sh) to issue a browser-trusted server cert.
+  # Exposes HTTPS on ${AUTH_PORT:-8443}. Browse https://auth.localhost:8443;
+  # use mkcert (via certs/gen.sh) to issue a browser-trusted server cert.
   auth:
     build: .
     restart: unless-stopped
@@ -137,7 +137,7 @@ services:
     ports:
       - "${AUTH_PORT:-8443}:443"
     environment:
-      AUTH_ISSUER: ${AUTH_ISSUER:-https://localhost:8443}
+      AUTH_ISSUER: ${AUTH_ISSUER:-https://auth.localhost:8443}
       AUTH_ADDR: :443
       # Admin DSN: schema migration only (DDL privileges).
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_PASSWORD}@db:5432/authdb?sslmode=disable
