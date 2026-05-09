@@ -71,8 +71,8 @@
         <div data-auth-mode="mtls" {{if ne .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
           <div class="alert alert-info" style="font-size:13px">
             mTLS auth uses the client cert/key/CA configured at process level via
-            <code>AUTH_OUTBOUND_TLS_CERT</code>, <code>AUTH_OUTBOUND_TLS_KEY</code>, and
-            <code>AUTH_OUTBOUND_TLS_CA</code> (env vars, not portal-managed). The cert is
+            <code>AUTH_SCIM_CERT</code>, <code>AUTH_SCIM_KEY</code>, and
+            <code>AUTH_SCIM_CA</code> (env vars, not portal-managed). The cert is
             hot-reloaded; the downstream must allow-list auth's CA + SAN/CN.
           </div>
         </div>

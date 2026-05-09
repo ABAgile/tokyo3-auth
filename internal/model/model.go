@@ -123,7 +123,7 @@ const (
 // always come from the AWS SDK's default chain.
 const (
 	AppIntegrationAuthBearer = "bearer" // RP-issued bearer token; stored encrypted on the row
-	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTH_OUTBOUND_TLS_* env vars
+	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTH_SCIM_* env vars
 )
 
 // AppIntegrationConfig is the non-secret JSON payload persisted alongside an

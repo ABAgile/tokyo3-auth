@@ -1,11 +1,11 @@
 # docker-compose.mtls.yml — mTLS overlay
 #
 # Enables TLS on every inter-service connection:
-#   authd HTTPS API         AUTH_TLS_CERT / AUTH_TLS_KEY
+#   authd HTTPS API         AUTH_API_CERT / AUTH_API_KEY
 #   NATS server TLS + mTLS  --tls / --tlsverify + client certs on both sides
 #   authd → postgres        client cert + cert auth (no password in DSN)
 #   authd → NATS            client cert (publisher identity)
-#   authd → outbound SCIM   AUTH_OUTBOUND_TLS_CERT / KEY / CA (used by
+#   authd → outbound SCIM   AUTH_SCIM_CERT / KEY / CA (used by
 #                           app_integrations rows with auth_mode=mtls)
 #   auth-audit → NATS       client cert (consumer identity)
 #   auth-audit → audit-db   client cert + cert auth (no password in DSN)
@@ -96,8 +96,8 @@ services:
   # ── authd: HTTPS + mTLS certs for NATS and Postgres ───────────────────────
   auth:
     environment:
-      AUTH_TLS_CERT:           /shared/certs/authd-server.crt
-      AUTH_TLS_KEY:            /shared/certs/authd-server.key
+      AUTH_API_CERT:           /shared/certs/authd-server.crt
+      AUTH_API_KEY:            /shared/certs/authd-server.key
       AUTH_NATS_CERT:          /shared/certs/authd-nats-client.crt
       AUTH_NATS_KEY:           /shared/certs/authd-nats-client.key
       AUTH_NATS_CA:            /shared/certs/ca.crt
@@ -110,9 +110,9 @@ services:
       AUTH_DB_CA:              /shared/certs/ca.crt
       # Outbound SCIM mTLS — single shared identity (CN=authd) presented to
       # every app_integrations row with auth_mode=mtls.
-      AUTH_OUTBOUND_TLS_CERT:  /shared/certs/authd-scim-client.crt
-      AUTH_OUTBOUND_TLS_KEY:   /shared/certs/authd-scim-client.key
-      AUTH_OUTBOUND_TLS_CA:    /shared/certs/ca.crt
+      AUTH_SCIM_CERT:  /shared/certs/authd-scim-client.crt
+      AUTH_SCIM_KEY:   /shared/certs/authd-scim-client.key
+      AUTH_SCIM_CA:    /shared/certs/ca.crt
       # Cert auth: no password; cert CN authenticates the role.
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full
       AUTH_DATABASE_URL:       postgres://${AUTH_APP_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full

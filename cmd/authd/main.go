@@ -15,12 +15,12 @@
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
-//	AUTH_TLS_CERT         Path to server TLS certificate PEM (hot-reloaded;
+//	AUTH_API_CERT         Path to server TLS certificate PEM (hot-reloaded;
 //	                      the file's mtime is polled at most once per second
 //	                      across handshakes, so rotations land within ~1s).
-//	AUTH_TLS_KEY          Path to server TLS private key PEM. Must be paired with AUTH_TLS_CERT.
+//	AUTH_API_KEY          Path to server TLS private key PEM. Must be paired with AUTH_API_CERT.
 //	                      If neither is set, an ephemeral self-signed cert is generated (dev only).
-//	AUTH_TLS_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
+//	AUTH_API_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
 //
 // Database mTLS (optional, used together with cert-auth Postgres):
 //
@@ -33,11 +33,11 @@
 //
 // Outbound mTLS (used by app_integrations rows with auth_mode=mtls):
 //
-//	AUTH_OUTBOUND_TLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
+//	AUTH_SCIM_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
 //	                        downstreams. Hot-reloaded (mtime polled at most once
 //	                        per second across SCIM requests).
-//	AUTH_OUTBOUND_TLS_KEY   Client key PEM. Required iff AUTH_OUTBOUND_TLS_CERT is set.
-//	AUTH_OUTBOUND_TLS_CA    Optional CA bundle for verifying downstream servers.
+//	AUTH_SCIM_KEY   Client key PEM. Required iff AUTH_SCIM_CERT is set.
+//	AUTH_SCIM_CA    Optional CA bundle for verifying downstream servers.
 //	                        Empty falls back to the system root pool. A single
 //	                        cert/key pair is shared across every mTLS integration.
 //
@@ -455,7 +455,7 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			cfg.Token = string(token)
 		case model.AppIntegrationAuthMTLS:
 			if outboundTLS == nil {
-				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_OUTBOUND_TLS_CERT/KEY are unset", i.Name)
+				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_SCIM_CERT/KEY are unset", i.Name)
 			}
 			cfg.TLSConfig = outboundTLS
 		default:
@@ -605,20 +605,20 @@ func envOr(key, fallback string) string {
 // identity). Returns nil when no env vars are set; mtls-mode integrations then
 // fail at registry-build time with a clear error.
 //
-//	AUTH_OUTBOUND_TLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
+//	AUTH_SCIM_CERT  Client cert PEM path (hot-reloaded; mtime polled
 //	                        once per second across SCIM requests).
-//	AUTH_OUTBOUND_TLS_KEY   Client key PEM path. Required iff CERT is set.
-//	AUTH_OUTBOUND_TLS_CA    Optional CA bundle for verifying downstream servers.
+//	AUTH_SCIM_KEY   Client key PEM path. Required iff CERT is set.
+//	AUTH_SCIM_CA    Optional CA bundle for verifying downstream servers.
 //	                        Empty falls back to the system root pool.
 func outboundTLSFromEnv() (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_OUTBOUND_TLS_CERT")
-	keyFile := os.Getenv("AUTH_OUTBOUND_TLS_KEY")
-	caFile := os.Getenv("AUTH_OUTBOUND_TLS_CA")
+	certFile := os.Getenv("AUTH_SCIM_CERT")
+	keyFile := os.Getenv("AUTH_SCIM_KEY")
+	caFile := os.Getenv("AUTH_SCIM_CA")
 	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil, nil
 	}
 	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTH_OUTBOUND_TLS_CERT and AUTH_OUTBOUND_TLS_KEY must both be set or both unset")
+		return nil, fmt.Errorf("AUTH_SCIM_CERT and AUTH_SCIM_KEY must both be set or both unset")
 	}
 	cfg := &tls.Config{}
 	if certFile != "" {
@@ -638,11 +638,11 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 	if caFile != "" {
 		data, err := os.ReadFile(caFile)
 		if err != nil {
-			return nil, fmt.Errorf("read AUTH_OUTBOUND_TLS_CA: %w", err)
+			return nil, fmt.Errorf("read AUTH_SCIM_CA: %w", err)
 		}
 		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse AUTH_OUTBOUND_TLS_CA: %w", err)
+			return nil, fmt.Errorf("parse AUTH_SCIM_CA: %w", err)
 		}
 		cfg.RootCAs = pool
 	}
@@ -713,17 +713,17 @@ func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 
 // buildServerTLS constructs the server tls.Config.
 // Cert source priority:
-//  1. AUTH_TLS_CERT + AUTH_TLS_KEY files (hot-reload via GetCertificate)
+//  1. AUTH_API_CERT + AUTH_API_KEY files (hot-reload via GetCertificate)
 //  2. Auto-generated self-signed cert (dev fallback, logs a warning)
 //
-// If AUTH_TLS_CLIENT_CA is set, mTLS client verification is enabled.
+// If AUTH_API_CLIENT_CA is set, mTLS client verification is enabled.
 func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_TLS_CERT")
-	keyFile := os.Getenv("AUTH_TLS_KEY")
-	clientCAFile := os.Getenv("AUTH_TLS_CLIENT_CA")
+	certFile := os.Getenv("AUTH_API_CERT")
+	keyFile := os.Getenv("AUTH_API_KEY")
+	clientCAFile := os.Getenv("AUTH_API_CLIENT_CA")
 
 	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTH_TLS_CERT and AUTH_TLS_KEY must both be set or both unset")
+		return nil, fmt.Errorf("AUTH_API_CERT and AUTH_API_KEY must both be set or both unset")
 	}
 
 	cfg := &tls.Config{}
@@ -743,11 +743,11 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	if clientCAFile != "" {
 		data, err := os.ReadFile(clientCAFile)
 		if err != nil {
-			return nil, fmt.Errorf("read AUTH_TLS_CLIENT_CA: %w", err)
+			return nil, fmt.Errorf("read AUTH_API_CLIENT_CA: %w", err)
 		}
 		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse AUTH_TLS_CLIENT_CA: %w", err)
+			return nil, fmt.Errorf("parse AUTH_API_CLIENT_CA: %w", err)
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.VerifyClientCertIfGiven

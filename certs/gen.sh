@@ -92,7 +92,7 @@ mkc_client "authd-app-db-client"    "$APP_USERNAME"    authd
 mkc_client "auth-audit-db-client"   "$AUDIT_USERNAME"  auth-audit
 
 # ── Client cert — outbound SCIM provisioning ─────────────────────────────────
-# Used by AUTH_OUTBOUND_TLS_CERT/KEY when an app_integrations row is in mTLS
+# Used by AUTH_SCIM_CERT/KEY when an app_integrations row is in mTLS
 # mode. CN=authd is the stable identity downstreams allow-list as "the IdP";
 # SANs are advisory (servers don't validate client-cert hostnames). Same root
 # CA as everything else, so a downstream that already trusts the mkcert CA for

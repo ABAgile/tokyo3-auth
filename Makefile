@@ -141,8 +141,8 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d db nats natsbox --wait 2>/dev/null || true
 	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
 	    export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_TLS_CERT=certs/authd-server.crt \
-	    AUTH_TLS_KEY=certs/authd-server.key \
+	    AUTH_API_CERT=certs/authd-server.crt \
+	    AUTH_API_KEY=certs/authd-server.key \
 	    AUTH_ADMIN_DB_CERT=certs/authd-admin-db-client.crt \
 	    AUTH_ADMIN_DB_KEY=certs/authd-admin-db-client.key \
 	    AUTH_ADMIN_DB_CA=$$CA_PEM \
@@ -151,9 +151,9 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    AUTH_DB_KEY=certs/authd-app-db-client.key \
 	    AUTH_DB_CA=$$CA_PEM \
 	    AUTH_DATABASE_URL=postgres://$${AUTH_APP_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
-	    AUTH_OUTBOUND_TLS_CERT=certs/authd-scim-client.crt \
-	    AUTH_OUTBOUND_TLS_KEY=certs/authd-scim-client.key \
-	    AUTH_OUTBOUND_TLS_CA=$$CA_PEM \
+	    AUTH_SCIM_CERT=certs/authd-scim-client.crt \
+	    AUTH_SCIM_KEY=certs/authd-scim-client.key \
+	    AUTH_SCIM_CA=$$CA_PEM \
 	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    AUTH_NATS_CERT=certs/authd-nats-client.crt \
 	    AUTH_NATS_KEY=certs/authd-nats-client.key \

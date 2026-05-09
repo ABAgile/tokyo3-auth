@@ -81,9 +81,9 @@ Add a Vault SCIM integration at `/portal/admin/integrations/new`:
 Configure vault to require client certs on `/scim/v2/*` and allow-list auth's CA + the SAN/CN that identifies authd. Then point auth at its outbound cert/key/CA via env vars (one shared identity for every mTLS integration; no per-row secrets):
 
 ```sh
-AUTH_OUTBOUND_TLS_CERT=/run/secrets/auth-outbound.crt
-AUTH_OUTBOUND_TLS_KEY=/run/secrets/auth-outbound.key
-AUTH_OUTBOUND_TLS_CA=/run/secrets/downstream-ca.crt    # optional; empty = system roots
+AUTH_SCIM_CERT=/run/secrets/auth-outbound.crt
+AUTH_SCIM_KEY=/run/secrets/auth-outbound.key
+AUTH_SCIM_CA=/run/secrets/downstream-ca.crt    # optional; empty = system roots
 ```
 
 Restart auth. The cert file is hot-reloaded (mtime polled at most once per second across SCIM requests), so pair this with tbot, cert-manager, or SPIFFE for automatic rotation without restarts.
@@ -153,7 +153,7 @@ If the target speaks SCIM 2.0 over bearer auth or mTLS (Okta-as-target, Azure-as
 - Provider: `scim`
 - Name: any unique identifier (used as the `external_ids` cache key — don't rename a live integration)
 - Base URL: the target's SCIM root
-- Authentication: `Bearer token` (paste the value the target issued) **or** `mTLS (client cert)` (uses the shared `AUTH_OUTBOUND_TLS_*` env vars; the target must allow-list auth's CA + SAN/CN)
+- Authentication: `Bearer token` (paste the value the target issued) **or** `mTLS (client cert)` (uses the shared `AUTH_SCIM_*` env vars; the target must allow-list auth's CA + SAN/CN)
 
 Backfill existing users with `authd admin sync --target=<name>`. The integration is then live for all subsequent mutations.
 
@@ -231,7 +231,7 @@ Adding a new app
 
 - **Credential rotation.**
   - *Bearer mode:* tokens are long-lived. Rotate via the downstream's token endpoint, then click **Replace token** on the integration's edit page. The new token is encrypted with the master KEK and the registry hot-reloads on save.
-  - *mTLS mode:* the cert/key pointed at by `AUTH_OUTBOUND_TLS_CERT/KEY` is hot-reloaded automatically — replace the file on disk (tbot, cert-manager, SPIFFE) and the next SCIM request picks it up. No process restart, no portal save.
+  - *mTLS mode:* the cert/key pointed at by `AUTH_SCIM_CERT/KEY` is hot-reloaded automatically — replace the file on disk (tbot, cert-manager, SPIFFE) and the next SCIM request picks it up. No process restart, no portal save.
 - **Failure mode.** Provisioner errors are logged and audited but never block the originating request. A failed downstream sync is recoverable via `authd admin sync --target=<name>`.
 - **404 self-heal.** The SCIM client treats `external_ids` as a cache, not authority. On `404` from `PUT/PATCH/DELETE` it invalidates the cache and re-resolves via `filter=externalId eq`, then either retries or falls through to `POST` (idempotent on email).
 - **Order of operations on first deploy.** Provision before SSO. If a user logs in via OIDC before they've been SCIM-provisioned, the downstream JIT-creates them with no `externalId` — which still works via email fallback, but later updates take an extra round trip until the cache is populated. Run `authd admin sync` first.
