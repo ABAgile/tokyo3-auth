@@ -1,15 +1,13 @@
 ## tokyo3-auth — build targets
 ##
 ## Usage:
-##   make build             Build authd + auth-audit binaries to ./bin/
+##   make build             Build authd binary to ./bin/
 ##   make run               Start authd with dev defaults (starts Postgres + NATS via compose)
 ##   make run-mtls          Start authd with mTLS (cert auth, no password in DSN)
-##   make run-audit         Start auth-audit (audit projection consumer) with dev defaults
-##   make run-audit-mtls    Start auth-audit with mTLS
 ##   make keygen            Generate an AUTH_MASTER_KEY
 ##   make check             Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
 ##   make docker-build      Build Docker image
-##   make docker-up         Start with docker compose (Postgres + NATS + auth + auth-audit)
+##   make docker-up         Start with docker compose (Postgres + NATS + auth)
 ##   make docker-up-mtls    Start with docker compose + mTLS overlay (auto-generates certs)
 ##   make docker-down       Stop docker compose (overlay-aware; safe in any mode)
 ##   make docker-down-all   Stop + remove orphan containers AND named volumes (destroys DB data)
@@ -21,13 +19,11 @@
 
 # ── Variables ─────────────────────────────────────────────────────────────────
 
-MODULE         := github.com/abagile/tokyo3-auth
-CMD_AUTHD      := ./cmd/authd
-CMD_AUTH_AUDIT := ./cmd/auth-audit
+MODULE     := github.com/abagile/tokyo3-auth
+CMD_AUTHD  := ./cmd/authd
 
-BIN_DIR         := bin
-AUTHD_BIN       := $(BIN_DIR)/authd
-AUTH_AUDIT_BIN  := $(BIN_DIR)/auth-audit
+BIN_DIR    := bin
+AUTHD_BIN  := $(BIN_DIR)/authd
 
 GIT_TAG    := $(shell git describe --tags --exact-match 2>/dev/null || true)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -43,7 +39,6 @@ IMAGE_TAG     ?= $(VERSION)
 AUTH_PORT     ?= 8443
 AUTH_ADDR     ?= :$(AUTH_PORT)
 POSTGRES_PORT ?= 35432
-AUDIT_DB_PORT ?= 35433
 NATS_PORT     ?= 34222
 
 # Docker Compose project name (defaults to directory basename, matching Compose behaviour).
@@ -54,7 +49,7 @@ SHARED_VOLUME   := $(COMPOSE_PROJECT)_shared_data
 # ── Phony targets ─────────────────────────────────────────────────────────────
 
 .PHONY: all build build-linux build-linux-amd64 build-darwin \
-        run run-mtls run-audit run-audit-mtls keygen gen-certs \
+        run run-mtls keygen gen-certs \
         _gen-env _sync-pg-scripts _sync-certs \
         test test-verbose tidy vet lint check \
         docker-build docker-build-amd64 docker-push docker-up docker-up-mtls docker-down docker-down-all docker-logs \
@@ -64,37 +59,33 @@ all: build
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-## build: Compile authd + auth-audit into ./bin/
+## build: Compile authd into ./bin/
 build: $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(AUTHD_BIN)      $(CMD_AUTHD)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(AUTH_AUDIT_BIN) $(CMD_AUTH_AUDIT)
-	@echo "  built $(AUTHD_BIN) and $(AUTH_AUDIT_BIN) ($(VERSION))"
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(AUTHD_BIN) $(CMD_AUTHD)
+	@echo "  built $(AUTHD_BIN) ($(VERSION))"
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 ## build-linux: Cross-compile for Linux arm64 (Graviton, default)
 build-linux: $(BIN_DIR)
-	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-arm64      $(CMD_AUTHD)
-	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-audit-linux-arm64 $(CMD_AUTH_AUDIT)
-	@echo "  built authd-linux-arm64 and auth-audit-linux-arm64"
+	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-arm64 $(CMD_AUTHD)
+	@echo "  built authd-linux-arm64"
 
 ## build-linux-amd64: Cross-compile for Linux amd64
 build-linux-amd64: $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-amd64      $(CMD_AUTHD)
-	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-audit-linux-amd64 $(CMD_AUTH_AUDIT)
-	@echo "  built authd-linux-amd64 and auth-audit-linux-amd64"
+	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-amd64 $(CMD_AUTHD)
+	@echo "  built authd-linux-amd64"
 
 ## build-darwin: Cross-compile for macOS arm64 (M-series)
 build-darwin: $(BIN_DIR)
-	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-darwin-arm64      $(CMD_AUTHD)
-	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-audit-darwin-arm64 $(CMD_AUTH_AUDIT)
-	@echo "  built authd-darwin-arm64 and auth-audit-darwin-arm64"
+	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-darwin-arm64 $(CMD_AUTHD)
+	@echo "  built authd-darwin-arm64"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-# Generate .env with dev defaults on first run. Used by all four run targets.
-# DSNs use password auth; the mTLS run targets override with cert-auth DSNs at process launch time.
+# Generate .env with dev defaults on first run. Used by both run targets.
+# DSNs use password auth; the mTLS run target overrides with cert-auth DSNs at process launch time.
 _gen-env: build
 	@if [ ! -f .env ]; then \
 	    KEY=$$($(AUTHD_BIN) keygen); \
@@ -106,12 +97,8 @@ _gen-env: build
 	    echo "AUTH_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
 	    echo "AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"           >> .env; \
 	    echo "AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}:changeme@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable"                         >> .env; \
-	    echo "AUDIT_DB_PORT=$(AUDIT_DB_PORT)"                                                                                                                    >> .env; \
-	    echo "AUTH_AUDIT_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
-	    echo "AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}:changeme@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=disable" >> .env; \
 	    echo "NATS_PORT=$(NATS_PORT)"                                                                                                                            >> .env; \
 	    echo "AUTH_NATS_URL=nats://nats.localhost:$(NATS_PORT)"                                                                                                  >> .env; \
-	    echo "AUTH_AUDIT_NATS_URL=nats://nats.localhost:$(NATS_PORT)"                                                                                            >> .env; \
 	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
 	    echo "  generated .env"; \
 	fi
@@ -162,26 +149,6 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    AUTH_NATS_CA=$$CA_PEM \
 	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    $(AUTHD_BIN) serve
-
-## run-audit: Build and start auth-audit with dev defaults (uses the same .env)
-run-audit: _gen-env _sync-pg-scripts
-	@docker compose up -d audit-db nats natsbox --wait 2>/dev/null || true
-	@export $$(grep -v '^#' .env | xargs) && $(AUTH_AUDIT_BIN) consume
-
-## run-audit-mtls: Build and start auth-audit with mTLS
-run-audit-mtls: _gen-env _sync-pg-scripts _sync-certs
-	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d audit-db nats natsbox --wait 2>/dev/null || true
-	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
-	    export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_AUDIT_DB_CERT=certs/auth-audit-db-client.crt \
-	    AUTH_AUDIT_DB_KEY=certs/auth-audit-db-client.key \
-	    AUTH_AUDIT_DB_CA=$$CA_PEM \
-	    AUTH_AUDIT_DATABASE_URL=postgres://$${AUTH_AUDIT_DB_USERNAME:-auth_audit}@audit-db.localhost:$(AUDIT_DB_PORT)/auth_audit?sslmode=verify-full \
-	    AUTH_AUDIT_NATS_CERT=certs/auth-audit-nats-client.crt \
-	    AUTH_AUDIT_NATS_KEY=certs/auth-audit-nats-client.key \
-	    AUTH_AUDIT_NATS_CA=$$CA_PEM \
-	    AUTH_AUDIT_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
-	    $(AUTH_AUDIT_BIN) consume
 
 ## keygen: Print a fresh random master key
 keygen: build

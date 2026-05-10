@@ -28,7 +28,6 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
 fi
 ADMIN_USERNAME="${AUTH_ADMIN_DB_USERNAME:-auth_admin}"
 APP_USERNAME="${AUTH_DB_USERNAME:-auth_app}"
-AUDIT_USERNAME="${AUTH_AUDIT_DB_USERNAME:-auth_audit}"
 
 step() { printf '  %-34s' "$1..."; }
 ok()   { echo "ok"; }
@@ -76,20 +75,17 @@ mkc_client() {
 # access. localhost / 127.0.0.1 SANs on authd-server let
 # AUTH_ISSUER=https://localhost:8443 (the run-mtls default) validate without
 # a cert mismatch.
-mkc_server "authd-server"     authd     auth.localhost     localhost  127.0.0.1
-mkc_server "db-server"        db        db.localhost       localhost  127.0.0.1
-mkc_server "audit-db-server"  audit-db  audit-db.localhost localhost  127.0.0.1
-mkc_server "nats-server"      nats      nats.localhost     localhost  127.0.0.1
+mkc_server "authd-server"  authd  auth.localhost  localhost  127.0.0.1
+mkc_server "db-server"     db     db.localhost    localhost  127.0.0.1
+mkc_server "nats-server"   nats   nats.localhost  localhost  127.0.0.1
 
 # ── Client certs — NATS (transport identity only) ────────────────────────────
-mkc_client "authd-nats-client"      authd
-mkc_client "auth-audit-nats-client" auth-audit
+mkc_client "authd-nats-client" authd
 
 # ── Client certs — PostgreSQL (CN must match the DB role for cert auth) ──────
 # Role name first → fork sets it as Subject CN. SAN follows.
-mkc_client "authd-admin-db-client"  "$ADMIN_USERNAME"  authd
-mkc_client "authd-app-db-client"    "$APP_USERNAME"    authd
-mkc_client "auth-audit-db-client"   "$AUDIT_USERNAME"  auth-audit
+mkc_client "authd-admin-db-client" "$ADMIN_USERNAME" authd
+mkc_client "authd-app-db-client"   "$APP_USERNAME"   authd
 
 # ── Client cert — outbound SCIM provisioning ─────────────────────────────────
 # Used by AUTH_SCIM_CERT/KEY when an app_integrations row is in mTLS

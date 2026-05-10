@@ -1,6 +1,6 @@
-# docker-compose.yml — sample deployment: authd + Postgres + NATS JetStream + auth-audit
+# docker-compose.yml — sample deployment: authd + Postgres + NATS JetStream
 #
-# This sample wires all four components together without inter-service mTLS.
+# This sample wires the three components together without inter-service mTLS.
 # For a production-style hardened deployment with TLS on every hop, layer the
 # mTLS overlay on top:
 #     docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d
@@ -9,12 +9,10 @@
 #   AUTH_MASTER_KEY          64-char hex key  (authd keygen)
 #   AUTH_ADMIN_DB_PASSWORD   auth DB admin password (DDL owner, runs migrations)
 #   AUTH_DB_PASSWORD         auth DB app password   (DML-only)
-#   AUTH_AUDIT_DB_PASSWORD   audit DB password (audit owner)
 #
-# Optional (usernames default to auth_admin / auth_app / auth_audit):
+# Optional (usernames default to auth_admin / auth_app):
 #   AUTH_ADMIN_DB_USERNAME   auth DB admin username  (default: auth_admin)
-#   AUTH_DB_USERNAME        auth DB app username    (default: auth_app)
-#   AUTH_AUDIT_DB_USERNAME   audit DB username       (default: auth_audit)
+#   AUTH_DB_USERNAME         auth DB app username    (default: auth_app)
 #
 # Note: DB credentials and usernames above are only applied on first startup when
 # the data volume is empty (postgres initdb). Changing them after the volume is
@@ -47,28 +45,7 @@ services:
       retries: 10
       start_period: 10s
 
-  # ── Dedicated audit database (separate from the main auth DB) ─────────────
-  audit-db:
-    image: postgres:17-alpine
-    entrypoint: ["sh", "/shared/pg-scripts/pg-entrypoint.sh"]
-    ports:
-      - "${AUDIT_DB_PORT:-5435}:5432"
-    environment:
-      PG_INIT_SCRIPT:    /shared/pg-scripts/audit-db-init.sh
-      POSTGRES_USER:     ${AUTH_AUDIT_DB_USERNAME:-auth_audit}
-      POSTGRES_PASSWORD: ${AUTH_AUDIT_DB_PASSWORD:?AUTH_AUDIT_DB_PASSWORD is required}
-      POSTGRES_DB:       auth_audit
-    volumes:
-      - shared_data:/shared:ro
-      - audit_db_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTH_AUDIT_DB_USERNAME:-auth_audit} -d auth_audit"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── NATS JetStream (authoritative audit event stream) ─────────────────────
+  # ── NATS JetStream (authoritative audit event store) ──────────────────────
   nats:
     image: nats:2-alpine
     command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
@@ -84,13 +61,13 @@ services:
       retries: 5
 
   # ── nats-box: stream provisioner + interactive shell ──────────────────────
-  # On startup, ensures the auth_audit JetStream stream exists. Without this
-  # step, authd's first audit publish would fail (no stream covers the subject)
-  # and every audit-emitting handler would log a publish error until auth-audit
-  # ran and created the stream. Provisioning it here keeps authd's publisher
-  # credential PUBLISH-only and prevents event loss when auth-audit is offline.
+  # On startup, ensures the auth_audit JetStream stream exists. Without it,
+  # authd's first audit publish would fail (no stream covers the subject) and
+  # every audit-emitting handler would 503 fail-closed. Provisioning it here
+  # keeps authd's publisher credential PUBLISH-only.
   #
-  # After provisioning the container stays alive (tail -f /dev/null) so you can:
+  # After provisioning the container stays alive (tail -f /dev/null) so you
+  # can:
   #   docker compose exec natsbox nats stream info auth_audit
   #   docker compose exec natsbox nats sub 'auth.audit.events'
   natsbox:
@@ -144,7 +121,8 @@ services:
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable
       # Runtime DSN: DML-only after schema is in place.
       AUTH_DATABASE_URL: postgres://${AUTH_DB_USERNAME:-auth_app}:${AUTH_DB_PASSWORD}@db:5432/authdb?sslmode=disable
-      # Audit sink: publish events to NATS JetStream.
+      # Audit sink + source (live tail page + `authd audit query` CLI):
+      # publish to and read from the auth_audit JetStream stream.
       AUTH_NATS_URL: nats://nats:4222
       AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-false}
       AUTH_WEBAUTHN_ORIGINS: ${AUTH_WEBAUTHN_ORIGINS:-}
@@ -159,26 +137,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── auth-audit: NATS → audit DB projection writer ─────────────────────────
-  auth-audit:
-    image: ${IMAGE_NAME:-abagile/tokyo3-auth}:${IMAGE_TAG:-latest}
-    build: .
-    entrypoint: ["/usr/local/bin/auth-audit", "consume"]
-    environment:
-      # Single DSN: auth_audit owner has DDL + INSERT + SELECT rights.
-      AUTH_AUDIT_DATABASE_URL: postgres://${AUTH_AUDIT_DB_USERNAME:-auth_audit}:${AUTH_AUDIT_DB_PASSWORD}@audit-db:5432/auth_audit?sslmode=disable
-      AUTH_AUDIT_NATS_URL:     nats://nats:4222
-    depends_on:
-      audit-db:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      natsbox:
-        condition: service_healthy
-    restart: unless-stopped
-
 volumes:
   shared_data:
   db_data:
-  audit_db_data:
   nats_data:

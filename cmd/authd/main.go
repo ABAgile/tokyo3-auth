@@ -103,7 +103,7 @@ func rootCmd() *cobra.Command {
 		Use:   "authd",
 		Short: "tokyo3-auth Identity Provider",
 	}
-	root.AddCommand(serveCmd(), migrateCmd(), keygenCmd(), adminCmd())
+	root.AddCommand(serveCmd(), migrateCmd(), keygenCmd(), adminCmd(), auditCmd())
 	return root
 }
 

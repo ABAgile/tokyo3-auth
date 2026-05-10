@@ -1,24 +1,19 @@
-// Package audit provides the audit event pipeline for authd.
+// Package audit provides the audit event types for authd.
 //
 // Write path (authd serve):
 //
 //	Handler → journal.EncodedSink[Entry].Append → JetStream "auth_audit"
-//	                                              stream (authoritative record)
+//	                                              stream (authoritative store)
 //
-// Read/consume path (auth-audit — separate binary):
+// Read paths (both off the same stream):
 //
-//	JetStream → auth-audit consume → DB.UpsertAuditLog → audit database
-//	auth-audit query → DB.ListAuditLogs → terminal output
+//	/portal/admin/audit/sse → journal/sse.Handler → live tail in browser
+//	authd audit query       → journal/jetstream.Source → terminal output
 //
-// The JetStream stream is the tamper-resistant, authoritative record (DenyDelete,
-// DenyPurge, FileStorage). The audit database is a queryable projection rebuilt
-// from the stream by auth-audit; it can be dropped and replayed at any time.
-//
-// Credential separation:
-//   - authd serve uses a NATS publisher credential (PUBLISH-only on auth.audit.events).
-//   - auth-audit consume uses a NATS consumer credential (SUBSCRIBE + consumer
-//     management) and an audit DB writer credential (INSERT-only on audit_logs).
-//   - Neither credential can perform the other role's operations.
+// The JetStream stream is the tamper-resistant authoritative record
+// (DenyDelete, DenyPurge, FileStorage, 13-month retention); there is no
+// separate projection database. Querying back is a thin reader on top of
+// journal.Source — same primitive both UI and CLI use.
 //
 // The Entry → JSON adapter and JetStream transport are provided by
 // base/journal: authd wires up `journal.NewJSONSink[Entry](jetstreamInner)`
@@ -33,10 +28,10 @@ import (
 	"github.com/abagile/tokyo3-base/journal"
 )
 
-// Wire-format constants for the audit pipeline. Subject and StreamName are
-// the NATS subject that authd publishes to and the JetStream stream that
-// auth-audit consumes from. StreamMaxAge is the retention floor for
-// PCI-DSS 10.5 (12 months); 13 months gives a comfortable roll-over buffer.
+// Wire-format constants for the audit journal. Subject is what authd
+// publishes to; StreamName is the JetStream stream covering it. StreamMaxAge
+// is the retention floor for PCI-DSS 10.5 (12 months); 13 months gives a
+// comfortable roll-over buffer.
 const (
 	Subject      = "auth.audit.events"
 	StreamName   = "auth_audit"

@@ -43,24 +43,29 @@ The `internal/policy` package provides a pluggable `Rule` interface. PCI-DSS v4.
 - **WebAuthn/FIDO2**: `go-webauthn/webauthn` library. Supports biometric devices and YubiKeys. Session data stored in DB with 5-minute TTL.
 
 ### Audit
-Every authentication event is published synchronously to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). The publish is **fail-closed**: if the journal is unreachable (NATS down, ack timeout, etc.) every handler that emits an audit event returns 503 and the originating action is refused. There is no local DB mirror — JetStream is the authoritative, tamper-resistant record (FileStorage, DenyDelete, DenyPurge, 13-month retention floor for PCI-DSS 10.5). A separate `auth-audit` binary subscribes to the stream and projects events into a dedicated audit Postgres database that is the queryable read source; the auth process cannot read or mutate this projection.
+Every authentication event is published synchronously to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). The publish is **fail-closed**: if the journal is unreachable (NATS down, ack timeout, etc.) every handler that emits an audit event returns 503 and the originating action is refused. The JetStream stream is the **sole** authoritative store — there is no projection database, no local DB mirror. FileStorage + DenyDelete + DenyPurge + 13-month retention satisfy PCI-DSS 10.5.
 
-| Identity | Subject perms | DB perms |
-| --- | --- | --- |
-| `authd-nats-client` (publisher) | PUBLISH `auth.audit.events` | (n/a) |
-| `auth-audit-nats-client` (consumer) | SUBSCRIBE + consumer mgmt | (n/a) |
-| `auth-audit-db-client` | (n/a) | DDL + INSERT + SELECT on `auth_audit.audit_logs` |
+The same stream is read back by:
 
-Operating the pipeline:
+- **`/portal/admin/audit`** — live tail in the browser via SSE (last 100 + tail forward, with `Last-Event-ID` reconnect resume).
+- **`authd audit query`** — terminal viewer; prints the most recent N events as one JSON object per line, then exits.
+
+Both readers use `journal/jetstream.Source` from `tokyo3-base`; same primitive, different framing.
+
+| Identity | Subject perms |
+| --- | --- |
+| `authd-nats-client` | PUBLISH + CONSUME on `auth.audit.events` |
+
+Operating the journal:
 
 ```
-make docker-up                              # nats + natsbox + audit-db + auth-audit + auth all wired up
+make docker-up                              # postgres + nats + natsbox + auth all wired up
 docker compose exec natsbox nats stream info auth_audit
 docker compose exec natsbox nats sub 'auth.audit.events'
-docker compose exec auth-audit auth-audit query --action auth.login --limit 20
+docker compose exec auth authd audit query --limit 20
 ```
 
-Required env vars on `authd` to enable JetStream publishing: `AUTH_NATS_URL`, plus `AUTH_NATS_CERT/KEY/CA` for mTLS. With `AUTH_NATS_URL` unset, audit publishing is disabled and only the local DB write happens (still fine for dev).
+Required env vars on `authd` to enable JetStream publish + read: `AUTH_NATS_URL`, plus `AUTH_NATS_CERT/KEY/CA` for mTLS. With `AUTH_NATS_URL` unset, audit publishing is a no-op (dev only) and the live tail page renders empty.
 
 ### Outbound provisioning
 Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
@@ -153,6 +158,7 @@ AUTH_MASTER_KEY="$(./authd keygen)" \
 | `authd keygen` | Generate a random 32-byte master key |
 | `authd admin user create` | Create an admin user |
 | `authd admin sync --target=<name\|all>` | Backfill an integration (configured via `/portal/admin/integrations`) from auth's tables |
+| `authd audit query [--limit N]` | Print the most recent N audit events from the JetStream journal as JSON (default 100) |
 
 ## Endpoint Reference
 
@@ -408,7 +414,7 @@ This service satisfies the following PCI-DSS v4.0.1 requirements in the Cardhold
 | 8.6.1 | Machine client secrets flagged when older than 12 months |
 | 10.2.1 | All auth events, failures, and privilege changes journalled to NATS JetStream (`auth.audit.events`); fail-closed publish refuses the request on journal outage |
 
-Evidence for each control is available in the `auth_audit` projection (`auth-audit query`, fed by NATS JetStream) and the policy engine rule set in `internal/policy/pci.go`.
+Evidence for each control is available in the `auth_audit` JetStream stream (`authd audit query`, or the `/portal/admin/audit` live-tail page) and the policy engine rule set in `internal/policy/pci.go`.
 
 ## MFA Setup
 

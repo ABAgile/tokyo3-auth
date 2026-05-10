@@ -16,17 +16,13 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o /out/authd ./cmd/authd
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /out/auth-audit ./cmd/auth-audit
-
 # ── Stage 2: Runtime image ─────────────────────────────────────────────────────
 FROM alpine:3.21
 
 # ca-certificates is required for TLS connections to Postgres, NATS, and outbound SCIM.
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /out/authd      /usr/local/bin/authd
-COPY --from=builder /out/auth-audit /usr/local/bin/auth-audit
+COPY --from=builder /out/authd /usr/local/bin/authd
 
 EXPOSE 443
 

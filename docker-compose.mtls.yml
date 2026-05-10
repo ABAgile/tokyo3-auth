@@ -4,11 +4,9 @@
 #   authd HTTPS API         AUTH_API_CERT / AUTH_API_KEY
 #   NATS server TLS + mTLS  --tls / --tlsverify + client certs on both sides
 #   authd → postgres        client cert + cert auth (no password in DSN)
-#   authd → NATS            client cert (publisher identity)
+#   authd → NATS            client cert (publisher + reader identity)
 #   authd → outbound SCIM   AUTH_SCIM_CERT / KEY / CA (used by
 #                           app_integrations rows with auth_mode=mtls)
-#   auth-audit → NATS       client cert (consumer identity)
-#   auth-audit → audit-db   client cert + cert auth (no password in DSN)
 #
 # Prerequisites:
 #   1. make docker-up-mtls   # auto-generates leaf certs (signed by mkcert's
@@ -25,7 +23,6 @@
 #   use TLS with a client cert whose CN matches the connecting role name:
 #     authd-admin-db-client.crt   CN=${AUTH_ADMIN_DB_USERNAME:-auth_admin}  → AUTH_ADMIN_DATABASE_URL
 #     authd-app-db-client.crt     CN=${AUTH_DB_USERNAME:-auth_app}          → AUTH_DATABASE_URL
-#     auth-audit-db-client.crt    CN=${AUTH_AUDIT_DB_USERNAME:-auth_audit}  → AUTH_AUDIT_DATABASE_URL
 #   If any username env var is changed from its default, remove the shared_data
 #   volume and re-run to regenerate certs with the correct CNs.
 
@@ -37,14 +34,6 @@ services:
     environment:
       POSTGRES_SSL_CERT: /shared/certs/db-server.crt
       POSTGRES_SSL_KEY:  /shared/certs/db-server.key
-      POSTGRES_SSL_CA:   /shared/certs/ca.crt
-
-  # ── Audit database: enable server TLS + cert auth ─────────────────────────
-  # shared_data:/shared is already mounted by the base file (for pg-scripts).
-  audit-db:
-    environment:
-      POSTGRES_SSL_CERT: /shared/certs/audit-db-server.crt
-      POSTGRES_SSL_KEY:  /shared/certs/audit-db-server.key
       POSTGRES_SSL_CA:   /shared/certs/ca.crt
 
   # ── NATS: enable server TLS + require client certs ────────────────────────
@@ -63,9 +52,9 @@ services:
       - shared_data:/shared:ro
 
   # ── nats-box: TLS context + stream provisioner ────────────────────────────
-  # Reuses auth-audit-nats-client.crt for both stream provisioning and
-  # interactive inspection — the dev NATS server has no per-subject auth, so a
-  # valid client cert grants full access. A `default` nats context is saved at
+  # Reuses authd-nats-client.crt for both stream provisioning and interactive
+  # inspection — the dev NATS server has no per-subject auth, so a valid
+  # client cert grants full access. A `default` nats context is saved at
   # startup so subsequent CLI calls inherit the TLS settings:
   #   docker compose exec natsbox nats sub 'auth.audit.events'
   natsbox:
@@ -76,8 +65,8 @@ services:
         set -e
         nats context save default \
           --server tls://nats:4222 \
-          --tlscert /shared/certs/auth-audit-nats-client.crt \
-          --tlskey /shared/certs/auth-audit-nats-client.key \
+          --tlscert /shared/certs/authd-nats-client.crt \
+          --tlskey /shared/certs/authd-nats-client.key \
           --tlsca /shared/certs/ca.crt \
           --select > /dev/null
         nats stream info auth_audit > /dev/null 2>&1 || \
@@ -117,20 +106,5 @@ services:
       AUTH_NATS_KEY:           /shared/certs/authd-nats-client.key
       AUTH_NATS_CA:            /shared/certs/ca.crt
       AUTH_NATS_URL:           tls://nats:4222
-    volumes:
-      - shared_data:/shared:ro
-
-  # ── auth-audit: mTLS certs for NATS and audit DB ──────────────────────────
-  auth-audit:
-    environment:
-      AUTH_AUDIT_DB_CERT:       /shared/certs/auth-audit-db-client.crt
-      AUTH_AUDIT_DB_KEY:        /shared/certs/auth-audit-db-client.key
-      AUTH_AUDIT_DB_CA:         /shared/certs/ca.crt
-      # Cert auth: no password; cert CN authenticates the role.
-      AUTH_AUDIT_DATABASE_URL:  postgres://${AUTH_AUDIT_DB_USERNAME:-auth_audit}@audit-db:5432/auth_audit?sslmode=verify-full
-      AUTH_AUDIT_NATS_CERT:     /shared/certs/auth-audit-nats-client.crt
-      AUTH_AUDIT_NATS_KEY:      /shared/certs/auth-audit-nats-client.key
-      AUTH_AUDIT_NATS_CA:       /shared/certs/ca.crt
-      AUTH_AUDIT_NATS_URL:      tls://nats:4222
     volumes:
       - shared_data:/shared:ro
