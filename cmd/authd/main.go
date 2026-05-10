@@ -64,6 +64,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -145,6 +146,11 @@ func runServe() error {
 		return fmt.Errorf("audit sink: %w", err)
 	}
 	defer auditSink.Close()
+	auditSource, err := openAuditSource(log)
+	if err != nil {
+		return fmt.Errorf("audit source: %w", err)
+	}
+	defer auditSource.Close()
 
 	// Run migrations with the admin DSN, then open the runtime connection.
 	if adminDBTLS != nil {
@@ -200,6 +206,7 @@ func runServe() error {
 		Provisioners:      provReg,
 		OutboundTLS:       outboundTLS,
 		Audit:             auditSink,
+		AuditSource:       auditSource,
 		Issuer:            issuer,
 		MasterKey:         masterKey,
 		Log:               log,
@@ -218,6 +225,14 @@ func runServe() error {
 		Addr:      addr,
 		Handler:   srv.Routes(),
 		TLSConfig: tlsCfg,
+		// BaseContext makes every request inherit from the SIGTERM-aware
+		// ctx so long-lived handlers (e.g. /portal/admin/audit/sse, which
+		// blocks in select{} on r.Context().Done() and the JetStream
+		// iterator) abort promptly on shutdown. Without this, Shutdown
+		// would wait its full 10s deadline for each open SSE tab; with
+		// it, ctx cancels propagate down the SSE → Source.Subscribe →
+		// jetstream consumer chain in milliseconds.
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
 	if interval := provisionSyncInterval(log); interval > 0 {
@@ -711,7 +726,7 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 	} else {
 		log.Warn("audit sink: AUTH_NATS_CERT not set — connecting without mTLS (not for production)")
 	}
-	jSink, err := jetstream.New(jetstream.Config{
+	jSink, err := jetstream.NewSink(jetstream.SinkConfig{
 		URL:     url,
 		Subject: audit.Subject,
 		TLS:     tlsCfg,
@@ -720,6 +735,38 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 		return nil, err
 	}
 	return journal.NewJSONSink[audit.Entry](jSink), nil
+}
+
+// openAuditSource is the read-side counterpart of openAuditSink: returns a
+// journal.Source attached to the same NATS URL + stream + subject so the
+// portal admin /portal/admin/audit page can tail the audit log live. When
+// AUTH_NATS_URL is empty, returns NoopSource — the page will simply show
+// no events, mirroring the NoopSink path on the publish side.
+//
+// Reuses the AUTH_NATS_CERT/KEY/CA env vars; one mTLS identity for both
+// roles. The publisher and the reader share the same NATS connection
+// metadata, so cert ACLs apply uniformly: a publisher cert that also has
+// CONSUME rights on auth.audit.events also reads the audit page.
+func openAuditSource(log *slog.Logger) (journal.Source, error) {
+	url := os.Getenv("AUTH_NATS_URL")
+	if url == "" {
+		log.Warn("AUTH_NATS_URL not set — audit source is no-op; admin audit page will be empty")
+		return journal.NoopSource{}, nil
+	}
+	tlsCfg, err := btls.FromFiles(
+		os.Getenv("AUTH_NATS_CERT"),
+		os.Getenv("AUTH_NATS_KEY"),
+		os.Getenv("AUTH_NATS_CA"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("nats audit source TLS: %w", err)
+	}
+	return jetstream.NewSource(jetstream.SourceConfig{
+		URL:        url,
+		StreamName: audit.StreamName,
+		Subject:    audit.Subject,
+		TLS:        tlsCfg,
+	})
 }
 
 // dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*

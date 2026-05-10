@@ -14,6 +14,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
+	"github.com/abagile/tokyo3-base/journal"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -26,6 +27,7 @@ type Server struct {
 	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
 	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
 	audit       audit.Sink          // JetStream publisher; NoopSink when AUTH_NATS_URL is unset
+	auditSrc    journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTH_NATS_URL is unset
 	issuer      string
 	masterKey   []byte
 	log         *slog.Logger
@@ -44,6 +46,7 @@ type Config struct {
 	Provisioners      *provision.Registry
 	OutboundTLS       *tls.Config
 	Audit             audit.Sink
+	AuditSource       journal.Source
 	Issuer            string
 	MasterKey         []byte
 	Log               *slog.Logger
@@ -64,6 +67,10 @@ func New(cfg Config) (*Server, error) {
 	if auditSink == nil {
 		auditSink = audit.NoopSink
 	}
+	auditSrc := cfg.AuditSource
+	if auditSrc == nil {
+		auditSrc = journal.NoopSource{}
+	}
 	return &Server{
 		store:       cfg.Store,
 		signer:      cfg.Signer,
@@ -73,6 +80,7 @@ func New(cfg Config) (*Server, error) {
 		provReg:     cfg.Provisioners,
 		outboundTLS: cfg.OutboundTLS,
 		audit:       auditSink,
+		auditSrc:    auditSrc,
 		issuer:      cfg.Issuer,
 		masterKey:   cfg.MasterKey,
 		log:         cfg.Log,
@@ -201,6 +209,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
 	mux.HandleFunc("POST /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
 	mux.HandleFunc("POST /portal/admin/groups/{id}/delete", s.portalAdminAuth(s.handlePortalAdminGroupDelete))
+	mux.HandleFunc("GET /portal/admin/audit", s.portalAdminAuth(s.handlePortalAdminAuditPage))
+	mux.HandleFunc("GET /portal/admin/audit/sse", s.portalAdminAuth(s.handlePortalAdminAuditSSE))
 
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {

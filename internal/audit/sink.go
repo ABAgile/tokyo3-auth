@@ -51,8 +51,8 @@ type Sink = *journal.EncodedSink[Entry]
 
 // NoopSink is a shared audit sink that discards every event. Use in tests
 // and dev environments where the audit journal is not configured. Safe for
-// concurrent use; the underlying journal.Noop is stateless.
-var NoopSink Sink = journal.NewJSONSink[Entry](journal.Noop{})
+// concurrent use; the underlying journal.NoopSink is stateless.
+var NoopSink Sink = journal.NewJSONSink[Entry](journal.NoopSink{})
 
 // Entry is the canonical shape of a single audit event. It is JSON-serialised
 // as the journal payload and stored verbatim in the audit database by the
@@ -60,14 +60,20 @@ var NoopSink Sink = journal.NewJSONSink[Entry](journal.Noop{})
 //
 // UserID and ClientID are formatted as canonical UUID strings (or "" when the
 // principal is anonymous, e.g. failed-login attempts before user resolution).
-// Metadata is a pre-serialised JSON object (or "" when empty); the publisher
-// marshals the map[string]any into JSON before constructing the Entry so that
-// the consumer can store it verbatim.
+// UserEmail/UserName/ClientName are denormalised name snapshots resolved at
+// publish time so live tail viewers can render rows without a UUID-to-name
+// round-trip — empty when the principal is anonymous or the row has been
+// deleted before audit. Metadata is a pre-serialised JSON object (or ""
+// when empty); the publisher marshals the map[string]any into JSON before
+// constructing the Entry so that the consumer can store it verbatim.
 type Entry struct {
 	ID         string    `json:"id"`
 	Action     string    `json:"action"`
 	UserID     string    `json:"user_id,omitempty"`
+	UserEmail  string    `json:"user_email,omitempty"`
+	UserName   string    `json:"user_name,omitempty"`
 	ClientID   string    `json:"client_id,omitempty"`
+	ClientName string    `json:"client_name,omitempty"`
 	IP         string    `json:"ip,omitempty"`
 	UserAgent  string    `json:"user_agent,omitempty"`
 	Metadata   string    `json:"metadata,omitempty"`

@@ -55,12 +55,22 @@ const (
 // "audit last", so an audit failure surfaces as a failed response rather than
 // a successful response with no audit row.
 func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) error {
-	var uID, cID, metaJSON string
+	var uID, uEmail, uName, cID, cName, metaJSON string
 	if userID != nil {
 		uID = userID.String()
+		// Best-effort name lookup. A miss (e.g. the user was just deleted)
+		// leaves the name fields empty — the row still has the UUID, the
+		// action, and any meta hints; the live tail viewer simply renders
+		// "—" rather than a UUID prefix.
+		if u, err := s.store.GetUserByID(r.Context(), *userID); err == nil {
+			uEmail, uName = u.Email, u.Name
+		}
 	}
 	if clientID != nil {
 		cID = clientID.String()
+		if c, err := s.store.GetClientByID(r.Context(), *clientID); err == nil {
+			cName = c.Name
+		}
 	}
 	if len(meta) > 0 {
 		if b, err := json.Marshal(meta); err == nil {
@@ -71,7 +81,10 @@ func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid
 		ID:         uuid.New().String(),
 		Action:     action,
 		UserID:     uID,
+		UserEmail:  uEmail,
+		UserName:   uName,
 		ClientID:   cID,
+		ClientName: cName,
 		IP:         clientIP(r),
 		UserAgent:  r.Header.Get("User-Agent"),
 		Metadata:   metaJSON,

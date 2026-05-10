@@ -257,6 +257,8 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
 | `POST` | `/portal/admin/integrations/{id}/delete` | Remove integration |
 | `POST` | `/portal/admin/integrations/{id}/test` | Probe SCIM ServiceProviderConfig using the integration's auth mode |
+| `GET` | `/portal/admin/audit` | Live audit-log stream page (last 100 + tail via SSE) |
+| `GET` | `/portal/admin/audit/sse` | Server-Sent-Events backing endpoint for the audit page; honours `Last-Event-ID` for resume |
 
 **Role assignment:** Two layers of role management are available:
 
