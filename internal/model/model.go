@@ -99,17 +99,6 @@ type SigningKey struct {
 	CreatedAt           time.Time
 }
 
-type AuditLog struct {
-	ID        uuid.UUID
-	UserID    *uuid.UUID
-	ClientID  *uuid.UUID
-	Action    string
-	IP        string
-	UserAgent string
-	Metadata  map[string]any
-	CreatedAt time.Time
-}
-
 // AppIntegrationProvider enumerates the supported provider types stored in
 // AppIntegration.Provider. Keep in sync with the provisioner builders in
 // cmd/authd/main.go.

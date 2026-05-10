@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
@@ -255,29 +254,6 @@ func (s *Server) adminParseClient(w http.ResponseWriter, r *http.Request) (*mode
 		return nil, false
 	}
 	return client, true
-}
-
-// ── Audit ─────────────────────────────────────────────────────────────────────
-
-func (s *Server) handleAdminAuditLogs(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	offset := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
-			limit = n
-		}
-	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
-		}
-	}
-	logs, err := s.store.ListAuditLogs(r.Context(), limit, offset)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "server_error", "list failed")
-		return
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"audit_logs": logs, "limit": limit, "offset": offset})
 }
 
 // ── view helpers ──────────────────────────────────────────────────────────────

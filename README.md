@@ -43,9 +43,7 @@ The `internal/policy` package provides a pluggable `Rule` interface. PCI-DSS v4.
 - **WebAuthn/FIDO2**: `go-webauthn/webauthn` library. Supports biometric devices and YubiKeys. Session data stored in DB with 5-minute TTL.
 
 ### Audit
-Every authentication event writes an `AuditLog` row in the local auth DB and is published to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). Failures are recorded even when the overall operation fails (fail-closed pattern). Structured JSON logs via `log/slog`.
-
-The JetStream stream is the authoritative, tamper-resistant record (FileStorage, DenyDelete, DenyPurge, 13-month retention floor for PCI-DSS 10.5). A separate `auth-audit` binary subscribes to the stream and projects events into a dedicated audit Postgres database — the auth process cannot read or mutate this projection.
+Every authentication event is published synchronously to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). The publish is **fail-closed**: if the journal is unreachable (NATS down, ack timeout, etc.) every handler that emits an audit event returns 503 and the originating action is refused. There is no local DB mirror — JetStream is the authoritative, tamper-resistant record (FileStorage, DenyDelete, DenyPurge, 13-month retention floor for PCI-DSS 10.5). A separate `auth-audit` binary subscribes to the stream and projects events into a dedicated audit Postgres database that is the queryable read source; the auth process cannot read or mutate this projection.
 
 | Identity | Subject perms | DB perms |
 | --- | --- | --- |
@@ -214,7 +212,6 @@ All admin endpoints require a Bearer token belonging to a session with the `admi
 | `GET/POST` | `/admin/clients` | List / create OAuth2 clients |
 | `GET/DELETE` | `/admin/clients/{id}` | Get / delete client |
 | `POST` | `/admin/clients/{id}/rotate-secret` | Rotate client secret |
-| `GET` | `/admin/audit` | Query audit logs (`?limit=100&offset=0`) |
 
 ### Portal (Web UI)
 
@@ -226,10 +223,9 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/login/mfa` | TOTP MFA step during portal sign-in |
 | `POST` | `/portal/logout` | Sign out (deletes session) |
 | `GET` | `/portal` | Account overview |
-| `GET` | `/portal/account` | Profile & password settings |
+| `GET` | `/portal/account` | Profile (display name, password change, TOTP + WebAuthn enrollment) |
 | `POST` | `/portal/account/profile` | Update display name |
 | `POST` | `/portal/account/password` | Change password |
-| `GET` | `/portal/mfa` | MFA enrollment (TOTP + WebAuthn) |
 | `POST` | `/portal/mfa/totp/enroll` | Start TOTP enrollment (stores QR data in cookie) |
 | `POST` | `/portal/mfa/totp/confirm` | Confirm first TOTP code to activate |
 | `POST` | `/portal/mfa/totp/delete` | Remove TOTP credential |
@@ -243,8 +239,10 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 |--------|------|-------------|
 | `GET` | `/portal/admin/users` | List users |
 | `GET/POST` | `/portal/admin/users/new` | Create user |
-| `GET/POST` | `/portal/admin/users/{id}/edit` | Edit user (name, active, **admin role**) |
+| `GET/POST` | `/portal/admin/users/{id}/edit` | Edit user (name, active, **admin role**, group memberships) |
 | `POST` | `/portal/admin/users/{id}/delete` | Delete user |
+| `POST` | `/portal/admin/users/{id}/reset-password` | Admin password reset (no current-password check; revokes existing sessions) |
+| `POST` | `/portal/admin/users/{id}/clear-mfa` | Remove the user's TOTP and every WebAuthn credential |
 | `GET` | `/portal/admin/groups` | List groups (roles) |
 | `GET/POST` | `/portal/admin/groups/new` | Create group + assign members |
 | `GET/POST` | `/portal/admin/groups/{id}/edit` | Edit group display name + membership |
@@ -259,7 +257,6 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
 | `POST` | `/portal/admin/integrations/{id}/delete` | Remove integration |
 | `POST` | `/portal/admin/integrations/{id}/test` | Probe SCIM ServiceProviderConfig using the integration's auth mode |
-| `GET` | `/portal/admin/audit` | Browse audit log (paginated) |
 
 **Role assignment:** Two layers of role management are available:
 
@@ -407,9 +404,9 @@ This service satisfies the following PCI-DSS v4.0.1 requirements in the Cardhold
 | 8.4.2 | MFA required for all access to CDE (non-public clients) |
 | 8.5.1 | TOTP codes single-use; WebAuthn sign count validated and incremented |
 | 8.6.1 | Machine client secrets flagged when older than 12 months |
-| 10.2.1 | All auth events, failures, and privilege changes logged to `audit_logs` |
+| 10.2.1 | All auth events, failures, and privilege changes journalled to NATS JetStream (`auth.audit.events`); fail-closed publish refuses the request on journal outage |
 
-Evidence for each control is available in the `audit_logs` table and the policy engine rule set in `internal/policy/pci.go`.
+Evidence for each control is available in the `auth_audit` projection (`auth-audit query`, fed by NATS JetStream) and the policy engine rule set in `internal/policy/pci.go`.
 
 ## MFA Setup
 

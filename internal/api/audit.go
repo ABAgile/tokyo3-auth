@@ -2,13 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/audit"
-	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/google/uuid"
 )
 
@@ -43,59 +43,60 @@ const (
 	ActionIntegrationSynced   = "admin.integration.synced"
 )
 
-func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) {
-	log := &model.AuditLog{
-		ID:        uuid.New(),
-		Action:    action,
-		IP:        clientIP(r),
-		UserAgent: r.Header.Get("User-Agent"),
-		UserID:    userID,
-		ClientID:  clientID,
-		Metadata:  meta,
+// logAudit publishes one audit event to the JetStream journal and returns
+// any publish error to the caller. Fail-closed: if the journal is unreachable
+// (NATS down, ack timeout, etc.) every handler that called logAudit must abort
+// the originating request, because there is no longer a local DB mirror — an
+// unjournalled event would be a compliance gap.
+//
+// Callers should treat any non-nil error as a hard 503 (or the form-handler
+// equivalent) and never proceed with side effects beyond what already happened
+// before this call. The action ordering rule across handlers therefore is:
+// "audit last", so an audit failure surfaces as a failed response rather than
+// a successful response with no audit row.
+func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) error {
+	var uID, cID, metaJSON string
+	if userID != nil {
+		uID = userID.String()
 	}
-	if err := s.store.CreateAuditLog(r.Context(), log); err != nil {
-		s.log.Error("audit log failed", "action", action, "err", err)
+	if clientID != nil {
+		cID = clientID.String()
 	}
-	// Best-effort publish to JetStream. The local DB has already captured the
-	// row; if NATS is offline we still have a record. Tighten to fail-closed
-	// once the projection becomes the read source.
-	if err := s.audit.Append(r.Context(), toAuditEntry(log)); err != nil {
-		s.log.Error("audit publish failed", "action", action, "err", err)
-	}
-}
-
-// toAuditEntry converts the internal model.AuditLog into the JetStream
-// payload shape. UUIDs are formatted as canonical strings (or "" for nil),
-// metadata is JSON-encoded once here so the consumer can store it verbatim,
-// and OccurredAt falls back to time.Now() when the DB hasn't stamped the row.
-func toAuditEntry(l *model.AuditLog) audit.Entry {
-	var userID, clientID, metaJSON string
-	if l.UserID != nil {
-		userID = l.UserID.String()
-	}
-	if l.ClientID != nil {
-		clientID = l.ClientID.String()
-	}
-	if len(l.Metadata) > 0 {
-		if b, err := json.Marshal(l.Metadata); err == nil {
+	if len(meta) > 0 {
+		if b, err := json.Marshal(meta); err == nil {
 			metaJSON = string(b)
 		}
 	}
-	occurred := l.CreatedAt
-	if occurred.IsZero() {
-		occurred = time.Now().UTC()
-	}
-	return audit.Entry{
-		ID:         l.ID.String(),
-		Action:     l.Action,
-		UserID:     userID,
-		ClientID:   clientID,
-		IP:         l.IP,
-		UserAgent:  l.UserAgent,
+	entry := audit.Entry{
+		ID:         uuid.New().String(),
+		Action:     action,
+		UserID:     uID,
+		ClientID:   cID,
+		IP:         clientIP(r),
+		UserAgent:  r.Header.Get("User-Agent"),
 		Metadata:   metaJSON,
-		OccurredAt: occurred,
+		OccurredAt: time.Now().UTC(),
 	}
+	if err := s.audit.Append(r.Context(), entry); err != nil {
+		s.log.Error("audit publish failed", "action", action, "err", err)
+		return err
+	}
+	return nil
 }
+
+// auditFail writes a plain-text 503 — the uniform fail-closed response for
+// every handler that called logAudit. Plain text (vs JSON) works for both
+// browser-driven portal forms and programmatic API clients without per-handler
+// branching. The message names the condition explicitly so an operator looking
+// at a user-reported screenshot knows to check NATS rather than authd itself.
+func (s *Server) auditFail(w http.ResponseWriter, err error) {
+	http.Error(w, "audit journal unreachable; request refused: "+err.Error(), http.StatusServiceUnavailable)
+}
+
+// errAuditUnavailable wraps a logAudit error so callers downstream of helpers
+// like createPortalSession can distinguish it from ordinary DB errors via
+// errors.Is, even when the helper itself doesn't surface the responseWriter.
+var errAuditUnavailable = errors.New("audit unavailable")
 
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {

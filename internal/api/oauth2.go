@@ -87,7 +87,10 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 		if user != nil {
 			s.incrementFailedAttempts(r, user)
 		}
-		s.logAudit(r, ActionLoginFailed, nil, &client.ID, logMeta("email", email))
+		if err := s.logAudit(r, ActionLoginFailed, nil, &client.ID, logMeta("email", email)); err != nil {
+			s.auditFail(w, err)
+			return
+		}
 		showLoginErr("Invalid email or password.")
 		return
 	}
@@ -132,7 +135,10 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
+	if err := s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI)
 }
 
@@ -156,7 +162,10 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 
 	code := r.FormValue("code")
 	if err := mfa.VerifyTOTP(r.Context(), s.store, s.kp, user.ID, code); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, nil)
+		if err := s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, nil); err != nil {
+			s.auditFail(w, err)
+			return
+		}
 		s.ssoTmpl.render(w, "mfa_totp.html", struct{ AuthState, Error string }{Error: "Invalid code. Please try again."})
 		return
 	}
@@ -168,8 +177,14 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clearCookie(w, authStateCookie)
-	s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, nil)
-	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
+	if err := s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	if err := s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI)
 }
 
@@ -277,7 +292,10 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
 	}
-	s.logAudit(r, ActionTokenIssued, &user.ID, &client.ID, logMeta("scopes", grant.Scopes))
+	if err := s.logAudit(r, ActionTokenIssued, &user.ID, &client.ID, logMeta("scopes", grant.Scopes)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
@@ -352,7 +370,10 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if idToken != "" {
 		resp["id_token"] = idToken
 	}
-	s.logAudit(r, ActionTokenRefreshed, &sess.UserID, &sess.ClientID, nil)
+	if err := s.logAudit(r, ActionTokenRefreshed, &sess.UserID, &sess.ClientID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
@@ -384,7 +405,10 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
-	s.logAudit(r, ActionTokenIssued, nil, &client.ID, logMeta("grant_type", "client_credentials"))
+	if err := s.logAudit(r, ActionTokenIssued, nil, &client.ID, logMeta("grant_type", "client_credentials")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": rawAccess,
 		"token_type":   "Bearer",
@@ -421,10 +445,16 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		hash := auth.HashToken(token)
 		if sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), hash); err == nil {
-			s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil)
+			if err := s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil); err != nil {
+				s.auditFail(w, err)
+				return
+			}
 			_ = s.store.DeleteSession(r.Context(), sess.ID)
 		} else if sess, err := s.store.GetSessionByRefreshTokenHash(r.Context(), hash); err == nil {
-			s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil)
+			if err := s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil); err != nil {
+				s.auditFail(w, err)
+				return
+			}
 			_ = s.store.DeleteSession(r.Context(), sess.ID)
 		}
 	}

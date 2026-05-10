@@ -147,7 +147,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/clients/{id}", s.adminAuth(s.handleAdminGetClient))
 	mux.HandleFunc("DELETE /admin/clients/{id}", s.adminAuth(s.handleAdminDeleteClient))
 	mux.HandleFunc("POST /admin/clients/{id}/rotate-secret", s.adminAuth(s.handleAdminRotateClientSecret))
-	mux.HandleFunc("GET /admin/audit", s.adminAuth(s.handleAdminAuditLogs))
 
 	// Portal — login / logout / register
 	mux.HandleFunc("GET /portal/login", s.handlePortalLoginGET)
@@ -165,7 +164,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/account", s.portalAuth(s.handlePortalAccount))
 	mux.HandleFunc("POST /portal/account/profile", s.portalAuth(s.handlePortalAccountProfile))
 	mux.HandleFunc("POST /portal/account/password", s.portalAuth(s.handlePortalAccountPassword))
-	mux.HandleFunc("GET /portal/mfa", s.portalAuth(s.handlePortalMFA))
 	mux.HandleFunc("POST /portal/mfa/totp/enroll", s.portalAuth(s.handlePortalMFATOTPEnroll))
 	mux.HandleFunc("POST /portal/mfa/totp/confirm", s.portalAuth(s.handlePortalMFATOTPConfirm))
 	mux.HandleFunc("POST /portal/mfa/totp/delete", s.portalAuth(s.handlePortalMFATOTPDelete))
@@ -180,6 +178,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/admin/users/{id}/edit", s.portalAdminAuth(s.handlePortalAdminUserEdit))
 	mux.HandleFunc("POST /portal/admin/users/{id}/edit", s.portalAdminAuth(s.handlePortalAdminUserEdit))
 	mux.HandleFunc("POST /portal/admin/users/{id}/delete", s.portalAdminAuth(s.handlePortalAdminUserDelete))
+	mux.HandleFunc("POST /portal/admin/users/{id}/reset-password", s.portalAdminAuth(s.handlePortalAdminUserResetPassword))
+	mux.HandleFunc("POST /portal/admin/users/{id}/clear-mfa", s.portalAdminAuth(s.handlePortalAdminUserClearMFA))
 	mux.HandleFunc("GET /portal/admin/clients", s.portalAdminAuth(s.handlePortalAdminClients))
 	mux.HandleFunc("GET /portal/admin/clients/new", s.portalAdminAuth(s.handlePortalAdminClientNew))
 	mux.HandleFunc("POST /portal/admin/clients/new", s.portalAdminAuth(s.handlePortalAdminClientNew))
@@ -201,7 +201,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
 	mux.HandleFunc("POST /portal/admin/groups/{id}/edit", s.portalAdminAuth(s.handlePortalAdminGroupEdit))
 	mux.HandleFunc("POST /portal/admin/groups/{id}/delete", s.portalAdminAuth(s.handlePortalAdminGroupDelete))
-	mux.HandleFunc("GET /portal/admin/audit", s.portalAdminAuth(s.handlePortalAdminAudit))
 
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {

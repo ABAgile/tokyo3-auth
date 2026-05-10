@@ -20,7 +20,6 @@ type Store interface {
 	MFAStore
 	GroupStore
 	SigningKeyStore
-	AuditStore
 	ExternalIDStore
 	IntegrationStore
 }
@@ -102,11 +101,6 @@ type SigningKeyStore interface {
 	GetActiveSigningKey(ctx context.Context) (*model.SigningKey, error)
 	ListActiveSigningKeys(ctx context.Context) ([]*model.SigningKey, error)
 	DeactivateSigningKey(ctx context.Context, id uuid.UUID) error
-}
-
-type AuditStore interface {
-	CreateAuditLog(ctx context.Context, log *model.AuditLog) error
-	ListAuditLogs(ctx context.Context, limit, offset int) ([]*model.AuditLog, error)
 }
 
 // ExternalIDStore caches each user's identity in downstream provisioning targets

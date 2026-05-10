@@ -4,9 +4,10 @@
 {{define "pagetitle"}}{{if .IsNew}}New user{{else}}Edit user{{end}}{{end}}
 
 {{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
-<div class="card" style="max-width:520px">
+<div class="card mb-4" style="max-width:680px">
   <div class="card-body">
     <form method="POST" action="{{if .IsNew}}/portal/admin/users/new{{else}}/portal/admin/users/{{.User.ID}}/edit{{end}}">
       <div class="form-group">
@@ -40,19 +41,66 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label>Groups</label>
+        {{if .Groups}}
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;max-height:240px;overflow:auto">
+          {{range .Groups}}
+          <div class="checkbox-row" style="margin-bottom:4px">
+            <input type="checkbox" id="g_{{.ID}}" name="group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
+            <label for="g_{{.ID}}" style="margin:0">{{.DisplayName}}</label>
+          </div>
+          {{end}}
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Membership changes are pushed to every enabled integration.</div>
+        {{else}}
+        <div class="text-muted">No groups defined yet. Create one under <a href="/portal/admin/groups">Groups</a>.</div>
+        {{end}}
+      </div>
+
       <div style="display:flex;gap:10px;margin-top:8px">
         <button type="submit" class="btn btn-primary">{{if .IsNew}}Create user{{else}}Save changes{{end}}</button>
         <a href="/portal/admin/users" class="btn btn-secondary">Cancel</a>
       </div>
     </form>
+  </div>
+</div>
 
-    {{if .IsNew}}{{else}}
-    <div class="separator"></div>
+{{if not .IsNew}}
+<div class="card mb-4" style="max-width:680px">
+  <div class="card-header"><h2>Reset password</h2></div>
+  <div class="card-body">
+    <form method="POST" action="/portal/admin/users/{{.User.ID}}/reset-password"
+          onsubmit="return confirm('Set a new password for this user? Existing sessions will be revoked.')">
+      <div class="form-group">
+        <label for="reset_password">New password</label>
+        <input type="password" id="reset_password" name="new_password" required autocomplete="new-password">
+        <p class="text-muted" style="margin-top:4px;font-size:12px">Min 12 chars, upper, lower, digit, special. The user must change it on next login if your policy enforces it.</p>
+      </div>
+      <button type="submit" class="btn btn-warning btn-sm">Reset password</button>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4" style="max-width:680px">
+  <div class="card-header"><h2>MFA credentials</h2></div>
+  <div class="card-body">
+    <p class="text-muted" style="margin-top:0">Removes the user's TOTP and every WebAuthn key. They will be prompted to re-enroll on next login if MFA is required by policy.</p>
+    <form method="POST" action="/portal/admin/users/{{.User.ID}}/clear-mfa"
+          onsubmit="return confirm('Clear all MFA credentials for this user?')">
+      <button type="submit" class="btn btn-warning btn-sm">Clear MFA credentials</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="max-width:680px">
+  <div class="card-header"><h2>Danger zone</h2></div>
+  <div class="card-body">
     <form method="POST" action="/portal/admin/users/{{.User.ID}}/delete"
           onsubmit="return confirm('Delete this user? This cannot be undone.')">
       <button type="submit" class="btn btn-danger btn-sm">Delete user</button>
     </form>
-    {{end}}
   </div>
 </div>
+{{end}}
 {{end}}

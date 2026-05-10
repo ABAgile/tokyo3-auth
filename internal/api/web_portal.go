@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
-	"strconv"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -311,10 +313,17 @@ func (s *Server) handlePortalRegisterPOST(w http.ResponseWriter, r *http.Request
 	}
 
 	s.promoteIfFirstUser(r.Context(), user)
-	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("via", "portal_register"))
+	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("via", "portal_register")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	if err := s.createPortalSession(w, r, user); err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			s.auditFail(w, err)
+			return
+		}
 		http.Redirect(w, r, "/portal/login", http.StatusFound)
 		return
 	}
@@ -338,7 +347,10 @@ func (s *Server) handlePortalLoginPOST(w http.ResponseWriter, r *http.Request) {
 		if user != nil {
 			s.incrementFailedAttempts(r, user)
 		}
-		s.logAudit(r, ActionLoginFailed, nil, nil, logMeta("email", email, "via", "portal"))
+		if err := s.logAudit(r, ActionLoginFailed, nil, nil, logMeta("email", email, "via", "portal")); err != nil {
+			s.auditFail(w, err)
+			return
+		}
 		showErr("Invalid email or password.")
 		return
 	}
@@ -370,6 +382,10 @@ func (s *Server) handlePortalLoginPOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.createPortalSession(w, r, user); err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			s.auditFail(w, err)
+			return
+		}
 		showErr("An error occurred. Please try again.")
 		return
 	}
@@ -421,13 +437,20 @@ func (s *Server) handlePortalLoginMFA(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	code := r.FormValue("code")
 	if err := iMFA.VerifyTOTP(r.Context(), s.store, s.kp, user.ID, code); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal"))
+		if err := s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal")); err != nil {
+			s.auditFail(w, err)
+			return
+		}
 		showErr("Invalid code. Please try again.")
 		return
 	}
 
 	clearCookie(w, portalLoginCookie)
 	if err := s.createPortalSession(w, r, user); err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			s.auditFail(w, err)
+			return
+		}
 		showErr("An error occurred. Please try again.")
 		return
 	}
@@ -475,12 +498,19 @@ func (s *Server) handlePortalLoginMFAWebAuthnFinish(w http.ResponseWriter, r *ht
 		return
 	}
 	if _, err := s.wa.FinishLogin(r.Context(), user, sessionID, r); err != nil {
-		s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal_webauthn"))
+		if err := s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal_webauthn")); err != nil {
+			s.auditFail(w, err)
+			return
+		}
 		s.writeError(w, http.StatusUnauthorized, "unauthorized", "webauthn verification failed")
 		return
 	}
 	clearCookie(w, portalLoginCookie)
 	if err := s.createPortalSession(w, r, user); err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			s.auditFail(w, err)
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, "server_error", "session creation failed")
 		return
 	}
@@ -522,7 +552,12 @@ func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, use
 		s.log.Error("create portal session", "err", err)
 		return err
 	}
-	s.logAudit(r, ActionLogin, &user.ID, nil, logMeta("via", "portal"))
+	// Audit-then-cookie: if the journal is unreachable we leave the session row
+	// in place (it expires on TTL) but never hand the cookie to the browser, so
+	// the caller surfaces a 503 and the user cannot use the unaudited session.
+	if err := s.logAudit(r, ActionLogin, &user.ID, nil, logMeta("via", "portal")); err != nil {
+		return fmt.Errorf("%w: %v", errAuditUnavailable, err)
+	}
 	return s.setPortalCookie(w, rawAccess, portalCookieTTL, portalCookie)
 }
 
@@ -535,14 +570,44 @@ func (s *Server) handlePortalHome(w http.ResponseWriter, r *http.Request) {
 	}{newPortalBase(pc, "home")})
 }
 
-// ── Account settings ──────────────────────────────────────────────────────────
+// ── Account / Profile (merged with MFA settings) ──────────────────────────────
+
+// accountPageData drives portal_account.html. The Profile page hosts both the
+// password/profile forms and the MFA enrollment cards (TOTP + WebAuthn) so a
+// user has a single self-service surface.
+type accountPageData struct {
+	portalBase
+	TOTPEnabled    bool
+	TOTPEnrolling  bool
+	OTPURI         string
+	TOTPSecret     string
+	WebAuthnCreds  []*model.WebAuthnCredential
+	Success, Error string
+}
+
+func (s *Server) buildAccountPageData(r *http.Request, pc *portalCtx, success, errMsg string) accountPageData {
+	totpCred, _ := s.store.GetTOTPByUserID(r.Context(), pc.User.ID)
+	waCreds, _ := s.store.ListWebAuthnCredentials(r.Context(), pc.User.ID)
+	tp := s.getTOTPPendingCookie(r)
+	d := accountPageData{
+		portalBase:    newPortalBase(pc, "account"),
+		TOTPEnabled:   totpCred != nil && totpCred.Enabled,
+		WebAuthnCreds: waCreds,
+		Success:       success,
+		Error:         errMsg,
+	}
+	if tp != nil {
+		d.TOTPEnrolling = true
+		d.OTPURI = tp.OTPURI
+		d.TOTPSecret = tp.Secret
+	}
+	return d
+}
 
 func (s *Server) handlePortalAccount(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
-	s.portalTmpl.render(w, "portal_account.html", struct {
-		portalBase
-		Success, Error string
-	}{newPortalBase(pc, "account"), r.URL.Query().Get("success"), r.URL.Query().Get("error")})
+	d := s.buildAccountPageData(r, pc, r.URL.Query().Get("success"), r.URL.Query().Get("error"))
+	s.portalTmpl.render(w, "portal_account.html", d)
 }
 
 func (s *Server) handlePortalAccountProfile(w http.ResponseWriter, r *http.Request) {
@@ -550,10 +615,8 @@ func (s *Server) handlePortalAccountProfile(w http.ResponseWriter, r *http.Reque
 	_ = r.ParseForm()
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
-		s.portalTmpl.render(w, "portal_account.html", struct {
-			portalBase
-			Success, Error string
-		}{newPortalBase(pc, "account"), "", "Name cannot be empty."})
+		d := s.buildAccountPageData(r, pc, "", "Name cannot be empty.")
+		s.portalTmpl.render(w, "portal_account.html", d)
 		return
 	}
 	if err := s.store.UpdateUser(r.Context(), pc.User.ID, name, pc.User.Active); err != nil {
@@ -561,7 +624,10 @@ func (s *Server) handlePortalAccountProfile(w http.ResponseWriter, r *http.Reque
 		http.Redirect(w, r, "/portal/account?error=update+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "name"))
+	if err := s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "name")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	http.Redirect(w, r, "/portal/account?success=Profile+updated.", http.StatusFound)
 }
 
@@ -570,10 +636,8 @@ func (s *Server) handlePortalAccountPassword(w http.ResponseWriter, r *http.Requ
 	_ = r.ParseForm()
 
 	showErr := func(msg string) {
-		s.portalTmpl.render(w, "portal_account.html", struct {
-			portalBase
-			Success, Error string
-		}{newPortalBase(pc, "account"), "", msg})
+		d := s.buildAccountPageData(r, pc, "", msg)
+		s.portalTmpl.render(w, "portal_account.html", d)
 	}
 
 	currentPw := r.FormValue("current_password")
@@ -596,41 +660,11 @@ func (s *Server) handlePortalAccountPassword(w http.ResponseWriter, r *http.Requ
 		showErr("An error occurred. Please try again.")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "password"))
+	if err := s.logAudit(r, ActionUserUpdated, &pc.User.ID, nil, logMeta("field", "password")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	http.Redirect(w, r, "/portal/account?success=Password+updated.", http.StatusFound)
-}
-
-// ── MFA settings ──────────────────────────────────────────────────────────────
-
-func (s *Server) handlePortalMFA(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-
-	totpCred, _ := s.store.GetTOTPByUserID(r.Context(), pc.User.ID)
-	waCreds, _ := s.store.ListWebAuthnCredentials(r.Context(), pc.User.ID)
-	tp := s.getTOTPPendingCookie(r)
-
-	type mfaPageData struct {
-		portalBase
-		TOTPEnabled    bool
-		TOTPEnrolling  bool
-		OTPURI         string
-		TOTPSecret     string
-		WebAuthnCreds  []*model.WebAuthnCredential
-		Success, Error string
-	}
-	d := mfaPageData{
-		portalBase:    newPortalBase(pc, "mfa"),
-		TOTPEnabled:   totpCred != nil && totpCred.Enabled,
-		WebAuthnCreds: waCreds,
-		Success:       r.URL.Query().Get("success"),
-		Error:         r.URL.Query().Get("error"),
-	}
-	if tp != nil {
-		d.TOTPEnrolling = true
-		d.OTPURI = tp.OTPURI
-		d.TOTPSecret = tp.Secret
-	}
-	s.portalTmpl.render(w, "portal_mfa.html", d)
 }
 
 func (s *Server) handlePortalMFATOTPEnroll(w http.ResponseWriter, r *http.Request) {
@@ -638,11 +672,11 @@ func (s *Server) handlePortalMFATOTPEnroll(w http.ResponseWriter, r *http.Reques
 	resp, err := iMFA.EnrollTOTP(r.Context(), s.store, s.kp, pc.User)
 	if err != nil {
 		s.log.Error("portal totp enroll", "err", err)
-		http.Redirect(w, r, "/portal/mfa?error=enrollment+failed", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=enrollment+failed", http.StatusFound)
 		return
 	}
 	if err := s.setTOTPPendingCookie(w, resp.OTPURI, resp.Secret); err != nil {
-		http.Redirect(w, r, "/portal/mfa?error=enrollment+failed", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=enrollment+failed", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/portal/mfa", http.StatusFound)
@@ -653,26 +687,32 @@ func (s *Server) handlePortalMFATOTPConfirm(w http.ResponseWriter, r *http.Reque
 	_ = r.ParseForm()
 	code := r.FormValue("code")
 	if err := iMFA.ConfirmTOTP(r.Context(), s.store, s.kp, pc.User.ID, code); err != nil {
-		http.Redirect(w, r, "/portal/mfa?error=Invalid+code.+Please+try+again.", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=Invalid+code.+Please+try+again.", http.StatusFound)
 		return
 	}
 	if err := s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, true); err != nil {
 		s.log.Error("enable mfa", "err", err)
 	}
-	s.logAudit(r, ActionMFATOTPEnrolled, &pc.User.ID, nil, nil)
+	if err := s.logAudit(r, ActionMFATOTPEnrolled, &pc.User.ID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	clearCookie(w, portalTOTPCookie)
-	http.Redirect(w, r, "/portal/mfa?success=TOTP+enrolled+successfully.", http.StatusFound)
+	http.Redirect(w, r, "/portal/account?success=TOTP+enrolled+successfully.", http.StatusFound)
 }
 
 func (s *Server) handlePortalMFATOTPDelete(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
 	if err := s.store.DeleteTOTP(r.Context(), pc.User.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
-		http.Redirect(w, r, "/portal/mfa?error=delete+failed", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=delete+failed", http.StatusFound)
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
-	s.logAudit(r, ActionMFATOTPDeleted, &pc.User.ID, nil, nil)
-	http.Redirect(w, r, "/portal/mfa?success=Authenticator+app+removed.", http.StatusFound)
+	if err := s.logAudit(r, ActionMFATOTPDeleted, &pc.User.ID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/portal/account?success=Authenticator+app+removed.", http.StatusFound)
 }
 
 // Portal WebAuthn registration (uses cookie-based portal session).
@@ -705,7 +745,10 @@ func (s *Server) handlePortalMFAWebAuthnFinish(w http.ResponseWriter, r *http.Re
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, true)
-	s.logAudit(r, ActionMFAWebAuthnEnrolled, &pc.User.ID, nil, logMeta("credential_id", cred.ID))
+	if err := s.logAudit(r, ActionMFAWebAuthnEnrolled, &pc.User.ID, nil, logMeta("credential_id", cred.ID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": cred.ID, "device_name": cred.DeviceName})
 }
 
@@ -714,15 +757,15 @@ func (s *Server) handlePortalMFAWebAuthnDelete(w http.ResponseWriter, r *http.Re
 	credIDStr := r.PathValue("id")
 	credID, err := uuid.Parse(credIDStr)
 	if err != nil {
-		http.Redirect(w, r, "/portal/mfa?error=invalid+credential+id", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=invalid+credential+id", http.StatusFound)
 		return
 	}
 	if err := s.store.DeleteWebAuthnCredential(r.Context(), credID, pc.User.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			http.Redirect(w, r, "/portal/mfa?error=credential+not+found", http.StatusFound)
+			http.Redirect(w, r, "/portal/account?error=credential+not+found", http.StatusFound)
 			return
 		}
-		http.Redirect(w, r, "/portal/mfa?error=delete+failed", http.StatusFound)
+		http.Redirect(w, r, "/portal/account?error=delete+failed", http.StatusFound)
 		return
 	}
 	creds, _ := s.store.ListWebAuthnCredentials(r.Context(), pc.User.ID)
@@ -730,8 +773,11 @@ func (s *Server) handlePortalMFAWebAuthnDelete(w http.ResponseWriter, r *http.Re
 	if len(creds) == 0 && totpErr != nil {
 		_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
 	}
-	s.logAudit(r, ActionMFAWebAuthnDeleted, &pc.User.ID, nil, logMeta("credential_id", credID))
-	http.Redirect(w, r, "/portal/mfa?success=Security+key+removed.", http.StatusFound)
+	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &pc.User.ID, nil, logMeta("credential_id", credID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/portal/account?success=Security+key+removed.", http.StatusFound)
 }
 
 // ── Admin — Users ─────────────────────────────────────────────────────────────
@@ -750,33 +796,139 @@ func (s *Server) handlePortalAdminUsers(w http.ResponseWriter, r *http.Request) 
 	}{newPortalBase(pc, "admin-users"), users, r.URL.Query().Get("success")})
 }
 
+// adminUserEditView feeds portal_admin_user_edit.html. It carries the form-state
+// User, an IsNew flag, banner messages, and the full group catalogue with each
+// row's IsMember pre-resolved so the template can render checkboxes without
+// looking anything up.
+type adminUserEditView struct {
+	portalBase
+	User    *model.User
+	IsNew   bool
+	Error   string
+	Success string
+	Groups  []groupCheckbox
+}
+
+type groupCheckbox struct {
+	ID          uuid.UUID
+	DisplayName string
+	IsMember    bool
+}
+
+// renderUserForm assembles the group checkbox list (selected reflects what
+// should be checked, not what's currently in the DB — so POST handlers can
+// preserve the user's submission on validation errors).
+func (s *Server) renderUserForm(w http.ResponseWriter, r *http.Request, pc *portalCtx, u *model.User, isNew bool, errMsg, successMsg string, selected []uuid.UUID) {
+	allGroups, err := s.store.ListGroups(r.Context())
+	if err != nil {
+		s.log.Error("admin user form: list groups", "err", err)
+	}
+	selSet := make(map[uuid.UUID]struct{}, len(selected))
+	for _, id := range selected {
+		selSet[id] = struct{}{}
+	}
+	checks := make([]groupCheckbox, len(allGroups))
+	for i, g := range allGroups {
+		_, in := selSet[g.ID]
+		checks[i] = groupCheckbox{ID: g.ID, DisplayName: g.DisplayName, IsMember: in}
+	}
+	s.portalTmpl.render(w, "portal_admin_user_edit.html", adminUserEditView{
+		portalBase: newPortalBase(pc, "admin-users"),
+		User:       u,
+		IsNew:      isNew,
+		Error:      errMsg,
+		Success:    successMsg,
+		Groups:     checks,
+	})
+}
+
+// currentMembershipFor returns the IDs of groups whose Members contain userID.
+// Walks ListGroups in-process — fine while the group catalogue is small; revisit
+// when N(groups) crosses ~10⁴.
+func (s *Server) currentMembershipFor(ctx context.Context, userID uuid.UUID) []uuid.UUID {
+	groups, _ := s.store.ListGroups(ctx)
+	out := make([]uuid.UUID, 0)
+	for _, g := range groups {
+		if slices.Contains(g.Members, userID) {
+			out = append(out, g.ID)
+		}
+	}
+	return out
+}
+
+// syncUserGroups reconciles a user's group memberships to the `selected` set
+// and fans the resulting per-group changes out to provisioners. Each group
+// whose membership actually changed receives one provision.OpUpdate event with
+// its post-change member list.
+func (s *Server) syncUserGroups(r *http.Request, userID uuid.UUID, selected []uuid.UUID) {
+	allGroups, err := s.store.ListGroups(r.Context())
+	if err != nil {
+		s.log.Error("sync user groups: list", "err", err)
+		return
+	}
+	allUsers, _ := s.store.ListUsers(r.Context())
+	selSet := make(map[uuid.UUID]struct{}, len(selected))
+	for _, id := range selected {
+		selSet[id] = struct{}{}
+	}
+	for _, g := range allGroups {
+		wasMember := slices.Contains(g.Members, userID)
+		_, isMember := selSet[g.ID]
+		if wasMember == isMember {
+			continue
+		}
+		if isMember {
+			if err := s.store.AddGroupMember(r.Context(), g.ID, userID); err != nil {
+				s.log.Error("sync user groups: add", "group", g.ID, "user", userID, "err", err)
+				continue
+			}
+		} else {
+			if err := s.store.RemoveGroupMember(r.Context(), g.ID, userID); err != nil {
+				s.log.Error("sync user groups: remove", "group", g.ID, "user", userID, "err", err)
+				continue
+			}
+		}
+		fresh, err := s.store.GetGroupByID(r.Context(), g.ID)
+		if err != nil {
+			continue
+		}
+		s.provisionGroup(r, provision.OpUpdate, fresh, pickUsers(allUsers, fresh.Members))
+	}
+}
+
+func parseGroupIDs(raw []string) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
+		if id, err := uuid.Parse(strings.TrimSpace(s)); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
 	if r.Method == http.MethodGet {
-		s.portalTmpl.render(w, "portal_admin_user_edit.html", struct {
-			portalBase
-			User  *model.User
-			IsNew bool
-			Error string
-		}{newPortalBase(pc, "admin-users"), &model.User{Active: true}, true, ""})
+		s.renderUserForm(w, r, pc, &model.User{Active: true}, true, "", "", nil)
 		return
 	}
 	_ = r.ParseForm()
 
+	formUser := &model.User{
+		Name:    r.FormValue("name"),
+		Email:   r.FormValue("email"),
+		Active:  r.FormValue("active") == "1",
+		IsAdmin: r.FormValue("is_admin") == "1",
+	}
+	groupIDs := parseGroupIDs(r.Form["group_ids"])
+
 	showErr := func(msg string) {
-		u := &model.User{Name: r.FormValue("name"), Email: r.FormValue("email"), Active: r.FormValue("active") == "1", IsAdmin: r.FormValue("is_admin") == "1"}
-		s.portalTmpl.render(w, "portal_admin_user_edit.html", struct {
-			portalBase
-			User  *model.User
-			IsNew bool
-			Error string
-		}{newPortalBase(pc, "admin-users"), u, true, msg})
+		s.renderUserForm(w, r, pc, formUser, true, msg, "", groupIDs)
 	}
 
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	name := strings.TrimSpace(r.FormValue("name"))
 	password := r.FormValue("password")
-	isAdmin := r.FormValue("is_admin") == "1"
 
 	if email == "" || name == "" || password == "" {
 		showErr("Email, name, and password are required.")
@@ -800,13 +952,17 @@ func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request
 		showErr("An error occurred.")
 		return
 	}
-	if r.FormValue("active") != "1" {
+	if !formUser.Active {
 		_ = s.store.SetUserActive(r.Context(), user.ID, false)
 	}
-	if isAdmin {
+	if formUser.IsAdmin {
 		_ = s.store.SetUserAdmin(r.Context(), user.ID, true)
 	}
-	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "by", pc.User.Email))
+	s.syncUserGroups(r, user.ID, groupIDs)
+	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "by", pc.User.Email, "groups", len(groupIDs))); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	user, _ = s.store.GetUserByID(r.Context(), user.ID)
 	s.provisionUser(r, provision.OpCreate, user, nil)
 	http.Redirect(w, r, "/portal/admin/users?success=User+created.", http.StatusFound)
@@ -825,23 +981,26 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	showErr := func(msg string) {
-		s.portalTmpl.render(w, "portal_admin_user_edit.html", struct {
-			portalBase
-			User  *model.User
-			IsNew bool
-			Error string
-		}{newPortalBase(pc, "admin-users"), user, false, msg})
-	}
-
 	if r.Method == http.MethodGet {
-		showErr("")
+		s.renderUserForm(w, r, pc, user, false,
+			r.URL.Query().Get("error"), r.URL.Query().Get("success"),
+			s.currentMembershipFor(r.Context(), id))
 		return
 	}
 	_ = r.ParseForm()
 	name := strings.TrimSpace(r.FormValue("name"))
 	active := r.FormValue("active") == "1"
 	isAdmin := r.FormValue("is_admin") == "1"
+	groupIDs := parseGroupIDs(r.Form["group_ids"])
+
+	showErr := func(msg string) {
+		// Echo back what the admin typed; group selection reflects their submission, not the DB.
+		formUser := *user
+		formUser.Name = name
+		formUser.Active = active
+		formUser.IsAdmin = isAdmin
+		s.renderUserForm(w, r, pc, &formUser, false, msg, "", groupIDs)
+	}
 
 	if name == "" {
 		showErr("Name cannot be empty.")
@@ -855,7 +1014,11 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		showErr("Update failed.")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("by", pc.User.Email))
+	s.syncUserGroups(r, id, groupIDs)
+	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	updated, _ := s.store.GetUserByID(r.Context(), id)
 	if updated != nil {
 		op := provision.OpUpdate
@@ -865,6 +1028,90 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		s.provisionUser(r, op, updated, nil)
 	}
 	http.Redirect(w, r, "/portal/admin/users?success=User+updated.", http.StatusFound)
+}
+
+// handlePortalAdminUserResetPassword lets an admin set a new password without
+// knowing the current one. Audited the same way self-service password updates
+// are (`field=password`) but with `by=<admin email>` so the trail distinguishes
+// admin overrides from user-driven changes.
+func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	_ = r.ParseForm()
+	newPw := r.FormValue("new_password")
+	editURL := "/portal/admin/users/" + id.String() + "/edit"
+	redirect := func(qs string) { http.Redirect(w, r, editURL+"?"+qs, http.StatusFound) }
+
+	if newPw == "" {
+		redirect("error=" + url.QueryEscape("Password is required."))
+		return
+	}
+	if v := s.policy.First(policy.PolicyContext{Password: newPw, Request: r}); v != nil {
+		redirect("error=" + url.QueryEscape(v.Message))
+		return
+	}
+	hash, err := auth.HashPassword(newPw)
+	if err != nil {
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+	if err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+	// Force re-auth on every existing session — the old password no longer holds.
+	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
+	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("field", "password", "by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	redirect("success=" + url.QueryEscape("Password reset."))
+}
+
+// handlePortalAdminUserClearMFA deletes every MFA credential (TOTP + WebAuthn)
+// belonging to the target user and flips MFAEnabled off. One audit row per
+// credential, plus the standard `by=<admin>` provenance.
+func (s *Server) handlePortalAdminUserClearMFA(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	editURL := "/portal/admin/users/" + id.String() + "/edit"
+
+	switch err := s.store.DeleteTOTP(r.Context(), id); {
+	case err == nil:
+		if auditErr := s.logAudit(r, ActionMFATOTPDeleted, &id, nil, logMeta("by", pc.User.Email)); auditErr != nil {
+			s.auditFail(w, auditErr)
+			return
+		}
+	case errors.Is(err, store.ErrNotFound):
+		// Nothing to delete.
+	default:
+		s.log.Error("admin clear totp", "user", id, "err", err)
+	}
+
+	creds, _ := s.store.ListWebAuthnCredentials(r.Context(), id)
+	for _, c := range creds {
+		if err := s.store.DeleteWebAuthnCredential(r.Context(), c.ID, id); err != nil {
+			s.log.Error("admin delete webauthn", "user", id, "cred", c.ID, "err", err)
+			continue
+		}
+		// Stop on first audit failure: better to leave the remaining credentials
+		// in place (admin can retry once NATS is back) than to silently delete
+		// without an audit row for any of them.
+		if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &id, nil, logMeta("credential_id", c.ID, "by", pc.User.Email)); err != nil {
+			s.auditFail(w, err)
+			return
+		}
+	}
+	_ = s.store.UpdateUserMFAEnabled(r.Context(), id, false)
+	http.Redirect(w, r, editURL+"?success="+url.QueryEscape("MFA credentials cleared."), http.StatusFound)
 }
 
 func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Request) {
@@ -880,7 +1127,10 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionUserDeleted, &id, nil, logMeta("by", pc.User.Email))
+	if err := s.logAudit(r, ActionUserDeleted, &id, nil, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if user != nil {
 		s.provisionUser(r, provision.OpDelete, user, nil)
 	}
@@ -953,7 +1203,10 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		showErr("An error occurred.")
 		return
 	}
-	s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email))
+	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if rawSecret != "" {
 		http.Redirect(w, r, "/portal/admin/clients?success=Client+created.&secret="+rawSecret, http.StatusFound)
 	} else {
@@ -1005,7 +1258,10 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 		showErr("An error occurred. Please try again.")
 		return
 	}
-	s.logAudit(r, ActionClientUpdated, nil, &id, logMeta("by", pc.User.Email))
+	if err := s.logAudit(r, ActionClientUpdated, nil, &id, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	http.Redirect(w, r, "/portal/admin/clients?success=Client+details+saved.", http.StatusFound)
 }
 
@@ -1020,7 +1276,10 @@ func (s *Server) handlePortalAdminClientDelete(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionClientDeleted, nil, &id, logMeta("by", pc.User.Email))
+	if err := s.logAudit(r, ActionClientDeleted, nil, &id, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	http.Redirect(w, r, "/portal/admin/clients?success=Client+deleted.", http.StatusFound)
 }
 
@@ -1049,43 +1308,11 @@ func (s *Server) handlePortalAdminClientRotate(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=update+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionClientSecretRotated, nil, &id, logMeta("by", pc.User.Email))
+	if err := s.logAudit(r, ActionClientSecretRotated, nil, &id, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	http.Redirect(w, r, "/portal/admin/clients?success=Secret+rotated.&secret="+rawSecret, http.StatusFound)
-}
-
-// ── Admin — Audit Log ─────────────────────────────────────────────────────────
-
-func (s *Server) handlePortalAdminAudit(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-	const pageSize = 50
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
-		}
-	}
-	logs, _ := s.store.ListAuditLogs(r.Context(), pageSize+1, offset)
-	hasMore := len(logs) > pageSize
-	if hasMore {
-		logs = logs[:pageSize]
-	}
-	s.portalTmpl.render(w, "portal_admin_audit.html", struct {
-		portalBase
-		Logs       []*model.AuditLog
-		Offset     int
-		OffsetEnd  int
-		PrevOffset int
-		NextOffset int
-		HasMore    bool
-	}{
-		portalBase: newPortalBase(pc, "admin-audit"),
-		Logs:       logs,
-		Offset:     offset,
-		OffsetEnd:  offset + len(logs),
-		PrevOffset: max(0, offset-pageSize),
-		NextOffset: offset + pageSize,
-		HasMore:    hasMore,
-	})
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

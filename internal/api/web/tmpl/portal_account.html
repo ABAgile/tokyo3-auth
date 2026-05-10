@@ -1,13 +1,13 @@
 {{template "base" .}}
 
-{{define "title"}}Account settings{{end}}
-{{define "pagetitle"}}Account settings{{end}}
+{{define "title"}}Profile{{end}}
+{{define "pagetitle"}}Profile{{end}}
 
 {{define "content"}}
 {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
-<div class="card mb-4" style="max-width:520px">
+<div class="card mb-4" style="max-width:560px">
   <div class="card-header"><h2>Profile</h2></div>
   <div class="card-body">
     <form method="POST" action="/portal/account/profile">
@@ -24,7 +24,7 @@
   </div>
 </div>
 
-<div class="card" style="max-width:520px">
+<div class="card mb-4" style="max-width:560px">
   <div class="card-header"><h2>Change password</h2></div>
   <div class="card-body">
     <form method="POST" action="/portal/account/password">
@@ -41,4 +41,102 @@
     </form>
   </div>
 </div>
+
+<!-- MFA — TOTP -->
+<div class="card mb-4" style="max-width:560px">
+  <div class="card-header">
+    <h2>Authenticator app (TOTP)</h2>
+    {{if .TOTPEnabled}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-gray">Not enrolled</span>{{end}}
+  </div>
+  <div class="card-body">
+    {{if .TOTPEnrolling}}
+    <div class="alert alert-info">Scan this QR code in your authenticator app, then confirm below.</div>
+    <div class="qr-wrap">
+      <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{.OTPURI | urlquery}}" alt="QR code" width="200" height="200">
+    </div>
+    <p class="text-muted">Or enter the secret manually:</p>
+    <div class="secret-box">{{.TOTPSecret}}</div>
+    <form method="POST" action="/portal/mfa/totp/confirm" style="margin-top:16px">
+      <div class="form-group">
+        <label for="code">Confirm with a code from the app</label>
+        <input type="text" id="code" name="code" class="code-input"
+               inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+               placeholder="000000" required autofocus autocomplete="one-time-code">
+      </div>
+      <div style="display:flex;gap:10px">
+        <button type="submit" class="btn btn-primary">Confirm</button>
+        <a href="/portal/account" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+    {{else if .TOTPEnabled}}
+    <p class="text-muted">Your authenticator app is enrolled and active.</p>
+    <form method="POST" action="/portal/mfa/totp/delete" style="margin-top:14px"
+          onsubmit="return confirm('Remove TOTP credential?')">
+      <button type="submit" class="btn btn-danger btn-sm">Remove TOTP</button>
+    </form>
+    {{else}}
+    <p class="text-muted">No authenticator app enrolled.</p>
+    <form method="POST" action="/portal/mfa/totp/enroll" style="margin-top:14px">
+      <button type="submit" class="btn btn-primary btn-sm">Enroll authenticator app</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+
+<!-- MFA — WebAuthn -->
+<div class="card" style="max-width:560px">
+  <div class="card-header"><h2>Security keys / biometrics (WebAuthn)</h2></div>
+  <div class="card-body">
+    {{if .WebAuthnCreds}}
+    <div class="table-wrap mb-4">
+      <table>
+        <thead><tr><th>Device</th><th>Registered</th><th></th></tr></thead>
+        <tbody>
+          {{range .WebAuthnCreds}}
+          <tr>
+            <td>{{.DeviceName}}</td>
+            <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+            <td class="text-right">
+              <form method="POST" action="/portal/mfa/webauthn/{{.ID}}/delete"
+                    onsubmit="return confirm('Remove this security key?')">
+                <button type="submit" class="btn btn-danger btn-sm">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="text-muted mb-4">No security keys enrolled.</p>
+    {{end}}
+
+    <div>
+      <label for="wa-device-name" style="display:inline-block;margin-right:8px">Device name:</label>
+      <input type="text" id="wa-device-name" placeholder="e.g. YubiKey 5" style="width:200px;display:inline-block">
+      <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="enrollKey()">Add security key</button>
+    </div>
+    <div id="wa-status" style="margin-top:8px"></div>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function enrollKey() {
+  const name = document.getElementById("wa-device-name").value.trim() || "Security Key";
+  const status = document.getElementById("wa-status");
+  status.textContent = "Communicating with device…";
+  try {
+    await waRegisterPortal(
+      "/portal/mfa/webauthn/register/begin",
+      "/portal/mfa/webauthn/register/finish",
+      name,
+    );
+    window.location.reload();
+  } catch(e) {
+    status.textContent = "Error: " + e.message;
+  }
+}
+</script>
 {{end}}

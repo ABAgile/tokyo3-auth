@@ -86,6 +86,13 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  /* Pin the sidebar to the viewport so long content scrolls under it.
+     Sticky (vs fixed) keeps the sidebar in normal flow, so .portal-main
+     gets the right width without manually subtracting the sidebar's. */
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .sidebar .sidebar-brand {
@@ -126,14 +133,6 @@ body {
   border-left-color: var(--sidebar-active);
 }
 
-.sidebar nav .nav-section {
-  padding: 16px 20px 6px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .08em;
-  color: rgba(255,255,255,.35);
-}
-
 .sidebar .sidebar-footer {
   padding: 14px 20px;
   border-top: 1px solid rgba(255,255,255,.07);
@@ -148,6 +147,12 @@ body {
 
 .sidebar .sidebar-footer a:hover,
 .sidebar .sidebar-footer .btn-link:hover { color: #fff; }
+
+.sidebar .sidebar-footer .sidebar-footer-link {
+  display: block;
+  margin: 6px 0 4px;
+}
+.sidebar .sidebar-footer .sidebar-footer-link.active { color: #fff; }
 
 .btn-link {
   background: none;
@@ -289,6 +294,15 @@ input[type="checkbox"] {
 }
 
 .btn-danger:hover { opacity: .88; }
+
+/* Recoverable-destructive — reset password, clear MFA. Sits between secondary
+   and danger so the irreversible delete still reads louder than the rest. */
+.btn-warning {
+  background: #f59e0b;
+  color: #fff;
+}
+
+.btn-warning:hover { opacity: .88; }
 
 .btn-sm {
   padding: 5px 12px;

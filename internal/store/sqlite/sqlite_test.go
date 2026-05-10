@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -35,8 +34,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 8 {
-		t.Errorf("expected 8 migrations applied, got %d", n)
+	if n != 9 {
+		t.Errorf("expected 9 migrations applied, got %d", n)
 	}
 
 	// Re-running migrate() must be a no-op (idempotent).
@@ -46,8 +45,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations 2: %v", err)
 	}
-	if n != 8 {
-		t.Errorf("after re-run, expected still 8 migrations, got %d", n)
+	if n != 9 {
+		t.Errorf("after re-run, expected still 9 migrations, got %d", n)
 	}
 }
 
@@ -174,70 +173,6 @@ func TestPortalClientSeed(t *testing.T) {
 	}
 	if !sliceEq(c.Scopes, []string{"portal", "admin"}) {
 		t.Errorf("portal scopes mismatch: %v", c.Scopes)
-	}
-}
-
-// TestAuditNullableActor exercises the *uuid.UUID NULL handling for AuditLog.
-func TestAuditNullableActor(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	// Anonymous event (failed login before user resolution): UserID/ClientID nil.
-	id1 := uuid.New()
-	if err := db.CreateAuditLog(ctx, &model.AuditLog{
-		ID:       id1,
-		Action:   "auth.login.failed",
-		IP:       "127.0.0.1",
-		Metadata: map[string]any{"reason": "bad_password"},
-	}); err != nil {
-		t.Fatalf("CreateAuditLog anon: %v", err)
-	}
-
-	// Identified event: UserID set, ClientID nil.
-	user, err := db.CreateUser(ctx, "bob@example.com", "h", "Bob")
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	uid := user.ID
-	id2 := uuid.New()
-	if err := db.CreateAuditLog(ctx, &model.AuditLog{
-		ID:     id2,
-		UserID: &uid,
-		Action: "auth.login",
-		IP:     "10.0.0.1",
-	}); err != nil {
-		t.Fatalf("CreateAuditLog id'd: %v", err)
-	}
-
-	logs, err := db.ListAuditLogs(ctx, 10, 0)
-	if err != nil {
-		t.Fatalf("ListAuditLogs: %v", err)
-	}
-	if len(logs) != 2 {
-		t.Fatalf("want 2 logs, got %d", len(logs))
-	}
-	// CURRENT_TIMESTAMP resolves to seconds in SQLite — both rows can share the
-	// same created_at, leaving DESC order undefined. Look up by ID instead.
-	byID := map[uuid.UUID]*model.AuditLog{}
-	for _, l := range logs {
-		byID[l.ID] = l
-	}
-	anon, ok := byID[id1]
-	if !ok {
-		t.Fatalf("missing anonymous audit row %s", id1)
-	}
-	if anon.UserID != nil {
-		t.Errorf("anonymous row UserID should be nil, got %v", *anon.UserID)
-	}
-	if anon.Metadata["reason"] != "bad_password" {
-		t.Errorf("metadata not preserved: %v", anon.Metadata)
-	}
-	identified, ok := byID[id2]
-	if !ok {
-		t.Fatalf("missing identified audit row %s", id2)
-	}
-	if identified.UserID == nil || *identified.UserID != uid {
-		t.Errorf("identified row UserID: want %s, got %v", uid, identified.UserID)
 	}
 }
 
