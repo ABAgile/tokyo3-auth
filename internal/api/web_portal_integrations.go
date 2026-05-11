@@ -276,7 +276,7 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 		req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
 	case model.AppIntegrationAuthMTLS:
 		if s.outboundTLS == nil {
-			return 0, "", errors.New("mtls auth_mode but AUTH_SCIM_CERT/KEY are unset")
+			return 0, "", errors.New("mtls auth_mode but AUTH_SCIM_MTLS_CERT/KEY are unset")
 		}
 		client.Transport = &http.Transport{TLSClientConfig: s.outboundTLS}
 	default:

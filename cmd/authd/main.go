@@ -9,7 +9,8 @@
 // Optional:
 //
 //	AUTH_ADMIN_DATABASE_URL    Admin DSN used for schema migrations (DDL).
-//	                           Falls back to AUTH_DATABASE_URL when unset.
+//	                           Falls back to AUTH_DATABASE_URL when unset
+//	                           (both `serve` and `migrate` subcommands).
 //	AUTH_ADDR                  HTTPS listen address (default: :8443).
 //	AUTH_ALLOW_REGISTRATION    Set to "true" to enable self-registration at /register.
 //	AUTH_PROVISION_SYNC_INTERVAL  Period for the background full-sync goroutine
@@ -31,24 +32,39 @@
 //	                      If neither is set, an ephemeral self-signed cert is generated (dev only).
 //	AUTH_API_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
 //
+// Workload CA (single root for every internal mTLS channel — DB, NATS, SCIM):
+//
+//	AUTH_WORKLOAD_CA  CA PEM that signs every internal workload cert auth talks
+//	                  to (Postgres, NATS, downstream SCIM endpoints). Used as
+//	                  the fallback for AUTH_DB_CA / AUTH_ADMIN_DB_CA /
+//	                  AUTH_NATS_CA / AUTH_SCIM_MTLS_CA when any of those is
+//	                  unset. Leave the per-channel CA vars empty in deployments
+//	                  that issue all internal certs from one workload CA; set
+//	                  the per-channel vars when stricter separation is needed.
+//
 // Database mTLS (optional, used together with cert-auth Postgres):
 //
 //	AUTH_DB_CERT          Client certificate PEM for the runtime auth→postgres connection.
 //	AUTH_DB_KEY           Client key PEM (must be paired with AUTH_DB_CERT).
 //	AUTH_DB_CA            CA PEM for verifying the postgres server certificate.
-//	AUTH_ADMIN_DB_CERT    Client certificate PEM for the admin (migration) connection.
-//	AUTH_ADMIN_DB_KEY     Client key PEM.
-//	AUTH_ADMIN_DB_CA      CA PEM.
+//	                      Falls back to AUTH_WORKLOAD_CA when unset.
+//	AUTH_ADMIN_DB_CERT    Client certificate PEM for the admin (migration)
+//	                      connection. Falls back to AUTH_DB_CERT when unset
+//	                      (suitable for dev/single-role setups; production
+//	                      should issue a separate DDL credential).
+//	AUTH_ADMIN_DB_KEY     Client key PEM. Falls back to AUTH_DB_KEY.
+//	AUTH_ADMIN_DB_CA      CA PEM. Falls back to AUTH_DB_CA → AUTH_WORKLOAD_CA.
 //
 // Outbound mTLS (used by app_integrations rows with auth_mode=mtls):
 //
-//	AUTH_SCIM_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
-//	                        downstreams. Hot-reloaded (mtime polled at most once
-//	                        per second across SCIM requests).
-//	AUTH_SCIM_KEY   Client key PEM. Required iff AUTH_SCIM_CERT is set.
-//	AUTH_SCIM_CA    Optional CA bundle for verifying downstream servers.
-//	                        Empty falls back to the system root pool. A single
-//	                        cert/key pair is shared across every mTLS integration.
+//	AUTH_SCIM_MTLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
+//	                     downstreams. Hot-reloaded (mtime polled at most once
+//	                     per second across SCIM requests).
+//	AUTH_SCIM_MTLS_KEY   Client key PEM. Required iff AUTH_SCIM_MTLS_CERT is set.
+//	AUTH_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
+//	                     Empty falls back to AUTH_WORKLOAD_CA, then to the
+//	                     system root pool. A single cert/key pair is shared
+//	                     across every mTLS integration.
 //
 // Audit log shipping (publishes events to NATS JetStream stream "auth_audit"):
 //
@@ -57,6 +73,7 @@
 //	AUTH_NATS_CERT   Publisher client certificate PEM path (mTLS).
 //	AUTH_NATS_KEY    Publisher client key PEM path. Required iff AUTH_NATS_CERT is set.
 //	AUTH_NATS_CA     CA certificate PEM path for verifying the NATS server cert.
+//	                 Falls back to AUTH_WORKLOAD_CA when unset.
 package main
 
 import (
@@ -264,11 +281,14 @@ func migrateCmd() *cobra.Command {
 		Use:   "migrate",
 		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			dbURL := mustEnv("AUTH_ADMIN_DATABASE_URL")
+			dbURL := envFirst("AUTH_ADMIN_DATABASE_URL", "AUTH_DATABASE_URL")
+			if dbURL == "" {
+				return fmt.Errorf("AUTH_ADMIN_DATABASE_URL or AUTH_DATABASE_URL must be set")
+			}
 			adminDBTLS, err := btls.FromFiles(
-				os.Getenv("AUTH_ADMIN_DB_CERT"),
-				os.Getenv("AUTH_ADMIN_DB_KEY"),
-				os.Getenv("AUTH_ADMIN_DB_CA"),
+				envFirst("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
+				envFirst("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
+				envFirst("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 			)
 			if err != nil {
 				return fmt.Errorf("admin db TLS: %w", err)
@@ -505,7 +525,7 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			cfg.Token = string(token)
 		case model.AppIntegrationAuthMTLS:
 			if outboundTLS == nil {
-				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_SCIM_CERT/KEY are unset", i.Name)
+				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_SCIM_MTLS_CERT/KEY are unset", i.Name)
 			}
 			cfg.TLSConfig = outboundTLS
 		default:
@@ -649,26 +669,38 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// envFirst returns the value of the first non-empty env var among keys.
+// Used for chained fallbacks (e.g. AUTH_ADMIN_DB_CA → AUTH_DB_CA → AUTH_WORKLOAD_CA).
+func envFirst(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
 // authenticate auth as a client to downstream SCIM endpoints. A single shared
 // cert/key pair is presented for every mtls integration (auth has one IdP
 // identity). Returns nil when no env vars are set; mtls-mode integrations then
 // fail at registry-build time with a clear error.
 //
-//	AUTH_SCIM_CERT  Client cert PEM path (hot-reloaded; mtime polled
-//	                        once per second across SCIM requests).
-//	AUTH_SCIM_KEY   Client key PEM path. Required iff CERT is set.
-//	AUTH_SCIM_CA    Optional CA bundle for verifying downstream servers.
-//	                        Empty falls back to the system root pool.
+//	AUTH_SCIM_MTLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
+//	                     once per second across SCIM requests).
+//	AUTH_SCIM_MTLS_KEY   Client key PEM path. Required iff CERT is set.
+//	AUTH_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
+//	                     Falls back to AUTH_WORKLOAD_CA, then to the system
+//	                     root pool.
 func outboundTLSFromEnv() (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_SCIM_CERT")
-	keyFile := os.Getenv("AUTH_SCIM_KEY")
-	caFile := os.Getenv("AUTH_SCIM_CA")
+	certFile := os.Getenv("AUTH_SCIM_MTLS_CERT")
+	keyFile := os.Getenv("AUTH_SCIM_MTLS_KEY")
+	caFile := envFirst("AUTH_SCIM_MTLS_CA", "AUTH_WORKLOAD_CA")
 	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil, nil
 	}
 	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTH_SCIM_CERT and AUTH_SCIM_KEY must both be set or both unset")
+		return nil, fmt.Errorf("AUTH_SCIM_MTLS_CERT and AUTH_SCIM_MTLS_KEY must both be set or both unset")
 	}
 	cfg := &tls.Config{}
 	if certFile != "" {
@@ -688,11 +720,11 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 	if caFile != "" {
 		data, err := os.ReadFile(caFile)
 		if err != nil {
-			return nil, fmt.Errorf("read AUTH_SCIM_CA: %w", err)
+			return nil, fmt.Errorf("read SCIM CA %q: %w", caFile, err)
 		}
 		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse AUTH_SCIM_CA: %w", err)
+			return nil, fmt.Errorf("parse SCIM CA %q: %w", caFile, err)
 		}
 		cfg.RootCAs = pool
 	}
@@ -716,7 +748,7 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 	tlsCfg, err := btls.FromFiles(
 		os.Getenv("AUTH_NATS_CERT"),
 		os.Getenv("AUTH_NATS_KEY"),
-		os.Getenv("AUTH_NATS_CA"),
+		envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("nats audit TLS: %w", err)
@@ -756,7 +788,7 @@ func openAuditSource(log *slog.Logger) (journal.Source, error) {
 	tlsCfg, err := btls.FromFiles(
 		os.Getenv("AUTH_NATS_CERT"),
 		os.Getenv("AUTH_NATS_KEY"),
-		os.Getenv("AUTH_NATS_CA"),
+		envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("nats audit source TLS: %w", err)
@@ -773,11 +805,22 @@ func openAuditSource(log *slog.Logger) (journal.Source, error) {
 // env vars. Either may be nil when the corresponding cert vars are unset, in
 // which case the connection falls back to plain TLS / non-TLS as the DSN's
 // sslmode dictates.
+//
+// Fallback chains keep simple deployments simple while still allowing strict
+// separation:
+//
+//	cert: AUTH_ADMIN_DB_CERT → AUTH_DB_CERT
+//	key:  AUTH_ADMIN_DB_KEY  → AUTH_DB_KEY
+//	CA:   AUTH_ADMIN_DB_CA   → AUTH_DB_CA → AUTH_WORKLOAD_CA
+//
+// A deployment that mints a separate DDL credential sets all three admin
+// vars; a single-role deployment leaves them empty and rides the runtime
+// credentials.
 func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	admin, err = btls.FromFiles(
-		os.Getenv("AUTH_ADMIN_DB_CERT"),
-		os.Getenv("AUTH_ADMIN_DB_KEY"),
-		os.Getenv("AUTH_ADMIN_DB_CA"),
+		envFirst("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
+		envFirst("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
+		envFirst("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("admin db TLS: %w", err)
@@ -785,7 +828,7 @@ func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	runtime, err = btls.FromFiles(
 		os.Getenv("AUTH_DB_CERT"),
 		os.Getenv("AUTH_DB_KEY"),
-		os.Getenv("AUTH_DB_CA"),
+		envFirst("AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("db TLS: %w", err)

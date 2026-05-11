@@ -132,9 +132,10 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
-| `AUTH_SCIM_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
-| `AUTH_SCIM_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_SCIM_CERT` is set. |
-| `AUTH_SCIM_CA` | No | system roots | CA bundle PEM for verifying downstream SCIM servers. |
+| `AUTH_SCIM_MTLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
+| `AUTH_SCIM_MTLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_SCIM_MTLS_CERT` is set. |
+| `AUTH_SCIM_MTLS_CA` | No | falls back to `AUTH_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
+| `AUTH_WORKLOAD_CA` | No | — | Single workload CA root used as the fallback for every per-channel CA env var (`AUTH_DB_CA`, `AUTH_ADMIN_DB_CA`, `AUTH_NATS_CA`, `AUTH_SCIM_MTLS_CA`). Set this alone in deployments that issue all internal certs from one CA; set per-channel vars to override individually. |
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
 | `AWS_REGION` | If IAM enabled | — | AWS region |
 | `AWS_ACCESS_KEY_ID` | If IAM enabled | — | AWS credentials (or use instance role) |
@@ -374,9 +375,9 @@ The response includes the raw token once — store it.
 
 **2. Set the env vars on the authd process**:
 ```
-AUTH_SCIM_CERT=/run/secrets/auth-outbound.crt
-AUTH_SCIM_KEY=/run/secrets/auth-outbound.key
-AUTH_SCIM_CA=/run/secrets/downstream-ca.crt   # optional; falls back to system roots
+AUTH_SCIM_MTLS_CERT=/run/secrets/auth-outbound.crt
+AUTH_SCIM_MTLS_KEY=/run/secrets/auth-outbound.key
+AUTH_SCIM_MTLS_CA=/run/secrets/downstream-ca.crt   # optional; falls back to system roots
 ```
 The cert file is hot-reloaded — pair this with tbot/cert-manager/SPIFFE for automatic rotation.
 

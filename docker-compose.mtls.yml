@@ -5,8 +5,14 @@
 #   NATS server TLS + mTLS  --tls / --tlsverify + client certs on both sides
 #   authd → postgres        client cert + cert auth (no password in DSN)
 #   authd → NATS            client cert (publisher + reader identity)
-#   authd → outbound SCIM   AUTH_SCIM_CERT / KEY / CA (used by
-#                           app_integrations rows with auth_mode=mtls)
+#   authd → outbound SCIM   AUTH_SCIM_MTLS_CERT / KEY (CA falls back to
+#                           AUTH_WORKLOAD_CA; used by app_integrations rows
+#                           with auth_mode=mtls)
+#
+# The shared workload CA is exposed once via AUTH_WORKLOAD_CA below; per-channel
+# CA env vars (AUTH_DB_CA / AUTH_NATS_CA / AUTH_SCIM_MTLS_CA / AUTH_ADMIN_DB_CA)
+# stay supported for stricter deployments that want a different anchor per
+# channel — leave them unset to inherit AUTH_WORKLOAD_CA.
 #
 # Prerequisites:
 #   1. make docker-up-mtls   # auto-generates leaf certs (signed by mkcert's
@@ -87,24 +93,23 @@ services:
     environment:
       AUTH_API_CERT:           /shared/certs/authd-server.crt
       AUTH_API_KEY:            /shared/certs/authd-server.key
+      # Single workload CA root — every internal mTLS channel inherits this
+      # unless overridden by a per-channel AUTH_*_CA below.
+      AUTH_WORKLOAD_CA:        /shared/certs/ca.crt
       AUTH_ADMIN_DB_CERT:      /shared/certs/authd-admin-db-client.crt
       AUTH_ADMIN_DB_KEY:       /shared/certs/authd-admin-db-client.key
-      AUTH_ADMIN_DB_CA:        /shared/certs/ca.crt
       # Cert auth: no password; cert CN authenticates the role.
       AUTH_ADMIN_DATABASE_URL: postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full
       AUTH_DB_CERT:            /shared/certs/authd-app-db-client.crt
       AUTH_DB_KEY:             /shared/certs/authd-app-db-client.key
-      AUTH_DB_CA:              /shared/certs/ca.crt
       # Cert auth: no password; cert CN authenticates the role.
       AUTH_DATABASE_URL:       postgres://${AUTH_DB_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full
       # Outbound SCIM mTLS — single shared identity (CN=authd) presented to
       # every app_integrations row with auth_mode=mtls.
-      AUTH_SCIM_CERT:          /shared/certs/authd-scim-client.crt
-      AUTH_SCIM_KEY:           /shared/certs/authd-scim-client.key
-      AUTH_SCIM_CA:            /shared/certs/ca.crt
+      AUTH_SCIM_MTLS_CERT:     /shared/certs/authd-scim-client.crt
+      AUTH_SCIM_MTLS_KEY:      /shared/certs/authd-scim-client.key
       AUTH_NATS_CERT:          /shared/certs/authd-nats-client.crt
       AUTH_NATS_KEY:           /shared/certs/authd-nats-client.key
-      AUTH_NATS_CA:            /shared/certs/ca.crt
       AUTH_NATS_URL:           tls://nats:4222
     volumes:
       - shared_data:/shared:ro

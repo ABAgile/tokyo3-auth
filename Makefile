@@ -133,20 +133,17 @@ run-mtls: _gen-env _sync-pg-scripts _sync-certs
 	    export $$(grep -v '^#' .env | xargs) && \
 	    AUTH_API_CERT=certs/authd-server.crt \
 	    AUTH_API_KEY=certs/authd-server.key \
+	    AUTH_WORKLOAD_CA=$$CA_PEM \
 	    AUTH_ADMIN_DB_CERT=certs/authd-admin-db-client.crt \
 	    AUTH_ADMIN_DB_KEY=certs/authd-admin-db-client.key \
-	    AUTH_ADMIN_DB_CA=$$CA_PEM \
 	    AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
 	    AUTH_DB_CERT=certs/authd-app-db-client.crt \
 	    AUTH_DB_KEY=certs/authd-app-db-client.key \
-	    AUTH_DB_CA=$$CA_PEM \
 	    AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
-	    AUTH_SCIM_CERT=certs/authd-scim-client.crt \
-	    AUTH_SCIM_KEY=certs/authd-scim-client.key \
-	    AUTH_SCIM_CA=$$CA_PEM \
+	    AUTH_SCIM_MTLS_CERT=certs/authd-scim-client.crt \
+	    AUTH_SCIM_MTLS_KEY=certs/authd-scim-client.key \
 	    AUTH_NATS_CERT=certs/authd-nats-client.crt \
 	    AUTH_NATS_KEY=certs/authd-nats-client.key \
-	    AUTH_NATS_CA=$$CA_PEM \
 	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
 	    $(AUTHD_BIN) serve
 
