@@ -50,9 +50,9 @@ func (s *Server) promoteIfFirstUser(ctx context.Context, u *model.User) {
 	s.log.Info("bootstrap admin: promoted first registered user", "user_id", u.ID, "email", u.Email)
 }
 
-const portalCookie = "portal_tok"
+const portalCookie = "auth_portal"
 const portalLoginCookie = "portal_login"
-const portalCookieTTL = 8 * time.Hour
+const portalCookieTTL = 15 * time.Minute // sliding idle timeout — extended on every authenticated portal hit
 const portalLoginCookieTTL = 10 * time.Minute
 const portalTOTPCookie = "portal_totp"
 
@@ -89,43 +89,73 @@ func newPortalBase(pc *portalCtx, page string) portalBase {
 
 func (s *Server) portalAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(portalCookie)
-		if err != nil {
-			http.Redirect(w, r, "/portal/login", http.StatusFound)
-			return
-		}
-		enc, err := base64.RawURLEncoding.DecodeString(c.Value)
-		if err != nil {
-			http.Redirect(w, r, "/portal/login", http.StatusFound)
-			return
-		}
-		raw, err := bcrypto.Open(s.masterKey, enc)
-		if err != nil {
-			http.Redirect(w, r, "/portal/login", http.StatusFound)
-			return
-		}
-		rawToken := string(raw)
-		sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), auth.HashToken(rawToken))
-		if errors.Is(err, store.ErrNotFound) || (err == nil && time.Now().After(sess.ExpiresAt)) {
+		sess, user, rawToken, err := s.readAuthPortalSession(r)
+		if err != nil || sess == nil {
 			clearCookie(w, portalCookie)
 			http.Redirect(w, r, "/portal/login", http.StatusFound)
 			return
 		}
-		if err != nil {
-			s.log.Error("portal auth", "err", err)
-			http.Redirect(w, r, "/portal/login", http.StatusFound)
-			return
-		}
-		user, err := s.store.GetUserByID(r.Context(), sess.UserID)
-		if err != nil {
-			clearCookie(w, portalCookie)
-			http.Redirect(w, r, "/portal/login", http.StatusFound)
-			return
-		}
-		_ = s.store.UpdateSessionActivity(r.Context(), sess.ID, time.Now().UTC())
+		s.slidePortalSession(w, r, sess, rawToken)
 		pc := &portalCtx{Session: sess, User: user}
 		ctx := context.WithValue(r.Context(), portalCtxKey{}, pc)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// readAuthPortalSession unwraps the auth_portal cookie, looks up the session,
+// validates expiry, and loads the user. Returns (nil, nil, "", nil) when no
+// cookie is present so callers can distinguish "anonymous browser" from
+// "tampered cookie / expired session" — the former is normal on /authorize,
+// the latter should clear the cookie and force re-auth. The raw bearer token
+// is returned so callers (the portalAuth middleware, silent SSO) can re-seal
+// it into a fresh cookie when sliding the session.
+func (s *Server) readAuthPortalSession(r *http.Request) (*model.Session, *model.User, string, error) {
+	c, err := r.Cookie(portalCookie)
+	if err != nil {
+		return nil, nil, "", nil
+	}
+	enc, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	raw, err := bcrypto.Open(s.masterKey, enc)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	rawToken := string(raw)
+	sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), auth.HashToken(rawToken))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, "", err
+	}
+	if err != nil {
+		s.log.Error("portal session lookup", "err", err)
+		return nil, nil, "", err
+	}
+	if time.Now().After(sess.ExpiresAt) {
+		return nil, nil, "", fmt.Errorf("session expired")
+	}
+	user, err := s.store.GetUserByID(r.Context(), sess.UserID)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return sess, user, rawToken, nil
+}
+
+// slidePortalSession bumps the session's expires_at to now+portalCookieTTL,
+// records activity, and re-issues the auth_portal cookie so the browser's
+// MaxAge resets too. Best-effort: failures are logged but don't block the
+// request — the existing cookie still works until the DB row expires.
+func (s *Server) slidePortalSession(w http.ResponseWriter, r *http.Request, sess *model.Session, rawToken string) {
+	now := time.Now().UTC()
+	newExpiry := now.Add(portalCookieTTL)
+	if err := s.store.ExtendSessionExpiry(r.Context(), sess.ID, newExpiry); err != nil {
+		s.log.Warn("extend session expiry", "err", err)
+	} else {
+		sess.ExpiresAt = newExpiry
+	}
+	_ = s.store.UpdateSessionActivity(r.Context(), sess.ID, now)
+	if err := s.setPortalCookie(w, rawToken, portalCookieTTL, portalCookie); err != nil {
+		s.log.Warn("re-set portal cookie", "err", err)
 	}
 }
 

@@ -48,6 +48,11 @@ func (s *DB) UpdateSessionActivity(ctx context.Context, id uuid.UUID, lastActivi
 	return err
 }
 
+func (s *DB) ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = $2 WHERE id = $1`, id, newExpiry)
+	return err
+}
+
 func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newExpiry time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET refresh_token_hash = $2, expires_at = $3 WHERE id = $1`,

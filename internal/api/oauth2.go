@@ -48,12 +48,96 @@ func (s *Server) handleAuthorizeGET(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid client_id", http.StatusBadRequest)
 		return
 	}
-	if !validRedirectURI(client, q.Get("redirect_uri")) {
+	redirectURI := q.Get("redirect_uri")
+	if !validRedirectURI(client, redirectURI) {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
+
+	// OIDC §3.1.2.1 — prompt: "login" forces re-auth, "none" forbids any UI.
+	// Anything else (or absent) means: silently re-use an existing session if
+	// one is valid, otherwise fall through to the login form.
+	prompt := q.Get("prompt")
+	if prompt != "login" {
+		if ok := s.trySilentSSO(w, r, client, q); ok {
+			return
+		}
+		if prompt == "none" {
+			// User has no usable session and we can't show a login form.
+			redirectWithOIDCError(w, r, redirectURI, "login_required", q.Get("state"))
+			return
+		}
+	}
 	d := s.ssoDataFromForm(r, client.Name, "")
 	s.ssoTmpl.render(w, "login.html", d)
+}
+
+// trySilentSSO attempts to short-circuit the OIDC authorize step when the
+// browser already presents a valid auth_portal cookie. Returns true iff a
+// fresh authorization code was issued (and the response was written).
+//
+// Criteria — all must hold:
+//   - auth_portal cookie present + decryptable
+//   - session row exists, not expired
+//   - user is active
+//   - if user.MFAEnabled, session.MFAVerified == true
+//   - login_hint (when present) matches the session user's email
+//   - max_age (when present) hasn't elapsed since session.CreatedAt
+//   - policy engine raises no violation (e.g. account lockout)
+func (s *Server) trySilentSSO(w http.ResponseWriter, r *http.Request, client *model.Client, q url.Values) bool {
+	sess, user, rawToken, err := s.readAuthPortalSession(r)
+	if err != nil || sess == nil {
+		return false
+	}
+	if !user.Active {
+		return false
+	}
+	if user.MFAEnabled && !sess.MFAVerified {
+		return false
+	}
+	if hint := q.Get("login_hint"); hint != "" && !strings.EqualFold(strings.TrimSpace(hint), user.Email) {
+		return false
+	}
+	if mas := q.Get("max_age"); mas != "" {
+		if maxAge, parseErr := time.ParseDuration(mas + "s"); parseErr == nil && maxAge > 0 {
+			if time.Since(sess.CreatedAt) > maxAge {
+				return false
+			}
+		}
+	}
+	pctx := policy.PolicyContext{User: user, Client: client, MFAVerified: sess.MFAVerified, Request: r}
+	if v := s.policy.First(pctx); v != nil {
+		return false
+	}
+
+	// Fresh activity + slide cookie + audit, then issue the code.
+	s.slidePortalSession(w, r, sess, rawToken)
+	if err := s.logAudit(r, ActionLogin, &user.ID, &client.ID, logMeta("via", "silent_sso")); err != nil {
+		s.auditFail(w, err)
+		return true
+	}
+	scopes := splitScopes(q.Get("scope"))
+	s.issueCodeAndRedirect(w, r, user, client, scopes, q.Get("state"), q.Get("nonce"), q.Get("code_challenge"), q.Get("redirect_uri"))
+	return true
+}
+
+// redirectWithOIDCError redirects the browser back to the RP's redirect_uri
+// with an OIDC-formatted error (RFC 6749 §4.1.2.1). Used for `prompt=none`
+// when no valid session exists — the spec requires the error to be returned
+// to the RP, not displayed inline.
+func redirectWithOIDCError(w http.ResponseWriter, r *http.Request, redirectURI, code, state string) {
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+	qq := u.Query()
+	qq.Set("error", code)
+	if state != "" {
+		qq.Set("state", state)
+	}
+	u.RawQuery = qq.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
 func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {

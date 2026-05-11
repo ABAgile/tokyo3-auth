@@ -62,6 +62,10 @@ type SessionStore interface {
 	GetSessionByAccessTokenHash(ctx context.Context, hash string) (*model.Session, error)
 	GetSessionByRefreshTokenHash(ctx context.Context, hash string) (*model.Session, error)
 	UpdateSessionActivity(ctx context.Context, id uuid.UUID, lastActivity time.Time) error
+	// ExtendSessionExpiry slides expires_at to newExpiry. Used by the portal
+	// session middleware to enforce a sliding idle timeout — every
+	// authenticated portal hit pushes the deadline forward.
+	ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry time.Time) error
 	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newExpiry time.Time) error
 	DeleteSession(ctx context.Context, id uuid.UUID) error
 	DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error

@@ -61,7 +61,7 @@ function encodeCredential(cred) {
 
 // ── WebAuthn registration flow (portal, bearer auth) ──────
 async function waRegister(beginUrl, finishUrl, deviceName) {
-  const token = document.cookie.match(/portal_tok=([^;]+)/)?.[1] || "";
+  const token = document.cookie.match(/auth_portal=([^;]+)/)?.[1] || "";
   const beginResp = await fetch(beginUrl, {
     method: "POST",
     headers: { "Authorization": "Bearer " + token },
