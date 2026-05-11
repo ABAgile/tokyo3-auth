@@ -11,13 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
-const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, expires_at, last_activity_at, mfa_verified, created_at`
+const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, last_activity_at, mfa_verified, created_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 	s := &model.Session{}
 	err := row.Scan(
 		&s.ID, &s.UserID, &s.ClientID, &s.AccessTokenHash, &s.RefreshTokenHash,
-		(*stringArray)(&s.Scopes), &s.ExpiresAt, &s.LastActivityAt,
+		(*stringArray)(&s.Scopes), &s.AccessExpiresAt, &s.RefreshExpiresAt, &s.LastActivityAt,
 		&s.MFAVerified, &s.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -28,10 +28,10 @@ func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 
 func (s *DB) CreateSession(ctx context.Context, sess *model.Session) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, expires_at, mfa_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		sess.ID, sess.UserID, sess.ClientID, sess.AccessTokenHash, sess.RefreshTokenHash,
-		stringArray(sess.Scopes), sess.ExpiresAt, sess.MFAVerified)
+		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified)
 	return err
 }
 
@@ -49,14 +49,14 @@ func (s *DB) UpdateSessionActivity(ctx context.Context, id uuid.UUID, lastActivi
 }
 
 func (s *DB) ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = $2 WHERE id = $1`, id, newExpiry)
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET access_expires_at = $2 WHERE id = $1`, id, newExpiry)
 	return err
 }
 
-func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newExpiry time.Time) error {
+func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET refresh_token_hash = $2, expires_at = $3 WHERE id = $1`,
-		id, newRefreshHash, newExpiry)
+		`UPDATE sessions SET refresh_token_hash = $2, access_expires_at = $3, refresh_expires_at = $4 WHERE id = $1`,
+		id, newRefreshHash, newAccessExpiry, newRefreshExpiry)
 	return err
 }
 
@@ -71,6 +71,6 @@ func (s *DB) DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error
 }
 
 func (s *DB) DeleteExpiredSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < NOW()`)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE refresh_expires_at < NOW()`)
 	return err
 }

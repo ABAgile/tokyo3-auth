@@ -47,6 +47,18 @@ type Grant struct {
 	UsedAt        *time.Time
 }
 
+// Session backs both portal cookies and OIDC bearer credentials. The two
+// expiry columns split what used to be a single field:
+//
+//   - AccessExpiresAt   — when the bearer access token stops being honoured
+//     by bearerAuth. Slid forward on portal hits and on each refresh-token
+//     exchange. Matches the `expires_in` value advertised to RPs.
+//   - RefreshExpiresAt  — when the refresh token grant stops working. Slid
+//     forward on each successful refresh exchange.
+//
+// An absolute session lifetime is enforced in code as `now - CreatedAt >
+// absoluteSessionTTL` rather than via a third column — re-auth at /authorize
+// resets it by minting a new row.
 type Session struct {
 	ID               uuid.UUID
 	UserID           uuid.UUID
@@ -54,7 +66,8 @@ type Session struct {
 	AccessTokenHash  string
 	RefreshTokenHash string
 	Scopes           []string
-	ExpiresAt        time.Time
+	AccessExpiresAt  time.Time
+	RefreshExpiresAt time.Time
 	LastActivityAt   time.Time
 	MFAVerified      bool
 	CreatedAt        time.Time

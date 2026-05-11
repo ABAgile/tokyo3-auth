@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
@@ -41,6 +42,10 @@ func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
 			s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 			return
 		}
+		if !sessionTokenLive(sess) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_token", "access token expired")
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxSession, sess)
 		next(w, r.WithContext(ctx))
 	}
@@ -69,9 +74,27 @@ func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 			s.writeError(w, http.StatusForbidden, "insufficient_scope", "admin scope required")
 			return
 		}
+		if !sessionTokenLive(sess) {
+			s.writeError(w, http.StatusUnauthorized, "invalid_token", "access token expired")
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxSession, sess)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+// sessionTokenLive enforces both gates for a bearer access token: the
+// per-token expiry advertised in `expires_in`, and the absolute session
+// lifetime. Past either, the token is dead — re-auth or refresh required.
+func sessionTokenLive(sess *model.Session) bool {
+	now := time.Now()
+	if now.After(sess.AccessExpiresAt) {
+		return false
+	}
+	if now.After(sess.CreatedAt.Add(absoluteSessionTTL)) {
+		return false
+	}
+	return true
 }
 
 func containsStr(ss []string, target string) bool {

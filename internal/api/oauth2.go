@@ -39,6 +39,38 @@ type authState struct {
 const authStateCookie = "auth_state"
 const authStateTTL = 15 * time.Minute
 
+// Token / session TTLs. Three layers, all enforced together:
+//
+//	accessTokenTTL     — bearer access token life. Matches the response's
+//	                     `expires_in`. Slid forward by portal hits and by
+//	                     each successful refresh-token exchange.
+//	refreshTokenTTL    — refresh-token life. Slid forward only by the
+//	                     /token refresh_token grant, never by portal hits
+//	                     (the portal doesn't see the refresh credential).
+//	absoluteSessionTTL — hard ceiling from CreatedAt. Even sliding can't
+//	                     push expiry past this point — the user must
+//	                     re-authenticate at /authorize to mint a new row.
+//
+// PCI 8.2.8 idle target = accessTokenTTL. Refresh token rotation handled by
+// handleTokenRefresh (a new refresh credential is issued on each use, the
+// old one stays valid until rotation lands).
+const (
+	accessTokenTTL     = 15 * time.Minute
+	refreshTokenTTL    = 1 * time.Hour
+	absoluteSessionTTL = 4 * time.Hour
+)
+
+// capByAbsolute returns min(deadline, createdAt + absoluteSessionTTL) — used
+// when sliding a session's expiry to ensure no slide pushes past the hard
+// ceiling tied to session creation.
+func capByAbsolute(deadline, createdAt time.Time) time.Time {
+	hardCap := createdAt.Add(absoluteSessionTTL)
+	if deadline.After(hardCap) {
+		return hardCap
+	}
+	return deadline
+}
+
 // ── authorize endpoint ────────────────────────────────────────────────────────
 
 func (s *Server) handleAuthorizeGET(w http.ResponseWriter, r *http.Request) {
@@ -403,8 +435,16 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_grant", "client mismatch")
 		return
 	}
-	if time.Now().After(sess.ExpiresAt) {
+	now := time.Now()
+	if now.After(sess.RefreshExpiresAt) {
 		s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
+		return
+	}
+	// Absolute session cap: no amount of refreshing extends the session past
+	// CreatedAt + absoluteSessionTTL. Beyond that the user must re-authenticate
+	// at /authorize, which mints a fresh row.
+	if now.After(sess.CreatedAt.Add(absoluteSessionTTL)) {
+		s.writeError(w, http.StatusBadRequest, "invalid_grant", "session age cap exceeded; re-authenticate")
 		return
 	}
 
@@ -424,8 +464,9 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
 		return
 	}
-	expiry := time.Now().Add(24 * time.Hour)
-	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, auth.HashToken(newRefresh), expiry); err != nil {
+	newAccessExp := capByAbsolute(now.Add(accessTokenTTL), sess.CreatedAt)
+	newRefreshExp := capByAbsolute(now.Add(refreshTokenTTL), sess.CreatedAt)
+	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, auth.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
@@ -447,7 +488,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"access_token":  newAccess,
 		"token_type":    "Bearer",
-		"expires_in":    3600,
+		"expires_in":    int(time.Until(newAccessExp).Seconds()),
 		"refresh_token": newRefresh,
 		"scope":         strings.Join(sess.Scopes, " "),
 	}
@@ -479,11 +520,14 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 	}
 	rawRefresh, _ := auth.GenerateRawToken() // internal placeholder, not exposed
 	scopes := splitScopes(r.FormValue("scope"))
+	now := time.Now()
 	sess := &model.Session{
 		ID: uuid.New(), ClientID: client.ID,
 		AccessTokenHash:  auth.HashToken(rawAccess),
 		RefreshTokenHash: auth.HashToken(rawRefresh),
-		Scopes:           scopes, ExpiresAt: time.Now().Add(time.Hour),
+		Scopes:           scopes,
+		AccessExpiresAt:  now.Add(accessTokenTTL),
+		RefreshExpiresAt: now.Add(refreshTokenTTL),
 	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
@@ -496,7 +540,7 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": rawAccess,
 		"token_type":   "Bearer",
-		"expires_in":   3600,
+		"expires_in":   int(accessTokenTTL.Seconds()),
 		"scope":        strings.Join(scopes, " "),
 	})
 }
@@ -556,6 +600,7 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	sess := &model.Session{
 		ID:               uuid.New(),
 		UserID:           user.ID,
@@ -563,7 +608,8 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 		AccessTokenHash:  auth.HashToken(rawAccess),
 		RefreshTokenHash: auth.HashToken(rawRefresh),
 		Scopes:           scopes,
-		ExpiresAt:        time.Now().Add(24 * time.Hour),
+		AccessExpiresAt:  now.Add(accessTokenTTL),
+		RefreshExpiresAt: now.Add(refreshTokenTTL),
 		MFAVerified:      mfaVerified,
 	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
@@ -572,7 +618,7 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 	resp := map[string]any{
 		"access_token":  rawAccess,
 		"token_type":    "Bearer",
-		"expires_in":    3600,
+		"expires_in":    int(accessTokenTTL.Seconds()),
 		"refresh_token": rawRefresh,
 		"scope":         strings.Join(scopes, " "),
 	}

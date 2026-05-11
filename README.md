@@ -221,7 +221,17 @@ All admin endpoints require a Bearer token belonging to a session with the `admi
 
 ### Portal (Web UI)
 
-The portal is a server-rendered web UI for user self-service and admin management. It uses an encrypted `auth_portal` HttpOnly cookie (AES-256-GCM) backed by a regular session in the database. Idle timeout is **15 minutes sliding** — every authenticated portal hit (or silent SSO via `/authorize`) extends `expires_at` and re-issues the cookie's `MaxAge`.
+The portal is a server-rendered web UI for user self-service and admin management. It uses an encrypted `auth_portal` HttpOnly cookie (AES-256-GCM) backed by a regular session in the database. Idle timeout is **15 minutes sliding** — every authenticated portal hit (or silent SSO via `/authorize`) extends `access_expires_at` and re-issues the cookie's `MaxAge`. No matter how active the user stays, sessions hard-cap at **4 hours** from `created_at` — re-authentication at `/authorize` mints a new row and restarts the clock.
+
+**Session TTLs** (constants in `internal/api/oauth2.go`):
+
+| Window | Value | Slid by |
+|---|---|---|
+| Access token (`access_expires_at`) | 15 min | portal hits, refresh-token grant |
+| Refresh token (`refresh_expires_at`) | 1 hour | refresh-token grant only |
+| Absolute (from `created_at`) | 4 hours | never — re-auth required |
+
+`bearerAuth` enforces `now < access_expires_at` AND `now − created_at < 4h`. The OIDC `/token` response's `expires_in` is set to the access window's remaining seconds, so RPs that respect the contract align naturally.
 
 **Silent SSO**: when an OIDC RP redirects a user to `/authorize` and the browser already has a valid `auth_portal` cookie, the request short-circuits — the auth server issues an authorization code immediately without showing the login form. Criteria: cookie decryptable, session not expired, user active, MFA verified (when the user has MFA enabled), `login_hint` (if any) matches, `max_age` (if any) hasn't elapsed, and policy engine raises no violation. OIDC `prompt=login` forces re-auth; `prompt=none` returns `error=login_required` to the RP when no session is usable.
 

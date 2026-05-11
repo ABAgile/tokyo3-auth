@@ -66,7 +66,12 @@ type SessionStore interface {
 	// session middleware to enforce a sliding idle timeout — every
 	// authenticated portal hit pushes the deadline forward.
 	ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry time.Time) error
-	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newExpiry time.Time) error
+	// RotateRefreshToken issues a new refresh token hash and resets both
+	// expiry windows in one atomic UPDATE. Called by the refresh_token grant
+	// at the OIDC /token endpoint — clients hand us an old refresh, we mint a
+	// new access + refresh pair and slide the row. The caller is responsible
+	// for capping both expiries at the absolute session lifetime.
+	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
 	DeleteSession(ctx context.Context, id uuid.UUID) error
 	DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error
 	DeleteExpiredSessions(ctx context.Context) error
