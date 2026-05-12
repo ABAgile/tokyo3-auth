@@ -255,6 +255,10 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 		s.auditFail(w, err)
 		return
 	}
+	// Seat the auth_portal cookie too — the user just authenticated, so future
+	// visits to /portal/* and silent SSO at /authorize should both find a
+	// live OP session without a second login.
+	s.ensurePortalCookie(w, r, user)
 	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI)
 }
 
@@ -301,6 +305,8 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 		s.auditFail(w, err)
 		return
 	}
+	// Seat the auth_portal cookie too (post-MFA branch of /authorize success).
+	s.ensurePortalCookie(w, r, user)
 	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI)
 }
 

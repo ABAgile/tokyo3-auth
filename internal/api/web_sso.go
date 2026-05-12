@@ -213,6 +213,9 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 	clearCookie(w, authStateCookie)
 	s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, logMeta("method", "webauthn"))
 	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
+	// Seat the auth_portal cookie too (post-WebAuthn-MFA branch of /authorize
+	// success) so the user is also logged into auth's own portal.
+	s.ensurePortalCookie(w, r, user)
 
 	rawCode, err := auth.GenerateRawToken()
 	if err != nil {

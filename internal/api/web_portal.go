@@ -287,6 +287,18 @@ func (s *Server) getTOTPPendingCookie(r *http.Request) *totpPending {
 // ── Portal login ──────────────────────────────────────────────────────────────
 
 func (s *Server) handlePortalLoginGET(w http.ResponseWriter, r *http.Request) {
+	// Already-signed-in users hitting /portal/login are bounced to the
+	// dashboard, matching the dominant industry pattern (Google, GitHub,
+	// Slack). Escape hatch: ?prompt=login forces the form so a user can
+	// authenticate as a different identity in the same browser — the
+	// credential-check path then runs ensurePortalCookie's user-switch
+	// cleanup against the prior session.
+	if r.URL.Query().Get("prompt") != "login" {
+		if sess, _, _, err := s.readAuthPortalSession(r); err == nil && sess != nil {
+			http.Redirect(w, r, "/portal", http.StatusFound)
+			return
+		}
+	}
 	s.ssoTmpl.render(w, "portal_login.html", struct {
 		Error, Email  string
 		AllowRegister bool
@@ -298,6 +310,14 @@ func (s *Server) handlePortalLoginGET(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePortalRegisterGET(w http.ResponseWriter, r *http.Request) {
 	if !s.allowReg {
 		http.Redirect(w, r, "/portal/login", http.StatusFound)
+		return
+	}
+	// Already-signed-in users hitting /portal/register are bounced to the
+	// dashboard — register doesn't make sense for an authenticated user.
+	// No prompt=login escape hatch here: re-registering is a meaningless
+	// action; switch users via /portal/login?prompt=login if intended.
+	if sess, _, _, err := s.readAuthPortalSession(r); err == nil && sess != nil {
+		http.Redirect(w, r, "/portal", http.StatusFound)
 		return
 	}
 	s.ssoTmpl.render(w, "portal_register.html", struct {
@@ -560,14 +580,99 @@ func (s *Server) handlePortalLoginMFAWebAuthnFinish(w http.ResponseWriter, r *ht
 
 func (s *Server) handlePortalLogout(w http.ResponseWriter, r *http.Request) {
 	if pc := portalFromCtx(r); pc != nil {
-		_ = s.store.DeleteSession(r.Context(), pc.Session.ID)
-		// Notify every RP that holds a session for this user. Session-scoped
-		// so an RP can target the specific local session that maps to this
-		// OP session id rather than killing all of the user's RP sessions.
-		s.broadcastLogout(r.Context(), r, pc.User.ID, pc.Session.ID.String())
+		// Signing out of the IdP means signing out *everywhere*: broadcast
+		// user-scoped (no sid) to every RP holding a session for this user,
+		// THEN wipe every session at auth (portal + RP-side rows minted at
+		// /token). Order matters — broadcastLogout's first query is
+		// ListSessionClientIDsByUser, which returns nothing if the sessions
+		// have already been deleted, so notifications never fire. RPs
+		// receive a sub-only logout_token and run their sub-based deletion
+		// path; sub-only rather than sid-scoped because RPs persist the id
+		// of the RP-token session (created during /token exchange), which
+		// is a different row from the portal session being closed here.
+		s.broadcastLogout(r.Context(), r, pc.User.ID, "")
+		_ = s.store.DeleteSessionsByUserID(r.Context(), pc.User.ID)
+		// Best-effort: rows are already deleted by the time we audit, so an
+		// audit failure can't roll back — fail-closed doesn't help here.
+		// The originating intent is still worth recording so the journal
+		// has a primary row for the logout, not just the cross-RP fan-out.
+		_ = s.logAudit(r, ActionLogout, &pc.User.ID, nil, logMeta("via", "portal"))
 	}
 	clearCookie(w, portalCookie)
 	http.Redirect(w, r, "/portal/login", http.StatusFound)
+}
+
+// ensurePortalCookie creates a portal session row and sets the auth_portal
+// cookie. Called from /authorize success paths so a user who authenticates
+// at the IdP for an RP also gets logged into auth's own portal — without
+// this, the user would need to authenticate a second time at /portal/login
+// even though they just proved their identity moments ago at /authorize,
+// and silent SSO on the next RP visit would also fail (no cookie to read).
+//
+// User-switch cleanup: if the browser is presenting a valid cookie for a
+// *different* user (e.g. user A signed in earlier, then user B authenticates
+// in the same browser via vault SSO), wipe A's sessions across the whole
+// stack first — delete every session row A holds at auth, and broadcast a
+// user-scoped back-channel logout so every RP wipes A's local state too.
+// Without this, A's session row was orphaned (no cookie pointed to it but
+// the row lived until sweeper culled it) and A's vault token kept working.
+//
+// Differs from createPortalSession: it emits no audit event for the new
+// login. The surrounding /authorize flow already audits ActionLogin with
+// the RP's client_id; a second portal-scoped login event for the same
+// human action would be noise. The cleanup branch does audit (via
+// broadcastLogout's existing entries). Best-effort overall: a failure to
+// seat the cookie is logged but does NOT abort the OIDC code issuance —
+// the RP login still succeeds.
+func (s *Server) ensurePortalCookie(w http.ResponseWriter, r *http.Request, user *model.User) {
+	if prevSess, prevUser, _, err := s.readAuthPortalSession(r); err == nil && prevSess != nil && prevUser.ID != user.ID {
+		// Browser-scoped switch: B just authenticated, A's row in this
+		// browser is now orphaned and any RP sessions A had through this
+		// browser should die with the switch. Broadcast first (while A's
+		// sessions still exist for the client-id query), then delete.
+		s.broadcastLogout(r.Context(), r, prevUser.ID, "")
+		if err := s.store.DeleteSessionsByUserID(r.Context(), prevUser.ID); err != nil {
+			s.log.Warn("ensure portal cookie: delete prior user sessions", "prev_user_id", prevUser.ID, "err", err)
+		}
+		// Primary audit row for the forced logout, tagging the actor (the
+		// user who triggered the switch) so an operator can reconstruct
+		// "A was logged out because B signed in on the same browser."
+		_ = s.logAudit(r, ActionLogout, &prevUser.ID, nil,
+			logMeta("via", "user_switch", "by", user.Email))
+	}
+	rawAccess, err := auth.GenerateRawToken()
+	if err != nil {
+		s.log.Warn("ensure portal cookie: generate access", "err", err)
+		return
+	}
+	rawRefresh, err := auth.GenerateRawToken()
+	if err != nil {
+		s.log.Warn("ensure portal cookie: generate refresh", "err", err)
+		return
+	}
+	scopes := []string{"portal"}
+	if user.IsAdmin {
+		scopes = append(scopes, "admin")
+	}
+	now := time.Now()
+	sess := &model.Session{
+		ID:               uuid.New(),
+		UserID:           user.ID,
+		ClientID:         portalClientUUID,
+		AccessTokenHash:  auth.HashToken(rawAccess),
+		RefreshTokenHash: auth.HashToken(rawRefresh),
+		Scopes:           scopes,
+		AccessExpiresAt:  now.Add(portalCookieTTL),
+		RefreshExpiresAt: now.Add(portalCookieTTL),
+		MFAVerified:      user.MFAEnabled,
+	}
+	if err := s.store.CreateSession(r.Context(), sess); err != nil {
+		s.log.Warn("ensure portal cookie: create session", "err", err)
+		return
+	}
+	if err := s.setPortalCookie(w, rawAccess, portalCookieTTL, portalCookie); err != nil {
+		s.log.Warn("ensure portal cookie: seal cookie", "err", err)
+	}
 }
 
 func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, user *model.User) error {
@@ -1113,11 +1218,14 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
 	}
+	// User-scoped back-channel logout: every RP that holds a session for
+	// this user is told to wipe its local state too. Must run BEFORE
+	// DeleteSessionsByUserID — broadcastLogout's first query is
+	// ListSessionClientIDsByUser, which returns nothing once sessions are
+	// gone.
+	s.broadcastLogout(r.Context(), r, id, "")
 	// Force re-auth on every existing session — the old password no longer holds.
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
-	// User-scoped back-channel logout: every RP that holds a session for
-	// this user is told to wipe its local state too.
-	s.broadcastLogout(r.Context(), r, id, "")
 	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("field", "password", "by", pc.User.Email)); err != nil {
 		s.auditFail(w, err)
 		return
@@ -1175,9 +1283,11 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	user, _ := s.store.GetUserByID(r.Context(), id)
-	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
-	// User is being removed wholesale — wipe RP-side sessions too.
+	// User is being removed wholesale — wipe RP-side sessions too. Must
+	// run BEFORE DeleteSessionsByUserID so broadcastLogout's first query
+	// (ListSessionClientIDsByUser) still finds the user's sessions.
 	s.broadcastLogout(r.Context(), r, id, "")
+	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
 		return

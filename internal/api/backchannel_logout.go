@@ -25,6 +25,12 @@ const backchannelLogoutTimeout = 5 * time.Second
 // when empty it's a whole-user logout. The portal sentinel client is always
 // skipped — auth doesn't broadcast to itself.
 //
+// **Call ordering: invoke BEFORE deleting sessions.** The very first step
+// here is `ListSessionClientIDsByUser(userID)`, which returns the set of
+// RPs to notify. If sessions have already been deleted, that query is empty
+// and no RP ever hears about the logout. Every caller must run this helper
+// while the user's sessions still exist, then do the local cleanup.
+//
 // Fire-and-forget: each push runs to completion (or its 5s timeout) but the
 // caller doesn't wait for the result, and a failure on one RP doesn't block
 // the others. Failures are audit-logged with the http status / error in
@@ -70,9 +76,16 @@ func (s *Server) broadcastLogout(ctx context.Context, r *http.Request, userID uu
 // backchannel_logout_uri. Runs in its own goroutine spawned by
 // broadcastLogout; uses a fresh detached context so a finishing HTTP handler
 // doesn't cancel the in-flight notification mid-send.
+//
+// The detached context is rebound onto r before any work runs — without
+// this, s.logAudit picks up r.Context() (already canceled by net/http when
+// the originating handler returned) and the JetStream Append errors out
+// with "context canceled", visible in production as
+// `audit publish failed action=auth.logout.backchannel err=context canceled`.
 func (s *Server) pushLogoutToken(r *http.Request, clientDBID uuid.UUID, logoutURI, clientID, sub, sid string) {
 	ctx, cancel := context.WithTimeout(context.Background(), backchannelLogoutTimeout)
 	defer cancel()
+	r = r.WithContext(ctx)
 
 	jti := uuid.NewString()
 	token, err := s.signer.MintLogoutToken(clientID, sub, sid, jti, time.Now().UTC())

@@ -107,10 +107,13 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = s.store.DeleteSessionsByUserID(r.Context(), user.ID)
 	// User-scoped back-channel logout: notify every RP that holds a
 	// session for this user so RP-side state goes with the user record.
+	// Must run BEFORE DeleteSessionsByUserID — broadcastLogout's first
+	// query is ListSessionClientIDsByUser, which returns nothing once
+	// the sessions are gone.
 	s.broadcastLogout(r.Context(), r, user.ID, "")
+	_ = s.store.DeleteSessionsByUserID(r.Context(), user.ID)
 	if err := s.store.DeleteUser(r.Context(), user.ID); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
