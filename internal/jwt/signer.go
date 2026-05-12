@@ -21,12 +21,20 @@ import (
 const rsaKeyBits = 2048
 
 // IDClaims holds standard OIDC ID token claims.
+//
+// SID is the OIDC Back-Channel Logout 1.0 `sid` claim — a stable identifier
+// for the user's session at the OP that's emitted on every ID token minted
+// under that session (initial code grant + every refresh). RPs persist `sid`
+// on their own session row at first issuance so a later logout_token POST
+// can tell them which local session to invalidate. Omitted when the caller
+// passes the empty string (e.g. session-less client-credentials flows).
 type IDClaims struct {
 	gojwt.RegisteredClaims
 	Nonce             string   `json:"nonce,omitempty"`
 	AuthTime          int64    `json:"auth_time"`
 	ACR               string   `json:"acr,omitempty"`
 	AMR               []string `json:"amr,omitempty"`
+	SID               string   `json:"sid,omitempty"`
 	Email             string   `json:"email,omitempty"`
 	Name              string   `json:"name,omitempty"`
 	PreferredUsername string   `json:"preferred_username,omitempty"`
@@ -104,8 +112,10 @@ func generateAndStore(ctx context.Context, st store.SigningKeyStore, kp bcrypto.
 	return &Signer{privateKey: priv, kid: kid, issuer: issuer}, nil
 }
 
-// MintIDToken creates a signed RS256 JWT ID token.
-func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes []string, mfaVerified bool, amr []string, authTime time.Time) (string, error) {
+// MintIDToken creates a signed RS256 JWT ID token. sid (empty string accepted)
+// is emitted as the OIDC Back-Channel Logout 1.0 `sid` claim and lets RPs
+// correlate a logout_token back to a specific local session row.
+func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes []string, mfaVerified bool, amr []string, authTime time.Time, sid string) (string, error) {
 	now := time.Now().UTC()
 	acr := ""
 	if mfaVerified {
@@ -124,6 +134,7 @@ func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes
 		AuthTime:          authTime.Unix(),
 		ACR:               acr,
 		AMR:               amr,
+		SID:               sid,
 		Email:             email,
 		Name:              name,
 		PreferredUsername: email,

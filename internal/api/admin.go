@@ -148,10 +148,11 @@ func (s *Server) handleAdminListClients(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name         string   `json:"name"`
-		RedirectURIs []string `json:"redirect_uris"`
-		Scopes       []string `json:"scopes"`
-		Public       bool     `json:"public"`
+		Name                 string   `json:"name"`
+		RedirectURIs         []string `json:"redirect_uris"`
+		Scopes               []string `json:"scopes"`
+		Public               bool     `json:"public"`
+		BackchannelLogoutURI string   `json:"backchannel_logout_uri,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
@@ -179,7 +180,11 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 	if len(req.Scopes) == 0 {
 		req.Scopes = []string{"openid", "profile", "email"}
 	}
-	client, err := s.store.CreateClient(r.Context(), clientID, secretHash, req.Name, req.RedirectURIs, req.Scopes, req.Public)
+	var backchannelLogoutURI *string
+	if req.BackchannelLogoutURI != "" {
+		backchannelLogoutURI = &req.BackchannelLogoutURI
+	}
+	client, err := s.store.CreateClient(r.Context(), clientID, secretHash, req.Name, req.RedirectURIs, req.Scopes, req.Public, backchannelLogoutURI)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
 		return
@@ -281,7 +286,7 @@ func toUserViews(users []*model.User) []map[string]any {
 }
 
 func toClientView(c *model.Client) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":                c.ID,
 		"client_id":         c.ClientID,
 		"name":              c.Name,
@@ -291,6 +296,10 @@ func toClientView(c *model.Client) map[string]any {
 		"secret_rotated_at": c.SecretRotatedAt,
 		"created_at":        c.CreatedAt,
 	}
+	if c.BackchannelLogoutURI != nil {
+		out["backchannel_logout_uri"] = *c.BackchannelLogoutURI
+	}
+	return out
 }
 
 func toClientViews(clients []*model.Client) []map[string]any {

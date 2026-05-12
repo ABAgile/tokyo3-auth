@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, secret_rotated_at, created_at`
+const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, secret_rotated_at, created_at`
 
 func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	c := &model.Client{}
@@ -19,7 +19,7 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 		&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name,
 		(*stringArray)(&c.RedirectURIs),
 		(*stringArray)(&c.Scopes),
-		&c.Public, &c.SecretRotatedAt, &c.CreatedAt,
+		&c.Public, &c.BackchannelLogoutURI, &c.SecretRotatedAt, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -27,25 +27,26 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	return c, err
 }
 
-func (s *DB) CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool) (*model.Client, error) {
+func (s *DB) CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) (*model.Client, error) {
 	now := time.Now().UTC()
 	c := &model.Client{
-		ID:               uuid.New(),
-		ClientID:         clientID,
-		ClientSecretHash: clientSecretHash,
-		Name:             name,
-		RedirectURIs:     redirectURIs,
-		Scopes:           scopes,
-		Public:           public,
-		SecretRotatedAt:  now,
-		CreatedAt:        now,
+		ID:                   uuid.New(),
+		ClientID:             clientID,
+		ClientSecretHash:     clientSecretHash,
+		Name:                 name,
+		RedirectURIs:         redirectURIs,
+		Scopes:               scopes,
+		Public:               public,
+		BackchannelLogoutURI: backchannelLogoutURI,
+		SecretRotatedAt:      now,
+		CreatedAt:            now,
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO clients (id, client_id, client_secret_hash, name, redirect_uris, scopes, public, secret_rotated_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO clients (id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, secret_rotated_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ClientID, c.ClientSecretHash, c.Name,
 		stringArray(c.RedirectURIs), stringArray(c.Scopes),
-		c.Public, c.SecretRotatedAt, c.CreatedAt)
+		c.Public, c.BackchannelLogoutURI, c.SecretRotatedAt, c.CreatedAt)
 	if isUnique(err) {
 		return nil, store.ErrConflict
 	}
@@ -80,10 +81,10 @@ func (s *DB) ListClients(ctx context.Context) ([]*model.Client, error) {
 	return clients, rows.Err()
 }
 
-func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool) error {
+func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE clients SET name = ?, redirect_uris = ?, scopes = ?, public = ? WHERE id = ?`,
-		name, stringArray(redirectURIs), stringArray(scopes), public, id)
+		`UPDATE clients SET name = ?, redirect_uris = ?, scopes = ?, public = ?, backchannel_logout_uri = ? WHERE id = ?`,
+		name, stringArray(redirectURIs), stringArray(scopes), public, backchannelLogoutURI, id)
 	return err
 }
 

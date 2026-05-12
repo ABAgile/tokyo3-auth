@@ -41,11 +41,11 @@ type UserStore interface {
 }
 
 type ClientStore interface {
-	CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool) (*model.Client, error)
+	CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) (*model.Client, error)
 	GetClientByID(ctx context.Context, id uuid.UUID) (*model.Client, error)
 	GetClientByClientID(ctx context.Context, clientID string) (*model.Client, error)
 	ListClients(ctx context.Context) ([]*model.Client, error)
-	UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool) error
+	UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) error
 	UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error
 	DeleteClient(ctx context.Context, id uuid.UUID) error
 }

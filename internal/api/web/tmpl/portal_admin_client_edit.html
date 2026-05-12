@@ -29,6 +29,13 @@
           <label for="public" style="margin:0">Public client (PKCE only, no secret)</label>
         </div>
       </div>
+      <div class="form-group">
+        <label for="backchannel_logout_uri">Back-channel logout URI <span class="text-muted" style="font-weight:400">(optional)</span></label>
+        <input type="url" id="backchannel_logout_uri" name="backchannel_logout_uri"
+               value="{{if .Client.BackchannelLogoutURI}}{{.Client.BackchannelLogoutURI}}{{end}}"
+               placeholder="https://app.example.com/oidc/backchannel-logout">
+        <div class="text-muted" style="font-size:12px;margin-top:4px">When set, auth POSTs a signed <code>logout_token</code> JWT here on every event that ends a user's session (portal logout, admin deactivation, SCIM deprovision, password reset). Leave empty to opt out.</div>
+      </div>
 
       <div style="display:flex;gap:10px;margin-top:8px">
         <button type="submit" class="btn btn-primary">{{if .IsNew}}Create client{{else}}Save changes{{end}}</button>

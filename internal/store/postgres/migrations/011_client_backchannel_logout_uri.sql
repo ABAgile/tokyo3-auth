@@ -1,0 +1,11 @@
+-- Per OIDC Back-Channel Logout 1.0: an OP that ends a user's session POSTs a
+-- signed `logout_token` JWT to each registered RP's backchannel_logout_uri so
+-- the RP can invalidate its own session state immediately, rather than wait
+-- for the credential to expire.
+--
+-- This migration only adds the column; the broadcast helper that POSTs
+-- logout_tokens, and the ID-token `sid` claim that lets RPs correlate which
+-- session is being killed, land in subsequent commits. RPs that don't register
+-- a URI continue to receive nothing — the broadcast loop skips clients with
+-- a NULL/empty value.
+ALTER TABLE clients ADD COLUMN backchannel_logout_uri TEXT;

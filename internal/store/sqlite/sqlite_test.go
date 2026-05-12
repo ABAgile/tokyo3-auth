@@ -34,8 +34,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 10 {
-		t.Errorf("expected 10 migrations applied, got %d", n)
+	if n != 11 {
+		t.Errorf("expected 11 migrations applied, got %d", n)
 	}
 
 	// Re-running migrate() must be a no-op (idempotent).
@@ -45,8 +45,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations 2: %v", err)
 	}
-	if n != 10 {
-		t.Errorf("after re-run, expected still 10 migrations, got %d", n)
+	if n != 11 {
+		t.Errorf("after re-run, expected still 11 migrations, got %d", n)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestClientArrayRoundTrip(t *testing.T) {
 
 	uris := []string{"https://app.example/callback", "https://alt.example/cb"}
 	scopes := []string{"openid", "email", "profile"}
-	c, err := db.CreateClient(ctx, "my-app", "secrethash", "My App", uris, scopes, false)
+	c, err := db.CreateClient(ctx, "my-app", "secrethash", "My App", uris, scopes, false, nil)
 	if err != nil {
 		t.Fatalf("CreateClient: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestClientArrayRoundTrip(t *testing.T) {
 	}
 
 	// Empty array round-trip.
-	if err := db.UpdateClient(ctx, c.ID, "Renamed", nil, nil, true); err != nil {
+	if err := db.UpdateClient(ctx, c.ID, "Renamed", nil, nil, true, nil); err != nil {
 		t.Fatalf("UpdateClient: %v", err)
 	}
 	got, err = db.GetClientByID(ctx, c.ID)

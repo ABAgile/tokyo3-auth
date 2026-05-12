@@ -477,7 +477,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		// not the database row UUID — RPs (e.g. go-oidc) reject otherwise.
 		idToken, err = s.signer.MintIDToken(
 			sess.UserID.String(), client.ClientID,
-			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, time.Now(),
+			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, time.Now(), sess.ID.String(),
 		)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "server_error", "id token failed")
@@ -625,7 +625,7 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 	if containsStr(scopes, "openid") {
 		idToken, err := s.signer.MintIDToken(
 			user.ID.String(), client.ClientID,
-			user.Email, user.Name, nonce, scopes, mfaVerified, nil, time.Now(),
+			user.Email, user.Name, nonce, scopes, mfaVerified, nil, time.Now(), sess.ID.String(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("mint id token: %w", err)

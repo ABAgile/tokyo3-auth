@@ -22,16 +22,24 @@ type User struct {
 	UpdatedAt         time.Time
 }
 
+// Client is an OAuth2/OIDC client registration.
+//
+// BackchannelLogoutURI, when non-nil, opts the client into OIDC Back-Channel
+// Logout 1.0: on every event that ends a user's session at the OP (portal
+// logout, admin deactivation, SCIM deprovision, password reset) auth POSTs
+// a signed logout_token JWT to this URI so the RP can invalidate its local
+// session state without waiting for the credential to expire.
 type Client struct {
-	ID               uuid.UUID
-	ClientID         string
-	ClientSecretHash string
-	Name             string
-	RedirectURIs     []string
-	Scopes           []string
-	Public           bool
-	SecretRotatedAt  time.Time
-	CreatedAt        time.Time
+	ID                   uuid.UUID
+	ClientID             string
+	ClientSecretHash     string
+	Name                 string
+	RedirectURIs         []string
+	Scopes               []string
+	Public               bool
+	BackchannelLogoutURI *string
+	SecretRotatedAt      time.Time
+	CreatedAt            time.Time
 }
 
 type Grant struct {

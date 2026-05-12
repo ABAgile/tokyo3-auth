@@ -1214,9 +1214,13 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "profile", "email"}
 	}
+	var backchannelLogoutURI *string
+	if v := strings.TrimSpace(r.FormValue("backchannel_logout_uri")); v != "" {
+		backchannelLogoutURI = &v
+	}
 
 	showErr := func(msg string) {
-		cl := &model.Client{Name: name, RedirectURIs: redirectURIs, Scopes: scopes, Public: public}
+		cl := &model.Client{Name: name, RedirectURIs: redirectURIs, Scopes: scopes, Public: public, BackchannelLogoutURI: backchannelLogoutURI}
 		s.portalTmpl.render(w, "portal_admin_client_edit.html", struct {
 			portalBase
 			Client           *model.Client
@@ -1244,7 +1248,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		}
 		secretHash = auth.HashToken(rawSecret)
 	}
-	client, err := s.store.CreateClient(r.Context(), clientID, secretHash, name, redirectURIs, scopes, public)
+	client, err := s.store.CreateClient(r.Context(), clientID, secretHash, name, redirectURIs, scopes, public, backchannelLogoutURI)
 	if err != nil {
 		showErr("An error occurred.")
 		return
@@ -1298,8 +1302,12 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 		scopes = []string{"openid", "profile", "email"}
 	}
 	public := r.FormValue("public") == "1"
+	var backchannelLogoutURI *string
+	if v := strings.TrimSpace(r.FormValue("backchannel_logout_uri")); v != "" {
+		backchannelLogoutURI = &v
+	}
 
-	if err := s.store.UpdateClient(r.Context(), id, name, redirectURIs, scopes, public); err != nil {
+	if err := s.store.UpdateClient(r.Context(), id, name, redirectURIs, scopes, public, backchannelLogoutURI); err != nil {
 		s.log.Error("update client", "id", id, "err", err)
 		showErr("An error occurred. Please try again.")
 		return

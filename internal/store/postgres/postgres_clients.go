@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, secret_rotated_at, created_at`
+const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, secret_rotated_at, created_at`
 
 func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	c := &model.Client{}
@@ -18,7 +18,7 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 		&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name,
 		(*stringArray)(&c.RedirectURIs),
 		(*stringArray)(&c.Scopes),
-		&c.Public, &c.SecretRotatedAt, &c.CreatedAt,
+		&c.Public, &c.BackchannelLogoutURI, &c.SecretRotatedAt, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -26,13 +26,13 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	return c, err
 }
 
-func (s *DB) CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool) (*model.Client, error) {
+func (s *DB) CreateClient(ctx context.Context, clientID, clientSecretHash, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) (*model.Client, error) {
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO clients (client_id, client_secret_hash, name, redirect_uris, scopes, public)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO clients (client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING `+clientCols,
 		clientID, clientSecretHash, name,
-		stringArray(redirectURIs), stringArray(scopes), public)
+		stringArray(redirectURIs), stringArray(scopes), public, backchannelLogoutURI)
 	c, err := scanClient(row)
 	if isUnique(err) {
 		return nil, store.ErrConflict
@@ -65,10 +65,10 @@ func (s *DB) ListClients(ctx context.Context) ([]*model.Client, error) {
 	return clients, rows.Err()
 }
 
-func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool) error {
+func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE clients SET name = $2, redirect_uris = $3, scopes = $4, public = $5 WHERE id = $1`,
-		id, name, stringArray(redirectURIs), stringArray(scopes), public)
+		`UPDATE clients SET name = $2, redirect_uris = $3, scopes = $4, public = $5, backchannel_logout_uri = $6 WHERE id = $1`,
+		id, name, stringArray(redirectURIs), stringArray(scopes), public, backchannelLogoutURI)
 	return err
 }
 
