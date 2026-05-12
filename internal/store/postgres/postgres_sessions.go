@@ -70,6 +70,24 @@ func (s *DB) DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error
 	return err
 }
 
+func (s *DB) ListSessionClientIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT client_id FROM sessions WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *DB) DeleteExpiredSessions(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE refresh_expires_at < NOW()`)
 	return err

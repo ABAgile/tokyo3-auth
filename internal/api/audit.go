@@ -13,14 +13,20 @@ import (
 )
 
 const (
-	ActionLogin               = "auth.login"
-	ActionLoginFailed         = "auth.login.failed"
-	ActionLoginMFA            = "auth.login.mfa"
-	ActionLoginMFAFailed      = "auth.login.mfa.failed"
-	ActionLogout              = "auth.logout"
-	ActionTokenIssued         = "auth.token.issued"
-	ActionTokenRevoked        = "auth.token.revoked"
-	ActionTokenRefreshed      = "auth.token.refreshed"
+	ActionLogin          = "auth.login"
+	ActionLoginFailed    = "auth.login.failed"
+	ActionLoginMFA       = "auth.login.mfa"
+	ActionLoginMFAFailed = "auth.login.mfa.failed"
+	ActionLogout         = "auth.logout"
+	ActionTokenIssued    = "auth.token.issued"
+	ActionTokenRevoked   = "auth.token.revoked"
+	ActionTokenRefreshed = "auth.token.refreshed"
+	// ActionBackchannelLogout records each OIDC Back-Channel Logout 1.0
+	// notification auth POSTs to an RP's backchannel_logout_uri. One entry
+	// per RP per notification; failures (HTTP non-2xx, dial errors) are
+	// recorded with the http status / error in metadata. The push is best-
+	// effort so a failure does NOT cause the originating logout to roll back.
+	ActionBackchannelLogout   = "auth.logout.backchannel"
 	ActionUserCreated         = "admin.user.created"
 	ActionUserUpdated         = "admin.user.updated"
 	ActionUserDeleted         = "admin.user.deleted"

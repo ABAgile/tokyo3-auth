@@ -561,6 +561,10 @@ func (s *Server) handlePortalLoginMFAWebAuthnFinish(w http.ResponseWriter, r *ht
 func (s *Server) handlePortalLogout(w http.ResponseWriter, r *http.Request) {
 	if pc := portalFromCtx(r); pc != nil {
 		_ = s.store.DeleteSession(r.Context(), pc.Session.ID)
+		// Notify every RP that holds a session for this user. Session-scoped
+		// so an RP can target the specific local session that maps to this
+		// OP session id rather than killing all of the user's RP sessions.
+		s.broadcastLogout(r.Context(), r, pc.User.ID, pc.Session.ID.String())
 	}
 	clearCookie(w, portalCookie)
 	http.Redirect(w, r, "/portal/login", http.StatusFound)
@@ -1111,6 +1115,9 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 	}
 	// Force re-auth on every existing session — the old password no longer holds.
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
+	// User-scoped back-channel logout: every RP that holds a session for
+	// this user is told to wipe its local state too.
+	s.broadcastLogout(r.Context(), r, id, "")
 	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("field", "password", "by", pc.User.Email)); err != nil {
 		s.auditFail(w, err)
 		return
@@ -1169,6 +1176,8 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 	}
 	user, _ := s.store.GetUserByID(r.Context(), id)
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
+	// User is being removed wholesale — wipe RP-side sessions too.
+	s.broadcastLogout(r.Context(), r, id, "")
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
 		return

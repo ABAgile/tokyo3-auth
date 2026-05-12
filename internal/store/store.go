@@ -74,6 +74,12 @@ type SessionStore interface {
 	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
 	DeleteSession(ctx context.Context, id uuid.UUID) error
 	DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error
+	// ListSessionClientIDsByUser returns the distinct client_ids that
+	// currently hold at least one live session for userID. Used by the
+	// back-channel logout broadcaster to determine which RPs to notify
+	// when a user's sessions are being killed. The portal sentinel client
+	// is included — callers filter it out.
+	ListSessionClientIDsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	DeleteExpiredSessions(ctx context.Context) error
 }
 
