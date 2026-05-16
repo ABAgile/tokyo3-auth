@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate TLS/mTLS leaf certs for the docker compose mTLS overlay, signed by
-# mkcert's local CA. Run from the repo root:  bash certs/gen.sh
+# mkcert's local CA. Run from the repo root:  bash shared/certs/gen.sh
 # Requires: mkcert (auto-installed via `go install` if missing — Go environment
 # must already be set up so the mkcert binary lands on PATH).
 #
@@ -19,7 +19,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Load .env from the repo root if present — mirrors docker compose behaviour so
 # AUTH_ADMIN_DB_USERNAME / AUTH_DB_USERNAME stay in sync with the DSNs.
-REPO_ROOT="$(cd "$DIR/.." && pwd)"
+REPO_ROOT="$(cd "$DIR/../.." && pwd)"
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a
   # shellcheck source=/dev/null
@@ -75,7 +75,7 @@ mkc_client() {
 # access. localhost / 127.0.0.1 SANs on authd-server let
 # AUTH_ISSUER=https://localhost:8443 (the run-mtls default) validate without
 # a cert mismatch.
-mkc_server "authd-server"  authd  auth.localhost  localhost  127.0.0.1
+mkc_server "authd-server"  authd  auth.localhost  teleport.localhost  github.com  api.github.com  localhost  127.0.0.1
 mkc_server "db-server"     db     db.localhost    localhost  127.0.0.1
 mkc_server "nats-server"   nats   nats.localhost  localhost  127.0.0.1
 
@@ -96,6 +96,6 @@ mkc_client "authd-app-db-client"   "$APP_USERNAME"   authd
 mkc_client "authd-scim-client"  authd  auth.localhost
 
 echo ""
-echo "leaf certs written to certs/"
+echo "leaf certs written to shared/certs/"
 echo "CA: $CAROOT/rootCA.pem (mkcert root, trusted via mkcert -install)"
 echo "next: docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d"

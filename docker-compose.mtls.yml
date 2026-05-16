@@ -18,10 +18,10 @@
 #   1. make docker-up-mtls   # auto-generates leaf certs (signed by mkcert's
 #                            # root) and populates the shared_data volume.
 #                            # The root CA is mkcert's, kept at $(mkcert -CAROOT)
-#                            # — _sync-certs stages it into /shared/certs/ca.crt
+#                            # — _sync-shared stages it into /shared/certs/ca.crt
 #                            # for the mounts referenced below.
 #
-#   To regenerate leaf certs: rm certs/authd-server.crt, then re-run make docker-up-mtls.
+#   To regenerate leaf certs: rm shared/certs/authd-server.crt, then re-run make docker-up-mtls.
 #   To rotate the root CA:    mkcert -uninstall && mkcert -install on the host.
 #
 # PostgreSQL cert auth:
@@ -35,7 +35,7 @@
 services:
 
   # ── Auth database: enable server TLS + cert auth ──────────────────────────
-  # shared_data:/shared is already mounted by the base file (for pg-scripts).
+  # shared_data:/shared is already mounted by the base file (for postgres scripts).
   db:
     environment:
       POSTGRES_SSL_CERT: /shared/certs/db-server.crt
@@ -88,11 +88,11 @@ services:
     volumes:
       - shared_data:/shared:ro
 
-  # ── authd: HTTPS + mTLS certs for NATS and Postgres ───────────────────────
+  # ── authd: mTLS certs for NATS and Postgres ───────────────────────────────
+  # The HTTPS API cert (AUTH_API_CERT/AUTH_API_KEY) is already wired in the
+  # base compose — this overlay only adds the client-side mTLS material.
   auth:
     environment:
-      AUTH_API_CERT:           /shared/certs/authd-server.crt
-      AUTH_API_KEY:            /shared/certs/authd-server.key
       # Single workload CA root — every internal mTLS channel inherits this
       # unless overridden by a per-channel AUTH_*_CA below.
       AUTH_WORKLOAD_CA:        /shared/certs/ca.crt
@@ -111,5 +111,3 @@ services:
       AUTH_NATS_CERT:          /shared/certs/authd-nats-client.crt
       AUTH_NATS_KEY:           /shared/certs/authd-nats-client.key
       AUTH_NATS_URL:           tls://nats:4222
-    volumes:
-      - shared_data:/shared:ro

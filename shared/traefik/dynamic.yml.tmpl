@@ -1,0 +1,98 @@
+# Rendered to /shared/traefik/dynamic.yml by `make _gen-teleport-config`.
+# Loaded by the traefik service via --providers.file.filename.
+#
+# Routing summary:
+#   - auth.localhost                    -> auth:443 (HTTPS upstream)
+#   - teleport.localhost                -> teleport:3080 (HTTPS upstream),
+#                                          with response Location: header
+#                                          rewritten from github.com to
+#                                          auth.localhost (rewrite-github-
+#                                          redirect middleware) so the
+#                                          browser never reaches the real
+#                                          github.com.
+#   - github.com / api.github.com       -> auth:443, with Host header
+#                                          rewritten to auth.localhost so
+#                                          auth handlers see a consistent
+#                                          identity. These names only land
+#                                          here on Teleport's *server-side*
+#                                          calls (hijacked via the teleport
+#                                          service's extra_hosts).
+#
+# TLS terminates at Traefik using the mkcert-issued authd-server cert; the
+# cert's SAN list covers all four hostnames. Upstream connections use
+# insecureSkipVerify because the docker service-name SNI (`auth`, `teleport`)
+# doesn't match the cert — adequate for a dev rig.
+
+http:
+  routers:
+    auth:
+      rule: "Host(`auth.localhost`)"
+      entryPoints: [websecure]
+      service: auth
+      tls: {}
+
+    teleport:
+      rule: "Host(`teleport.localhost`)"
+      entryPoints: [websecure]
+      service: teleport
+      # Rewrite Teleport's 302 Location header from https://github.com/...
+      # to https://auth.localhost/..., so the browser follows the redirect
+      # straight to Traefik (and from there to auth) instead of trying to
+      # resolve github.com itself. Eliminates the need for /etc/hosts
+      # entries on the browser machine.
+      middlewares: [rewrite-github-redirect]
+      tls: {}
+
+    # Teleport CE hardcodes github.com / api.github.com in its github
+    # connector. extra_hosts in the teleport service routes those names
+    # to host-gateway, which lands here. The rewrite-host middleware
+    # restores `Host: auth.localhost` so auth's handlers see the same
+    # identity as the direct browser route.
+    github-hijack:
+      rule: "Host(`github.com`) || Host(`api.github.com`)"
+      entryPoints: [websecure]
+      service: auth
+      middlewares: [rewrite-host]
+      tls: {}
+
+  services:
+    auth:
+      loadBalancer:
+        servers:
+          - url: "https://auth:443"
+        serversTransport: skipverify
+        passHostHeader: true
+
+    teleport:
+      loadBalancer:
+        servers:
+          - url: "https://teleport:3080"
+        serversTransport: skipverify
+        passHostHeader: true
+
+  middlewares:
+    rewrite-host:
+      headers:
+        customRequestHeaders:
+          Host: auth.localhost
+
+    # Replace github.com in Teleport's Location response header (sent when
+    # the SSO button is clicked) with auth.localhost — the path + query
+    # string are preserved by $1. Without this the browser would follow
+    # the redirect to the real github.com.
+    rewrite-github-redirect:
+      plugin:
+        rewriteResponseHeaders:
+          rewrites:
+            - header: "Location"
+              regex: "^https://github\\.com(/.*)?$"
+              replacement: "https://auth.localhost$1"
+
+  serversTransports:
+    skipverify:
+      insecureSkipVerify: true
+
+tls:
+  certificates:
+    - certFile: /shared/certs/authd-server.crt
+      keyFile: /shared/certs/authd-server.key

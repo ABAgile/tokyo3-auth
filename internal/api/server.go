@@ -125,11 +125,23 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /register", s.handleRegisterGET)
 	mux.HandleFunc("POST /register", s.handleRegisterPOST)
 
-	// GitHub OAuth2 compatibility
+	// GitHub OAuth2 compatibility.
+	// User-info endpoints are mounted at BOTH /api/v3/user* (the GitHub
+	// Enterprise convention) AND /user* (the github.com / api.github.com
+	// convention). Teleport CE hard-codes api_endpoint_url=https://api.github.com
+	// and appends /user etc., so when the docker-compose.teleport.yml
+	// extra_hosts entry hijacks api.github.com to auth, the bare /user paths
+	// are the ones it actually hits.
 	mux.HandleFunc("GET /login/oauth/authorize", s.handleGitHubAuthorize)
 	mux.HandleFunc("POST /login/oauth/access_token", s.handleGitHubAccessToken)
 	mux.HandleFunc("GET /api/v3/user", s.bearerAuth(s.handleGitHubUser))
 	mux.HandleFunc("GET /api/v3/user/emails", s.bearerAuth(s.handleGitHubUserEmails))
+	mux.HandleFunc("GET /api/v3/user/orgs", s.bearerAuth(s.handleGitHubUserOrgs))
+	mux.HandleFunc("GET /api/v3/user/teams", s.bearerAuth(s.handleGitHubUserTeams))
+	mux.HandleFunc("GET /user", s.bearerAuth(s.handleGitHubUser))
+	mux.HandleFunc("GET /user/emails", s.bearerAuth(s.handleGitHubUserEmails))
+	mux.HandleFunc("GET /user/orgs", s.bearerAuth(s.handleGitHubUserOrgs))
+	mux.HandleFunc("GET /user/teams", s.bearerAuth(s.handleGitHubUserTeams))
 
 	// MFA — TOTP
 	mux.HandleFunc("POST /mfa/totp/enroll", s.bearerAuth(s.handleTOTPEnroll))

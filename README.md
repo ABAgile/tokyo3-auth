@@ -188,6 +188,8 @@ AUTH_MASTER_KEY="$(./authd keygen)" \
 | `POST` | `/login/oauth/access_token` | Token exchange (JSON or form-encoded, per `Accept` header) |
 | `GET` | `/api/v3/user` | User info in GitHub API v3 shape |
 | `GET` | `/api/v3/user/emails` | User emails list |
+| `GET` | `/api/v3/user/orgs` | Synthetic single-org list (login derived from issuer host) — required by Teleport's `github` connector |
+| `GET` | `/api/v3/user/teams` | User's SCIM groups projected as teams under the synthetic org |
 
 To use an existing GitHub OAuth app with this IdP:
 1. Set the app's Authorization callback URL to `https://your-app/github/callback`

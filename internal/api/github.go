@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
@@ -139,6 +140,99 @@ func (s *Server) handleGitHubUserEmails(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusOK, []map[string]any{
 		{"email": user.Email, "primary": true, "verified": true, "visibility": "public"},
 	})
+}
+
+// handleGitHubUserOrgs surfaces a single synthetic org derived from the issuer
+// host. Teleport's github connector requires org membership for role mapping;
+// we don't model orgs natively (only flat SCIMGroups), so every authenticated
+// user is treated as a member of one tenant-wide org.
+func (s *Server) handleGitHubUserOrgs(w http.ResponseWriter, r *http.Request) {
+	sess := sessionFromCtx(r)
+	if _, err := s.store.GetUserByID(r.Context(), sess.UserID); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "server_error", "user not found")
+		return
+	}
+	org := s.syntheticOrgLogin()
+	s.writeJSON(w, http.StatusOK, []map[string]any{githubOrgPayload(org, s.issuer)})
+}
+
+// handleGitHubUserTeams projects the user's SCIMGroup membership as GitHub
+// "teams" under the synthetic org from handleGitHubUserOrgs. Always prepends
+// a synthetic "members" team that every authenticated user belongs to —
+// mirrors real-GitHub semantics where org members can be granted role
+// mappings without an explicit team, and lets dev rigs (e.g. the Teleport
+// integration) wire up teams_to_roles before any SCIM groups exist.
+func (s *Server) handleGitHubUserTeams(w http.ResponseWriter, r *http.Request) {
+	sess := sessionFromCtx(r)
+	groups, err := s.store.ListGroups(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "server_error", "list groups failed")
+		return
+	}
+	org := s.syntheticOrgLogin()
+	orgPayload := githubOrgPayload(org, s.issuer)
+	teams := []map[string]any{githubTeamPayload(org, "Members", "members", orgPayload, s.issuer)}
+	for _, g := range groups {
+		if !slices.Contains(g.Members, sess.UserID) {
+			continue
+		}
+		slug := githubSlug(g.DisplayName)
+		if slug == "" || slug == "members" {
+			continue
+		}
+		teams = append(teams, githubTeamPayload(org, g.DisplayName, slug, orgPayload, s.issuer))
+	}
+	s.writeJSON(w, http.StatusOK, teams)
+}
+
+func githubTeamPayload(org, name, slug string, orgPayload map[string]any, issuer string) map[string]any {
+	return map[string]any{
+		"id":           githubID([]byte(org + "/" + slug)),
+		"name":         name,
+		"slug":         slug,
+		"description":  "",
+		"privacy":      "closed",
+		"permission":   "pull",
+		"url":          issuer + "/api/v3/orgs/" + org + "/teams/" + slug,
+		"html_url":     issuer + "/orgs/" + org + "/teams/" + slug,
+		"organization": orgPayload,
+	}
+}
+
+func (s *Server) syntheticOrgLogin() string {
+	if u, err := url.Parse(s.issuer); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return "auth"
+}
+
+func githubOrgPayload(login, issuer string) map[string]any {
+	return map[string]any{
+		"login":       login,
+		"id":          githubID([]byte(login)),
+		"url":         issuer + "/api/v3/orgs/" + login,
+		"description": "tokyo3-auth synthetic org",
+	}
+}
+
+// githubSlug normalises a SCIMGroup display name into a GitHub-style team slug
+// (lowercase alphanumerics joined by single hyphens). Used for both the slug
+// field and the FNV-derived numeric id, so slug stability across restarts is
+// the same as display-name stability.
+func githubSlug(in string) string {
+	var b strings.Builder
+	prevHyphen := true // suppress leading hyphen
+	for _, r := range strings.ToLower(in) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevHyphen = false
+		case !prevHyphen:
+			b.WriteByte('-')
+			prevHyphen = true
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
 }
 
 // githubID maps a UUID byte slice to a stable positive int64 via FNV-64a.
