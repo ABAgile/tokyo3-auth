@@ -25,7 +25,7 @@ func openTestDB(t *testing.T) *DB {
 	return db
 }
 
-// TestMigrationsApply confirms all eight embedded migrations apply on a fresh
+// TestMigrationsApply confirms every embedded migration applies on a fresh
 // DB and that the schema_migrations tracking table records each one.
 func TestMigrationsApply(t *testing.T) {
 	db := openTestDB(t)
@@ -34,8 +34,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 11 {
-		t.Errorf("expected 11 migrations applied, got %d", n)
+	if n != 12 {
+		t.Errorf("expected 12 migrations applied, got %d", n)
 	}
 
 	// Re-running migrate() must be a no-op (idempotent).
@@ -45,8 +45,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations 2: %v", err)
 	}
-	if n != 11 {
-		t.Errorf("after re-run, expected still 11 migrations, got %d", n)
+	if n != 12 {
+		t.Errorf("after re-run, expected still 12 migrations, got %d", n)
 	}
 }
 

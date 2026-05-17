@@ -39,22 +39,32 @@ func (s *DB) GetGroupByID(ctx context.Context, id uuid.UUID) (*model.SCIMGroup, 
 }
 
 func (s *DB) ListGroups(ctx context.Context) ([]*model.SCIMGroup, error) {
+	// Drain the outer query into a slice before issuing the per-group
+	// member lookups. Otherwise the nested QueryContext deadlocks under
+	// SQLite's single-connection cap (Open() sets MaxOpenConns=1).
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, display_name, created_at, updated_at FROM scim_groups ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var groups []*model.SCIMGroup
 	for rows.Next() {
 		g := &model.SCIMGroup{}
 		if err := rows.Scan(&g.ID, &g.DisplayName, &g.CreatedAt, &g.UpdatedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		g.Members, _ = s.groupMembers(ctx, g.ID)
 		groups = append(groups, g)
 	}
-	return groups, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for _, g := range groups {
+		g.Members, _ = s.groupMembers(ctx, g.ID)
+	}
+	return groups, nil
 }
 
 func (s *DB) UpdateGroup(ctx context.Context, id uuid.UUID, displayName string) error {

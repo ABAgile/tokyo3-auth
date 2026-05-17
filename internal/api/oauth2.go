@@ -555,6 +555,12 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromCtx(r)
+	// Machine-credential sessions (client_credentials grant) have no
+	// associated user — /userinfo is undefined for them per OIDC Core §5.3.
+	if sess.UserID == uuid.Nil {
+		s.writeError(w, http.StatusForbidden, "insufficient_scope", "userinfo is not available for client_credentials tokens")
+		return
+	}
 	user, err := s.store.GetUserByID(r.Context(), sess.UserID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "user not found")

@@ -15,22 +15,33 @@ const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_ha
 
 func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 	sess := &model.Session{}
+	var nullUser sql.Null[uuid.UUID]
 	err := row.Scan(
-		&sess.ID, &sess.UserID, &sess.ClientID, &sess.AccessTokenHash, &sess.RefreshTokenHash,
+		&sess.ID, &nullUser, &sess.ClientID, &sess.AccessTokenHash, &sess.RefreshTokenHash,
 		(*stringArray)(&sess.Scopes), &sess.AccessExpiresAt, &sess.RefreshExpiresAt, &sess.LastActivityAt,
 		&sess.MFAVerified, &sess.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
+	if nullUser.Valid {
+		sess.UserID = nullUser.V
+	}
 	return sess, err
 }
 
 func (s *DB) CreateSession(ctx context.Context, sess *model.Session) error {
+	// user_id is nullable: machine-credential sessions (client_credentials
+	// grant) carry no user. Write NULL instead of the zero UUID so the FK
+	// to users(id) is satisfied.
+	var userArg any = sess.UserID
+	if sess.UserID == uuid.Nil {
+		userArg = nil
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.UserID, sess.ClientID, sess.AccessTokenHash, sess.RefreshTokenHash,
+		sess.ID, userArg, sess.ClientID, sess.AccessTokenHash, sess.RefreshTokenHash,
 		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified)
 	return err
 }
