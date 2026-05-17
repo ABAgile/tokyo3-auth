@@ -84,26 +84,24 @@ build-darwin: $(BIN_DIR)
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-# Generate .env with dev defaults on first run. Used by both run targets.
-# DSNs use password auth; the mTLS run target overrides with cert-auth DSNs at process launch time.
+# Generate .env with dev defaults on first run. Used by run / run-mtls and the
+# compose stack. Notable omissions:
+#   - AUTH_ADDR is NOT seeded: compose's container needs :443 (Traefik
+#     upstream) while `make run` / `run-mtls` listen on :$(AUTH_PORT) on the
+#     dev-container host. Set inline in the run targets, not here.
+#   - AUTH_ADMIN_DATABASE_URL / AUTH_DATABASE_URL / AUTH_NATS_URL are likewise
+#     NOT seeded — compose builds the container-internal DSN (db:5432 /
+#     nats:4222) from the password vars; `make run` / `run-mtls` construct
+#     the host-side DSN (db.localhost:POSTGRES_PORT) inline.
 _gen-env: build
 	@if [ ! -f .env ]; then \
 	    KEY=$$($(AUTHD_BIN) keygen); \
 	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                                              > .env; \
-	    echo "# AUTH_ADDR is NOT seeded: compose's container needs :443 (Traefik upstream)"                                                                       >> .env; \
-	    echo "# while 'make run' listens on :$(AUTH_PORT) on the dev-container host. Set via"                                                                    >> .env; \
-	    echo "# inline override in the run target, not here."                                                                                                     >> .env; \
 	    echo "AUTH_ISSUER=https://auth.localhost"                                                                                                                >> .env; \
 	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                                    >> .env; \
 	    echo "AUTH_ADMIN_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
 	    echo "AUTH_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
-	    echo "# AUTH_ADMIN_DATABASE_URL / AUTH_DATABASE_URL are deliberately NOT seeded:"                                                                        >> .env; \
-	    echo "# docker compose builds the container-internal DSN (db:5432) from the"                                                                            >> .env; \
-	    echo "# password vars above; make run / run-mtls construct the host-side DSN"                                                                            >> .env; \
-	    echo "# (db.localhost:POSTGRES_PORT) inline. Set them here only to override both."                                                                       >> .env; \
 	    echo "NATS_PORT=$(NATS_PORT)"                                                                                                                            >> .env; \
-	    echo "# AUTH_NATS_URL likewise — compose defaults to nats://nats:4222 (in-cluster);"                                                                     >> .env; \
-	    echo "# make run targets nats.localhost:NATS_PORT instead."                                                                                              >> .env; \
 	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
 	    echo ""                                                                                                                                                  >> .env; \
 	    echo "# ── Teleport github connector ─────────────────────────────────────────"                                                                          >> .env; \
@@ -167,7 +165,7 @@ _sync-shared: _gen-env
 ## Without AUTH_API_CERT/KEY here, authd would mint an ephemeral self-signed
 ## cert at startup instead of using the mkcert-issued one — browsers would
 ## then show a cert warning when hitting https://localhost:${AUTH_PORT}.
-run: _gen-env _sync-shared
+run: _sync-shared
 	@docker compose up -d db nats natsbox --wait 2>/dev/null || true
 	@export $$(grep -v '^#' .env | xargs) && \
 	    AUTH_ADDR=$(AUTH_ADDR) \
@@ -179,10 +177,11 @@ run: _gen-env _sync-shared
 	    $(AUTHD_BIN) serve
 
 ## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
-run-mtls: _gen-env _sync-shared
+run-mtls: _sync-shared
 	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d db nats natsbox --wait 2>/dev/null || true
 	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
 	    export $$(grep -v '^#' .env | xargs) && \
+	    AUTH_ADDR=$(AUTH_ADDR) \
 	    AUTH_API_CERT=shared/certs/authd-server.crt \
 	    AUTH_API_KEY=shared/certs/authd-server.key \
 	    AUTH_WORKLOAD_CA=$$CA_PEM \
@@ -243,6 +242,7 @@ check:
 docker-build:
 	docker build \
 	  --platform linux/arm64 \
+	  --build-arg TARGETARCH=arm64 \
 	  -t $(IMAGE_NAME):$(IMAGE_TAG) \
 	  -t $(IMAGE_NAME):latest \
 	  .
@@ -252,6 +252,7 @@ docker-build:
 docker-build-amd64:
 	docker build \
 	  --platform linux/amd64 \
+	  --build-arg TARGETARCH=amd64 \
 	  -t $(IMAGE_NAME):$(IMAGE_TAG)-amd64 \
 	  .
 
@@ -270,7 +271,7 @@ docker-push: docker-build
 ## docker-up is safe to re-run. The bootstrap step is skipped when github
 ## client_id/secret are unset — see the 'First-time setup' header in
 ## docker-compose.yml.
-docker-up: _gen-env _sync-shared
+docker-up: _sync-shared
 	docker compose up -d --build --wait --remove-orphans
 	@if [ -f shared/teleport/bootstrap.yaml ]; then \
 	    echo "  applying shared/teleport/bootstrap.yaml (github connector)…"; \
@@ -286,11 +287,19 @@ docker-up: _gen-env _sync-shared
 	fi
 
 ## docker-up-mtls: Bring up the full stack + mTLS overlay (auto-generates certs on first run)
-docker-up-mtls: _gen-env _sync-shared
+docker-up-mtls: _sync-shared
 	docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d --build --wait --remove-orphans
 	@if [ -f shared/teleport/bootstrap.yaml ]; then \
+	    echo "  applying shared/teleport/bootstrap.yaml (github connector)…"; \
 	    docker compose -f docker-compose.yml -f docker-compose.mtls.yml exec -T teleport \
 	        /usr/local/bin/tctl -c /shared/teleport/teleport.yaml create --force -f /shared/teleport/bootstrap.yaml; \
+	    PUBLIC_ADDR=$$(grep ^TELEPORT_PUBLIC_ADDR= .env | cut -d= -f2-); \
+	    echo "  github connector applied — sign in at https://$${PUBLIC_ADDR:-teleport.localhost}"; \
+	else \
+	    echo ""; \
+	    echo "  ⚠ TELEPORT_GITHUB_CLIENT_ID/SECRET are unset — github connector NOT created."; \
+	    echo "    Stack is up; register an OAuth client (see docker-compose.yml header),"; \
+	    echo "    set the values in .env, and re-run 'make docker-up-mtls' to finish wiring."; \
 	fi
 
 ## docker-down: Stop all compose services (overlay-aware; safe to run in any mode)
