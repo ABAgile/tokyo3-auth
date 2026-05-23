@@ -371,7 +371,15 @@ Join auth's audit on `user_id` with CloudTrail on `sub` for the complete story (
 
 ### What's deliberately not in this design
 
-- **No IAM users created for workforce members.** Federation is identity-less in AWS — sessions are minted on demand, no per-user IAM rows. The `iam` provisioner (`internal/provision/iam`) is for environments that need stable IAM user ARNs (CodeCommit Git creds, SES SMTP creds, legacy resource policies hardcoding user ARNs). Most environments don't.
+- **No IAM users created for workforce members.** Federation is identity-less in AWS — sessions are minted on demand, no per-user IAM rows.
+
+  The `iam` provisioner (`internal/provision/iam`, labelled "AWS IAM Users (legacy)" in the admin form) is kept as a deliberate escape hatch for environments where IAM users are *actually* required:
+  - **CodeCommit Git credentials** (`iam:CreateServiceSpecificCredential`, `iam:UploadSSHPublicKey`) — no federation alternative
+  - **SES SMTP credentials** — derived from IAM access keys; SES's SMTP endpoint doesn't accept STS sessions (the SES *API* does)
+  - **Resource policies that hardcode `arn:aws:iam::ACCOUNT:user/<name>` as Principal** — common in long-running AWS accounts; rare in greenfield
+  - **Third-party SaaS that only documents IAM-user setup** — check the vendor's role-based integration docs before assuming this applies
+
+  Greenfield deployments should not enable the `iam` provisioner. The admin form surfaces a deprecation banner explaining the same — federation is the human-access path, and `aws_iam` is the legacy compatibility hatch.
 - **No Identity Center.** Direct OIDC federation against auth is the architecturally simpler answer for ≤5 AWS accounts. Identity Center pays off at higher account counts and unlocks Trusted Identity Propagation for analytics services (QuickSight rows, S3 Access Grants, Redshift query authorization) — but requires SAML support in the IdP, which auth doesn't have today.
 - **CLI credential helper lives at `cmd/auth-aws-creds/`** in this same repo (not a separate project). Install with `go install github.com/abagile/tokyo3-auth/cmd/auth-aws-creds@latest`; users wire it via `credential_process` in `~/.aws/config`. The helper depends only on the standard library and `internal/awsclaims` — no DB or AWS SDK in its import graph, so installing it doesn't drag in server dependencies.
 

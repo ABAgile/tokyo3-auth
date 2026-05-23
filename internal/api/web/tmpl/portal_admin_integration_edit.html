@@ -20,7 +20,7 @@
         {{if .IsNew}}
         <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
           <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
-          <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM</option>
+          <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM Users (legacy)</option>
         </select>
         {{else}}
         <input type="text" value="{{.Integration.Provider}}" readonly disabled>
@@ -79,6 +79,18 @@
       </div>
 
       <div data-provider="aws_iam" {{if ne .Integration.Provider "aws_iam"}}style="display:none"{{end}}>
+        <div class="alert alert-warning" style="font-size:13px;margin-bottom:12px">
+          <strong>This provisioner is deprecated for human access.</strong>
+          Creating IAM users per workforce member is the legacy path. For console + CLI access,
+          use <a href="/portal/admin/aws"><strong>AWS OIDC Federation</strong></a>
+          (configure under <code>/portal/admin/aws</code>): no IAM users are created, sessions
+          are short-lived STS credentials, and deactivation propagates via session-tag revocation.
+          <br><br>
+          Enable this provisioner only when you need stable IAM user ARNs for one of the
+          narrow cases that still requires them: <strong>CodeCommit Git credentials</strong>
+          (per-IAM-user), <strong>SES SMTP credentials</strong> (derived from IAM access keys),
+          or <strong>resource policies that hardcode</strong> <code>arn:aws:iam::ACCOUNT:user/&lt;name&gt;</code>.
+        </div>
         <div class="form-group">
           <label for="group_map">Group mapping (one per line, format <code>scimGroup=iamGroup</code>)</label>
           <textarea id="group_map" name="group_map" rows="4" placeholder="engineers=eng-iam-grp">{{.GroupMapStr}}</textarea>

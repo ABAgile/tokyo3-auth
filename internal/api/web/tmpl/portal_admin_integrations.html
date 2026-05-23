@@ -30,7 +30,10 @@
         {{range .Integrations}}
         <tr>
           <td>{{.Name}}</td>
-          <td><span class="badge badge-gray">{{.Provider}}</span></td>
+          <td>
+            <span class="badge badge-gray">{{.Provider}}</span>
+            {{if eq .Provider "aws_iam"}}<span class="badge badge-gray" title="Use AWS OIDC Federation for human access instead">legacy</span>{{end}}
+          </td>
           <td>{{if eq .Provider "scim"}}{{if eq .Config.AuthMode "mtls"}}<span class="badge badge-gray">mtls</span>{{else}}<span class="badge badge-gray">bearer</span>{{end}}{{else}}<span class="text-muted">—</span>{{end}}</td>
           <td>{{if .Enabled}}<span class="badge badge-blue">Enabled</span>{{else}}<span class="badge badge-gray">Disabled</span>{{end}}</td>
           <td class="text-muted truncate">{{.Config.BaseURL}}</td>

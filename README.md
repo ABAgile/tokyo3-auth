@@ -322,39 +322,6 @@ The GitHub-compatible user object maps:
 - `name` — user display name
 - `email` — primary email
 
-## AWS IAM Integration
-
-### Register this IdP as an OIDC provider
-
-```bash
-aws iam create-open-id-connect-provider \
-  --url https://id.example.com \
-  --thumbprint-list <cert-thumbprint> \
-  --client-id-list sts.amazonaws.com
-```
-
-### Configure AssumeRoleWithWebIdentity
-
-Attach a trust policy to your IAM role:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"Federated": "arn:aws:iam::ACCOUNT:oidc-provider/id.example.com"},
-    "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"],
-    "Condition": {"StringEquals": {"id.example.com:aud": "your-client-id"}}
-  }]
-}
-```
-
-`sts:TagSession` is required because auth's federation handler embeds session tags (sub, email, team) in the JWT's `https://aws.amazon.com/tags` claim so resource policies and the revocation provisioner can key on `aws:PrincipalTag/*`. Omitting it causes AWS to reject the AssumeRole call when tags are present.
-
-### IAM provisioning setup
-
-Add an `aws_iam` integration at `/portal/admin/integrations/new` to enable automatic IAM user creation when users/groups change in auth (admin API or portal). Credentials come from the AWS SDK default credential chain on the host running authd. SCIM display name → IAM group name mapping is configured per-integration via the `Group mapping` field.
-
 ## AWS OIDC Federation (Console SSO without IAM users)
 
 Federation is the recommended path for AWS Console + CLI access. Auth's portal acts as the single front door: users see role tiles, click a tile, land in the AWS Console with short-lived STS credentials. No IAM users are created, no long-lived AWS keys exist anywhere.
@@ -494,6 +461,40 @@ sts/<slug>.json    ← STS session credentials per role (0600)
 ```
 
 **Programmatic endpoint**: the helper talks to `POST /aws/credentials` (bearer-auth, form body `role=<slug>`; `audience=<slug>` accepted as a deprecated alias). The response shape matches AWS CLI v2's `credential_process` JSON so a passthrough helper requires no marshalling.
+
+## AWS IAM Users (legacy)
+
+> **Deprecated for human access.** Use [AWS OIDC Federation](#aws-oidc-federation-console-sso-without-iam-users) above for console and CLI access. This section covers the older `aws_iam` provisioner that creates an IAM user per workforce member; keep it around for the narrow set of cases below, not as the default human-access path.
+
+The `aws_iam` provisioner creates one IAM user per active auth user, tags them `ManagedBy=tokyo3-auth`, syncs SCIM-group → IAM-group memberships, and revokes access keys + group memberships on deactivation. It does **not** set a console password or generate access keys — those are operator-controlled lifecycle events outside auth's scope.
+
+### When to enable
+
+Only when you have a concrete dependency on a stable per-user IAM ARN:
+
+- **CodeCommit Git credentials** — generated per IAM user via `iam:CreateServiceSpecificCredential` or `iam:UploadSSHPublicKey`. No federated equivalent exists. (AWS stopped accepting new CodeCommit customers in 2024; existing setups may still depend on this.)
+- **SES SMTP credentials** — derived from an IAM user's access keys; SES's SMTP endpoint does not accept STS sessions. The SES *API* works fine with federated credentials, so this only matters when you're stuck on SMTP.
+- **Resource policies that hardcode** `arn:aws:iam::ACCOUNT:user/<name>` as `Principal`. Greenfield environments don't have these; long-running AWS accounts often do. Audit with: `grep -rE 'arn:aws:iam::[0-9]+:user/' <terraform-state>`.
+- **Third-party SaaS that only documents IAM user setup** for its AWS integration. Almost all support role-based access today; check the vendor's "advanced" / "production" docs before assuming IAM users are required.
+
+For everything else — and especially for human workforce access — use federation. Federation gives you short-lived STS credentials, no per-user IAM rows, no long-lived keys, no `~/.aws/credentials` to leak.
+
+### Setup
+
+Add an `aws_iam` integration at `/portal/admin/integrations/new` (the admin form shows a deprecation banner with the same guidance as this section). The integration's `Group mapping` field maps SCIM group display names to IAM group names — when a user is added to a SCIM group, they're added to the corresponding IAM group automatically.
+
+Credentials come from the AWS SDK default credential chain on the host running authd. Use a machine IAM role (EC2 instance profile, ECS task role, EKS IRSA, IAM Roles Anywhere); avoid static `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in production. The role needs: `iam:CreateUser`, `iam:TagUser`, `iam:DeleteUser`, `iam:CreateGroup`, `iam:AddUserToGroup`, `iam:RemoveUserFromGroup`, `iam:ListGroupsForUser`, `iam:ListAccessKeys`, `iam:DeleteAccessKey`.
+
+### What the provisioner does NOT do
+
+To set realistic expectations:
+
+- **No console password** is set — `iam:CreateLoginProfile` is never called. Use `aws iam create-login-profile` out-of-band after provisioning if console access is desired.
+- **No access keys** are minted — `iam:CreateAccessKey` is never called. Operators mint keys for the specific service integrations that need them.
+- **No MFA enrollment** — IAM MFA is independent of auth's MFA.
+- **Username collision risk**: usernames are derived as the email's local part (`alice@example.com` → `alice`). Two users with the same local part collide; auth logs the conflict but doesn't surface it elsewhere.
+
+These omissions are deliberate — credentials are policy decisions, not provisioning decisions — but they mean the IAM provisioner is not a "create a fully-usable IAM user" feature. Pair it with whatever credential-issuance tooling your org uses.
 
 ## Outbound provisioning
 
