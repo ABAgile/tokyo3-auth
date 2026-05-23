@@ -188,6 +188,168 @@ func TestMintLogoutToken_Shape(t *testing.T) {
 	}
 }
 
+func TestMintFederationToken_ClaimsAndAudience(t *testing.T) {
+	s := newTestSigner(t)
+	authTime := time.Now().Add(-2 * time.Minute).UTC().Truncate(time.Second)
+	tok, err := s.MintFederationToken(
+		"user-uuid", "tokyo3-platform-prod",
+		"alice@example.com", "Alice",
+		[]string{"platform", "everyone"},
+		[]string{"pwd", "mfa"},
+		authTime, 5*time.Minute,
+		nil, // no principal_tags in this test
+	)
+	if err != nil {
+		t.Fatalf("MintFederationToken: %v", err)
+	}
+	header, claims := parseUnverified(t, tok)
+	if header["alg"] != "RS256" {
+		t.Errorf("alg = %v, want RS256", header["alg"])
+	}
+	if header["kid"] != "test-kid" {
+		t.Errorf("kid = %v, want test-kid", header["kid"])
+	}
+	if claims["iss"] != "https://issuer.example" {
+		t.Errorf("iss = %v, want https://issuer.example", claims["iss"])
+	}
+	if claims["sub"] != "user-uuid" {
+		t.Errorf("sub = %v, want user-uuid", claims["sub"])
+	}
+	aud, _ := claims["aud"].([]any)
+	if len(aud) != 1 || aud[0] != "tokyo3-platform-prod" {
+		t.Errorf("aud = %v, want [tokyo3-platform-prod]", claims["aud"])
+	}
+	if got, _ := claims["email"].(string); got != "alice@example.com" {
+		t.Errorf("email = %q, want alice@example.com", got)
+	}
+	groups, _ := claims["groups"].([]any)
+	if len(groups) != 2 || groups[0] != "platform" || groups[1] != "everyone" {
+		t.Errorf("groups = %v, want [platform everyone]", groups)
+	}
+	if at, ok := claims["auth_time"].(float64); !ok || int64(at) != authTime.Unix() {
+		t.Errorf("auth_time = %v, want %d", claims["auth_time"], authTime.Unix())
+	}
+	// Lifetime check: exp - iat ≈ 5 minutes.
+	iat, _ := claims["iat"].(float64)
+	exp, _ := claims["exp"].(float64)
+	if int(exp-iat) != 300 {
+		t.Errorf("exp - iat = %d, want 300 (5 minutes)", int(exp-iat))
+	}
+	// Without principalTags, the AWS-tags claim must be absent so AWS
+	// doesn't even try to attach session tags (and so the role trust
+	// policy doesn't need sts:TagSession).
+	if _, ok := claims["https://aws.amazon.com/tags"]; ok {
+		t.Error("https://aws.amazon.com/tags should be absent when principalTags is nil")
+	}
+}
+
+func TestMintFederationToken_DefaultLifetime(t *testing.T) {
+	s := newTestSigner(t)
+	tok, err := s.MintFederationToken("u", "aud", "e@x", "N", nil, nil, time.Now(), 0, nil)
+	if err != nil {
+		t.Fatalf("MintFederationToken: %v", err)
+	}
+	_, claims := parseUnverified(t, tok)
+	iat, _ := claims["iat"].(float64)
+	exp, _ := claims["exp"].(float64)
+	if int(exp-iat) != 900 { // 15 min default
+		t.Errorf("default lifetime = %d, want 900", int(exp-iat))
+	}
+}
+
+func TestMintFederationToken_SignatureVerifies(t *testing.T) {
+	s := newTestSigner(t)
+	tok, err := s.MintFederationToken("u", "aud", "", "", nil, nil, time.Now(), time.Minute, nil)
+	if err != nil {
+		t.Fatalf("MintFederationToken: %v", err)
+	}
+	parsed, err := gojwt.Parse(tok, func(_ *gojwt.Token) (any, error) { return s.PublicKey(), nil })
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !parsed.Valid {
+		t.Error("parsed token reports invalid")
+	}
+}
+
+// TestMintFederationToken_AWSPrincipalTagsClaim asserts the exact wire
+// shape of the AWS session-tags claim. The format is constrained by AWS
+// (https://docs.aws.amazon.com/IAM/latest/UserGuide/id_session-tags.html)
+// — claim name must equal AWSPrincipalTagsClaim verbatim, principal_tags
+// values must be list-of-strings (even though only the first element is
+// honoured today), and transitive_tag_keys lists every key that should
+// persist through role chaining. We mark every key transitive.
+func TestMintFederationToken_AWSPrincipalTagsClaim(t *testing.T) {
+	s := newTestSigner(t)
+	tags := map[string]string{
+		"sub":   "alice-uuid",
+		"email": "alice@example.com",
+		"team":  "platform",
+	}
+	tok, err := s.MintFederationToken(
+		"alice-uuid", "tokyo3-platform-prod",
+		"alice@example.com", "Alice",
+		nil, []string{"pwd", "mfa"},
+		time.Now(), time.Minute,
+		tags,
+	)
+	if err != nil {
+		t.Fatalf("MintFederationToken: %v", err)
+	}
+	_, claims := parseUnverified(t, tok)
+	rawTags, ok := claims["https://aws.amazon.com/tags"]
+	if !ok {
+		t.Fatal("https://aws.amazon.com/tags claim missing")
+	}
+	tagsObj, ok := rawTags.(map[string]any)
+	if !ok {
+		t.Fatalf("tags claim is not an object: %T", rawTags)
+	}
+	pt, ok := tagsObj["principal_tags"].(map[string]any)
+	if !ok {
+		t.Fatalf("principal_tags is not an object: %T", tagsObj["principal_tags"])
+	}
+	for k, want := range tags {
+		got, ok := pt[k].([]any)
+		if !ok {
+			t.Errorf("principal_tags[%q] is not a list: %T", k, pt[k])
+			continue
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("principal_tags[%q] = %v, want [%q]", k, got, want)
+		}
+	}
+	// transitive_tag_keys must list every key, sorted (deterministic).
+	transRaw, ok := tagsObj["transitive_tag_keys"].([]any)
+	if !ok {
+		t.Fatalf("transitive_tag_keys is not a list: %T", tagsObj["transitive_tag_keys"])
+	}
+	wantTrans := []string{"email", "sub", "team"} // alphabetical
+	if len(transRaw) != len(wantTrans) {
+		t.Fatalf("transitive_tag_keys len = %d, want %d", len(transRaw), len(wantTrans))
+	}
+	for i, want := range wantTrans {
+		if transRaw[i] != want {
+			t.Errorf("transitive_tag_keys[%d] = %v, want %q (sorted order required for deterministic JWT)", i, transRaw[i], want)
+		}
+	}
+}
+
+// TestMintFederationToken_EmptyTagsOmitsClaim guards the "omitempty"
+// behavior — passing an empty map (not nil) must still omit the claim so
+// AWS doesn't reject the call when sts:TagSession isn't authorised.
+func TestMintFederationToken_EmptyTagsOmitsClaim(t *testing.T) {
+	s := newTestSigner(t)
+	tok, err := s.MintFederationToken("u", "aud", "", "", nil, nil, time.Now(), time.Minute, map[string]string{})
+	if err != nil {
+		t.Fatalf("MintFederationToken: %v", err)
+	}
+	_, claims := parseUnverified(t, tok)
+	if _, ok := claims["https://aws.amazon.com/tags"]; ok {
+		t.Error("empty tags map should omit the AWS tags claim")
+	}
+}
+
 func TestMintLogoutToken_AutoJTI(t *testing.T) {
 	s := newTestSigner(t)
 	tok, err := s.MintLogoutToken("rp", "u", "", "", time.Now())

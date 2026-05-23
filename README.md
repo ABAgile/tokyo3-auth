@@ -127,7 +127,8 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTH_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
-| `AUTH_AWS_IAM_ENABLED` | No | `false` | Deprecated. Configure AWS IAM via `/portal/admin/integrations` instead. |
+| `AUTH_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (`/portal/aws` and `/aws/credentials` return 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
+| `AUTH_AWSFED_REAP_INTERVAL` | No | `6h` | Period for the AWS federation revocation reaper. Trims `aws_revoked_users` entries past each role's `MaxSessionDuration` and re-pushes the trimmed inline policy. No-op when no `aws_federation` integration is enabled. Set to `0` to disable. |
 | `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
@@ -137,9 +138,8 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_SCIM_MTLS_CA` | No | falls back to `AUTH_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
 | `AUTH_WORKLOAD_CA` | No | — | Single workload CA root used as the fallback for every per-channel CA env var (`AUTH_DB_CA`, `AUTH_ADMIN_DB_CA`, `AUTH_NATS_CA`, `AUTH_SCIM_MTLS_CA`). Set this alone in deployments that issue all internal certs from one CA; set per-channel vars to override individually. |
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
-| `AWS_REGION` | If IAM enabled | — | AWS region |
-| `AWS_ACCESS_KEY_ID` | If IAM enabled | — | AWS credentials (or use instance role) |
-| `AWS_SECRET_ACCESS_KEY` | If IAM enabled | — | AWS credentials |
+| `AWS_REGION` | If an `aws_iam` or `aws_federation` integration is enabled | — | Signing region for the AWS SDK's IAM calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | If neither machine IAM role nor any other credential source is available | — | Standard AWS SDK env vars, **not read by auth**. The SDK's default credential chain (used by the `aws_iam` and `aws_federation` provisioners) picks these up if set. **Prefer a machine IAM role** — EC2 instance profile, ECS task role, EKS IRSA, or IAM Roles Anywhere — over static keys for production. The federation flow (`/portal/aws`, `/aws/credentials`) does NOT need any AWS credentials at all; only the IAM-creates-users provisioner and the federation revocation provisioner do. |
 
 ## Running
 
@@ -277,6 +277,16 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/clients/{id}/edit` | Edit client |
 | `POST` | `/portal/admin/clients/{id}/delete` | Delete client |
 | `POST` | `/portal/admin/clients/{id}/rotate-secret` | Rotate client secret |
+| `GET` | `/portal/aws` | User-facing AWS console tile list (per assignment) |
+| `POST` | `/portal/aws/console` | Assume the requested role and redirect to AWS Console |
+| `GET` | `/portal/aws/refresh` | AWS-Issuer URL: silently re-federates when the console session expires |
+| `GET` | `/portal/admin/aws` | Admin: AWS accounts, roles, group→role assignments |
+| `POST` | `/portal/admin/aws/accounts/new` | Register an AWS account |
+| `POST` | `/portal/admin/aws/accounts/{id}/delete` | Delete (cascades to roles + assignments) |
+| `POST` | `/portal/admin/aws/roles/new` | Register an assumable role |
+| `POST` | `/portal/admin/aws/roles/{id}/delete` | Delete |
+| `POST` | `/portal/admin/aws/assignments/new` | Add a group → role assignment |
+| `POST` | `/portal/admin/aws/assignments/{id}/delete` | Delete |
 | `GET` | `/portal/admin/integrations` | List app integrations (Vault SCIM, AWS IAM, …) |
 | `GET/POST` | `/portal/admin/integrations/new` | Add a new integration |
 | `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
@@ -333,15 +343,157 @@ Attach a trust policy to your IAM role:
   "Statement": [{
     "Effect": "Allow",
     "Principal": {"Federated": "arn:aws:iam::ACCOUNT:oidc-provider/id.example.com"},
-    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"],
     "Condition": {"StringEquals": {"id.example.com:aud": "your-client-id"}}
   }]
 }
 ```
 
+`sts:TagSession` is required because auth's federation handler embeds session tags (sub, email, team) in the JWT's `https://aws.amazon.com/tags` claim so resource policies and the revocation provisioner can key on `aws:PrincipalTag/*`. Omitting it causes AWS to reject the AssumeRole call when tags are present.
+
 ### IAM provisioning setup
 
 Add an `aws_iam` integration at `/portal/admin/integrations/new` to enable automatic IAM user creation when users/groups change in auth (admin API or portal). Credentials come from the AWS SDK default credential chain on the host running authd. SCIM display name → IAM group name mapping is configured per-integration via the `Group mapping` field.
+
+## AWS OIDC Federation (Console SSO without IAM users)
+
+Federation is the recommended path for AWS Console + CLI access. Auth's portal acts as the single front door: users see role tiles, click a tile, land in the AWS Console with short-lived STS credentials. No IAM users are created, no long-lived AWS keys exist anywhere.
+
+### Architecture in one paragraph
+
+Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`; AWS verifies signed id_tokens against the public JWKS. The portal handler at `/portal/aws/console` exchanges a freshly-minted federation id_token for STS credentials via `sts:AssumeRoleWithWebIdentity` (unauthenticated — the JWT is the auth), then trades those credentials for a console `SigninToken` at `signin.aws.amazon.com/federation`, then 302s the browser into the console. **Auth needs no AWS credentials for this flow.**
+
+### Setup (per AWS account)
+
+1. **Set the federation audience** in auth's environment. One value per IdP — typically scoped per AWS account so a JWT minted for one account can't be replayed against another:
+   ```
+   AUTH_AWS_AUDIENCE=tokyo3-aws-prod
+   ```
+   Restart authd for the change to take effect. With this unset, the `/portal/aws` tile page and `/aws/credentials` endpoint return clear "federation_disabled" errors instead of silently dropping requests.
+
+2. **Register the OIDC provider** (once per AWS account, scriptable via Terraform). Use the audience value from step 1 as `--client-id-list`:
+   ```bash
+   aws iam create-open-id-connect-provider \
+     --url https://id.example.com \
+     --client-id-list tokyo3-aws-prod
+   # Thumbprint auto-discovered since Nov 2023; pass --thumbprint-list only if pinning.
+   ```
+
+3. **Create one role per persona** (e.g. `PlatformAdmin`, `BackendReadOnly`). Trust policies share the same audience but discriminate by `aws:RequestTag/team` — the per-role gate moves from the `aud` claim to the session-tag claim:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Principal": { "Federated": "arn:aws:iam::ACCOUNT:oidc-provider/id.example.com" },
+       "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"],
+       "Condition": {
+         "StringEquals": {
+           "id.example.com:aud": "tokyo3-aws-prod",
+           "aws:RequestTag/team": "platform"
+         }
+       }
+     }]
+   }
+   ```
+   `aws:RequestTag/team` evaluates the team value being requested in the JWT's `https://aws.amazon.com/tags` claim — auth sets it server-side from the user's first SCIM group, so users can't forge a different team. See `docs/integration-guide.md` Part 3 for the full ABAC pattern catalogue (per-user S3 prefix, team-scoped KMS, etc.).
+
+4. **Configure auth** at `/portal/admin/aws`:
+   - Add each AWS account: account ID, alias, OIDC provider ARN.
+   - Add each role: ARN, slug (URL/CLI-safe identifier — e.g. `platform-prod`), display name, optional step-up MFA flag, session TTL.
+   - Add SCIM-group → role assignments mapping group membership to assumable roles.
+
+5. **Users log in** at `/portal/aws`, click a tile, land in the AWS Console.
+
+### Revocation (optional but recommended)
+
+Without revocation, STS sessions for a deactivated user keep working until natural expiry (≤role TTL, default 1h). To kill them in ≤30s, enable the revocation provisioner:
+
+1. Attach a machine IAM role to whatever compute hosts authd (EC2 instance profile, ECS task role, EKS IRSA, IAM Roles Anywhere on-prem). **No static AWS keys.** Scoped policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["iam:GetRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy"],
+       "Resource": ["arn:aws:iam::ACCOUNT:role/<role-name-pattern>"]
+     }]
+   }
+   ```
+
+2. Add an `aws_federation` integration row at `/portal/admin/integrations/new`. The provisioner picks up credentials transparently via the SDK's default chain — there's no token field to fill.
+
+3. On deactivation, the provisioner adds the user's UUID to each federation role's `AuthRevokedUsers` inline policy:
+   ```json
+   {
+     "Effect": "Deny",
+     "Action": ["*"],
+     "Resource": ["*"],
+     "Condition": { "StringEquals": { "aws:PrincipalTag/sub": ["<deactivated-uuid>"] } }
+   }
+   ```
+   AWS evaluates this on every API call — sessions tagged with the deactivated user's `sub` get `AccessDenied` on their next request (~30s policy propagation).
+
+4. A daily reaper (`AUTH_AWSFED_REAP_INTERVAL`, default 6h) trims revocation entries past the role's `MaxSessionDuration` — by then every session blocked by the Deny has expired naturally. Keeps the inline policy from growing forever.
+
+### CloudTrail correlation
+
+Every console-assumed session lands in CloudTrail with:
+- `userIdentity.sessionContext.webIdFederationData.federatedProvider` = your issuer URL
+- `userIdentity.sessionContext.webIdFederationData.attributes.sub` = auth user UUID
+- `userIdentity.principalId` includes the `RoleSessionName` auth set, like `<email-local>-<uuid-prefix>-<unix>`
+
+Cross-reference `sub` with auth's audit stream (action `aws.console.assumed`) for the complete picture.
+
+### CLI access via `auth-aws-creds`
+
+The browser flow handles AWS Console access. For CLI / SDK access, install the bundled helper:
+
+```bash
+go install github.com/abagile/tokyo3-auth/cmd/auth-aws-creds@latest
+```
+
+This ships from the same repo as `authd` but is a separate `main` package — `go install` pulls only the helper's transitive imports (no DB driver, no AWS SDK, no audit pipeline). Distributing prebuilt binaries works the same way; the standalone binary lives in `cmd/auth-aws-creds/`.
+
+**One-time setup** (creates an OAuth public client in auth via `/portal/admin/clients/new` — public + PKCE, no client secret needed):
+
+```bash
+auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli
+# Opens browser, completes OIDC code flow on a loopback port, caches the refresh token.
+```
+
+**Configure each AWS profile to invoke the helper** as its credential source. The `role` flag matches the slug an admin set under `/portal/admin/aws/roles`:
+
+```ini
+# ~/.aws/config
+[profile platform-prod]
+credential_process = auth-aws-creds get --role platform-prod
+region = us-east-1
+
+[profile backend-dev]
+credential_process = auth-aws-creds get --role backend-dev
+region = us-east-1
+```
+
+The deprecated `--audience` flag is still accepted as an alias for `--role` to ease migration from 0.x configurations; it will be removed in a future release.
+
+After that, `aws --profile platform-prod s3 ls` (or any boto3 / SDK invocation) silently:
+1. Reads the cached STS credentials if still valid (skew = 60s).
+2. Otherwise refreshes the OAuth access token via the cached refresh token (no browser).
+3. Calls auth's `/aws/credentials` endpoint to obtain fresh STS credentials.
+4. Caches the response and emits it as `credential_process` JSON on stdout.
+
+A full browser-based re-login is only required when the refresh token expires (matches the OAuth client's refresh-token lifetime auth was configured with). `auth-aws-creds logout` clears the local cache.
+
+**Cache layout** under `${XDG_CONFIG_HOME:-~/.config}/auth-aws-creds/`:
+
+```
+config.json        ← issuer + client_id (non-secret, 0600)
+tokens.json        ← OAuth access + refresh tokens (0600)
+sts/<slug>.json    ← STS session credentials per role (0600)
+```
+
+**Programmatic endpoint**: the helper talks to `POST /aws/credentials` (bearer-auth, form body `role=<slug>`; `audience=<slug>` accepted as a deprecated alias). The response shape matches AWS CLI v2's `credential_process` JSON so a passthrough helper requires no marshalling.
 
 ## Outbound provisioning
 

@@ -202,7 +202,18 @@ services:
       AUTH_NATS_URL:            ${AUTH_NATS_URL:-nats://nats:4222}
       AUTH_ALLOW_REGISTRATION:  ${AUTH_ALLOW_REGISTRATION:-false}
       AUTH_WEBAUTHN_ORIGINS:    ${AUTH_WEBAUTHN_ORIGINS:-}
-      AUTH_AWS_IAM_ENABLED:     ${AUTH_AWS_IAM_ENABLED:-false}
+      # AWS OIDC federation (per-role tile + auth-aws-creds CLI). Set the
+      # audience to the value registered on each account's IAM OIDC
+      # provider. Empty disables the federation handler; setup runbook is
+      # in README's "AWS OIDC Federation" section.
+      AUTH_AWS_AUDIENCE:        ${AUTH_AWS_AUDIENCE:-}
+      # Standard AWS SDK credential env vars — consumed by the SDK's
+      # default credential chain inside the IAM provisioner and the
+      # federation revocation provisioner. Empty values let the chain
+      # fall through to a machine IAM role (EC2 instance profile, ECS
+      # task role, EKS IRSA, IAM Roles Anywhere), which is the
+      # recommended production path. The federation flow itself needs
+      # no AWS credentials.
       AWS_REGION:               ${AWS_REGION:-}
       AWS_ACCESS_KEY_ID:        ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY:    ${AWS_SECRET_ACCESS_KEY:-}

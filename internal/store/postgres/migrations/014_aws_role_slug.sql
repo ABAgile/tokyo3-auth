@@ -1,0 +1,19 @@
+-- Path B: collapse the per-role audience field into a single global
+-- audience configured via AUTH_AWS_AUDIENCE. The federation flow now
+-- emits one shared audience string regardless of which role is being
+-- assumed; per-role authorization moves to aws:RequestTag/<key>
+-- conditions in the role trust policies.
+--
+-- audience → slug. The existing per-role audience strings (e.g.
+-- "tokyo3-platform-prod") were already URL-safe identifiers; renaming
+-- them to slug preserves all existing rows without rewriting values.
+-- The unique constraint carries forward unchanged.
+--
+-- Operators upgrading from the per-role audience model must:
+--   1. set AUTH_AWS_AUDIENCE in the authd environment (typically one
+--      value per AWS account, e.g. "tokyo3-aws-prod")
+--   2. re-register that audience on each AWS account's OIDC provider
+--      (aws iam add-client-id-to-open-id-connect-provider)
+--   3. update each role's trust policy to gate on aws:RequestTag/<key>
+--      instead of (or in addition to) the per-role audience condition
+ALTER TABLE aws_roles RENAME COLUMN audience TO slug;

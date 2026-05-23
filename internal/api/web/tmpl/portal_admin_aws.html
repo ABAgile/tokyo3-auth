@@ -1,0 +1,184 @@
+{{template "base" .}}
+
+{{define "title"}}AWS Federation{{end}}
+{{define "pagetitle"}}AWS OIDC Federation{{end}}
+
+{{define "content"}}
+{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<p class="text-muted" style="max-width:760px">
+Configure AWS accounts, assumable roles, and SCIM-group → role assignments.
+Auth doesn't call AWS for any of this — register the OIDC provider in each
+account once (<code>aws iam create-open-id-connect-provider</code>) and
+record the ARN below.
+</p>
+
+{{if .Audience}}
+<div class="alert alert-info" style="max-width:760px">
+Federation audience (server-global, from <code>AUTH_AWS_AUDIENCE</code>): <code>{{.Audience}}</code>.
+Every minted JWT carries this <code>aud</code> claim; per-role authorisation
+moves to <code>aws:RequestTag/team</code> conditions in each role's trust policy.
+</div>
+{{else}}
+<div class="alert alert-error" style="max-width:760px">
+<strong>AWS federation is disabled.</strong> Set <code>AUTH_AWS_AUDIENCE</code>
+in the authd environment to enable the <code>/portal/aws</code> tile page
+and the <code>/aws/credentials</code> CLI endpoint. Without it, the catalogue
+below can still be edited but no role can be assumed.
+</div>
+{{end}}
+
+<div class="card mb-4">
+  <div class="card-header"><h2>Accounts</h2></div>
+  <div class="card-body">
+    <form method="POST" action="/portal/admin/aws/accounts/new" class="mb-3" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-group" style="margin:0;flex:0 0 160px">
+        <label for="account_id">Account ID</label>
+        <input type="text" id="account_id" name="account_id" placeholder="111111111111" required>
+      </div>
+      <div class="form-group" style="margin:0;flex:0 0 160px">
+        <label for="alias">Alias</label>
+        <input type="text" id="alias" name="alias" placeholder="prod">
+      </div>
+      <div class="form-group" style="margin:0;flex:1 1 320px">
+        <label for="oidc_provider_arn">OIDC Provider ARN</label>
+        <input type="text" id="oidc_provider_arn" name="oidc_provider_arn" placeholder="arn:aws:iam::111111111111:oidc-provider/id.example.com" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Add</button>
+    </form>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Account ID</th><th>Alias</th><th>OIDC Provider ARN</th><th></th></tr></thead>
+        <tbody>
+          {{range .Accounts}}
+          <tr>
+            <td>{{.AccountID}}</td>
+            <td>{{.Alias}}</td>
+            <td class="text-muted truncate">{{.OIDCProviderARN}}</td>
+            <td>
+              <form method="POST" action="/portal/admin/aws/accounts/{{.ID}}/delete"
+                    onsubmit="return confirm('Delete this account and every role + assignment under it?')">
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No AWS accounts registered yet.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header"><h2>Roles</h2></div>
+  <div class="card-body">
+    {{if .Accounts}}
+    <form method="POST" action="/portal/admin/aws/roles/new" class="mb-3" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-group" style="margin:0;flex:0 0 200px">
+        <label for="role_account_id">Account</label>
+        <select id="role_account_id" name="account_id" required>
+          {{range .Accounts}}<option value="{{.ID}}">{{.AccountID}}{{if .Alias}} ({{.Alias}}){{end}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;flex:1 1 320px">
+        <label for="role_arn">Role ARN</label>
+        <input type="text" id="role_arn" name="role_arn" placeholder="arn:aws:iam::111111111111:role/PlatformAdmin" required>
+      </div>
+      <div class="form-group" style="margin:0;flex:0 0 200px">
+        <label for="slug">Slug</label>
+        <input type="text" id="slug" name="slug" placeholder="platform-prod" pattern="[a-z0-9][a-z0-9_-]{0,62}" required>
+        <div class="text-muted" style="font-size:11px;margin-top:2px">URL/CLI-safe role id (lowercase alphanumeric, dash, underscore). Used in <code>auth-aws-creds --role &lt;slug&gt;</code>.</div>
+      </div>
+      <div class="form-group" style="margin:0;flex:0 0 200px">
+        <label for="display_name">Display name</label>
+        <input type="text" id="display_name" name="display_name" placeholder="Platform: prod" required>
+      </div>
+      <div class="form-group" style="margin:0;flex:0 0 140px">
+        <label for="max_session_duration_sec">Session TTL (s)</label>
+        <input type="number" id="max_session_duration_sec" name="max_session_duration_sec" value="3600" min="900" max="43200">
+      </div>
+      <div class="form-group" style="margin:0;flex:0 0 auto">
+        <div class="checkbox-row"><input type="checkbox" id="require_step_up_mfa" name="require_step_up_mfa" value="1"><label for="require_step_up_mfa" style="margin:0">Require step-up MFA</label></div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Add role</button>
+    </form>
+    {{else}}
+    <div class="text-muted" style="font-size:13px">Add an account before defining roles.</div>
+    {{end}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Display name</th><th>Account</th><th>Role ARN</th><th>Slug</th><th>TTL</th><th>MFA</th><th></th></tr></thead>
+        <tbody>
+          {{range .Roles}}
+          <tr>
+            <td>{{.DisplayName}}</td>
+            <td>{{.AccountAccountID}}{{if .AccountAlias}} ({{.AccountAlias}}){{end}}</td>
+            <td class="text-muted truncate">{{.RoleARN}}</td>
+            <td><code>{{.Slug}}</code></td>
+            <td>{{.MaxSessionDurationSec}}s</td>
+            <td>{{if .RequireStepUpMFA}}<span class="badge badge-blue">step-up</span>{{else}}<span class="text-muted">—</span>{{end}}</td>
+            <td>
+              <form method="POST" action="/portal/admin/aws/roles/{{.ID}}/delete"
+                    onsubmit="return confirm('Delete this role and its assignments?')">
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="7" class="text-muted" style="text-align:center;padding:20px">No roles defined yet.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Group → role assignments</h2></div>
+  <div class="card-body">
+    {{if and .Groups .Roles}}
+    <form method="POST" action="/portal/admin/aws/assignments/new" class="mb-3" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-group" style="margin:0;flex:0 0 240px">
+        <label for="assignment_group_id">SCIM group</label>
+        <select id="assignment_group_id" name="group_id" required>
+          {{range .Groups}}<option value="{{.ID}}">{{.DisplayName}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;flex:1 1 320px">
+        <label for="assignment_role_id">Role</label>
+        <select id="assignment_role_id" name="role_id" required>
+          {{range .Roles}}<option value="{{.ID}}">{{.DisplayName}} ({{.AccountAccountID}})</option>{{end}}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Add assignment</button>
+    </form>
+    {{else}}
+    <div class="text-muted" style="font-size:13px">Define at least one group and one role to create assignments.</div>
+    {{end}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Group</th><th>Role</th><th></th></tr></thead>
+        <tbody>
+          {{$groups := .Groups}}{{$roles := .Roles}}
+          {{range .Assignments}}
+          <tr>
+            <td>{{$gid := .GroupID}}{{range $groups}}{{if eq .ID $gid}}{{.DisplayName}}{{end}}{{end}}</td>
+            <td>{{$rid := .RoleID}}{{range $roles}}{{if eq .ID $rid}}{{.DisplayName}}{{end}}{{end}}</td>
+            <td>
+              <form method="POST" action="/portal/admin/aws/assignments/{{.ID}}/delete">
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="3" class="text-muted" style="text-align:center;padding:20px">No assignments yet.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{{end}}

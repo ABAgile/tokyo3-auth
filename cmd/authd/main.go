@@ -22,6 +22,20 @@
 //	                              after restarts. Each tick is idempotent on the
 //	                              downstream (PATCH-or-POST on users, full-list PUT
 //	                              on groups).
+//	AUTH_AWSFED_REAP_INTERVAL  Period for the AWS federation revocation reaper
+//	                           (defaults to 6h; 0 or negative disables it). Trims
+//	                           aws_revoked_users entries past the role's
+//	                           MaxSessionDuration and re-pushes the trimmed
+//	                           inline policy. No-op when no aws_federation
+//	                           integration is enabled.
+//	AUTH_AWS_AUDIENCE  The single `aud` claim value emitted on every JWT minted
+//	                   for AWS console / CLI federation. Registered once per
+//	                   AWS account as the IAM identity provider's audience.
+//	                   Empty disables AWS federation (the portal and the
+//	                   /aws/credentials endpoint return 503). Trust policies
+//	                   gate per-role assumption via aws:RequestTag/<key>
+//	                   conditions instead of per-role audiences. See the
+//	                   AWS OIDC Federation section in README for setup.
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
@@ -98,6 +112,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
+	"github.com/abagile/tokyo3-auth/internal/provision/awsfed"
 	"github.com/abagile/tokyo3-auth/internal/provision/iam"
 	scimprov "github.com/abagile/tokyo3-auth/internal/provision/scim"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
@@ -230,6 +245,7 @@ func runServe() error {
 		Audit:             auditSink,
 		AuditSource:       auditSource,
 		Issuer:            issuer,
+		AWSAudience:       os.Getenv("AUTH_AWS_AUDIENCE"),
 		MasterKey:         masterKey,
 		Log:               log,
 		AllowRegistration: strings.EqualFold(os.Getenv("AUTH_ALLOW_REGISTRATION"), "true"),
@@ -259,6 +275,9 @@ func runServe() error {
 
 	if interval := provisionSyncInterval(log); interval > 0 {
 		go runPeriodicProvisionSync(ctx, db, provReg, interval, log)
+	}
+	if interval := awsFedReapInterval(log); interval > 0 {
+		go runAWSFedReaper(ctx, provReg, interval, log)
 	}
 
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
@@ -480,6 +499,58 @@ func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisio
 	return provision.SyncAll(ctx, db, prov, log)
 }
 
+// awsFedReapInterval returns the parsed AUTH_AWSFED_REAP_INTERVAL or the
+// default of 6 hours. A zero/negative value disables the reaper. The reaper
+// trims aws_revoked_users entries past the role's MaxSessionDurationSec —
+// 6h is conservative for a typical 1h role lifetime and bounds the inline
+// policy growth without thrashing AWS.
+func awsFedReapInterval(log *slog.Logger) time.Duration {
+	v := strings.TrimSpace(os.Getenv("AUTH_AWSFED_REAP_INTERVAL"))
+	if v == "" {
+		return 6 * time.Hour
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Warn("AUTH_AWSFED_REAP_INTERVAL is not a valid duration; reaper disabled",
+			"value", v, "err", err)
+		return 0
+	}
+	return d
+}
+
+// runAWSFedReaper periodically prunes expired entries from each federation
+// role's AuthRevokedUsers inline policy. Reuses the live provisioner from
+// the registry (whichever `aws_federation` integration is enabled) — if no
+// such integration is enabled, the reaper exits silently each tick. Walks
+// only one provisioner; multiple aws_federation rows are unusual but
+// supported (each manages its own roles via the shared aws_roles table).
+func runAWSFedReaper(ctx context.Context, reg *provision.Registry, interval time.Duration, log *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Info("aws federation revocation reaper enabled", "interval", interval)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("aws federation revocation reaper stopped")
+			return
+		case <-ticker.C:
+			now := time.Now().UTC()
+			for _, prov := range reg.Snapshot() {
+				if ctx.Err() != nil {
+					return
+				}
+				fed, ok := prov.(*awsfed.Provisioner)
+				if !ok {
+					continue
+				}
+				if err := fed.ReapExpired(ctx, now); err != nil {
+					log.Error("aws federation reap", "target", fed.Name(), "err", err)
+				}
+			}
+		}
+	}
+}
+
 // buildProvSet constructs a provision.Set from every enabled integration row.
 // Decryption errors are logged and the offending row is skipped so a single
 // corrupt config cannot wedge the whole fan-out.
@@ -540,6 +611,13 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 		return scimprov.New(cfg), nil
 	case model.AppIntegrationProviderIAM:
 		return iam.New(ctx, i.Name, i.Config.GroupMap, log)
+	case model.AppIntegrationProviderAWSFederation:
+		// Federation provisioner only does session-revocation on
+		// OpDeactivate/OpDelete. Role catalog itself lives in the
+		// aws_* tables; this integration row exists primarily as a
+		// toggle so admins can disable the revocation push without
+		// dropping the catalog.
+		return awsfed.New(ctx, i.Name, db, log)
 	default:
 		return nil, fmt.Errorf("unknown provider %q", i.Provider)
 	}

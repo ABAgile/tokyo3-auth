@@ -22,6 +22,7 @@ type Store interface {
 	SigningKeyStore
 	ExternalIDStore
 	IntegrationStore
+	AWSFederationStore
 }
 
 type UserStore interface {
@@ -140,4 +141,37 @@ type IntegrationStore interface {
 	ListEnabledIntegrations(ctx context.Context) ([]*model.AppIntegration, error)
 	UpdateIntegration(ctx context.Context, i *model.AppIntegration) error
 	DeleteIntegration(ctx context.Context, id uuid.UUID) error
+}
+
+// AWSFederationStore manages the AWS OIDC federation catalog: accounts, roles,
+// SCIM-group→role assignments, and the revocation bookkeeping table that
+// pairs with the awsfed provisioner. None of these rows carry secrets — the
+// federation flow itself is credential-less at auth's side.
+type AWSFederationStore interface {
+	CreateAWSAccount(ctx context.Context, a *model.AWSAccount) error
+	GetAWSAccount(ctx context.Context, id uuid.UUID) (*model.AWSAccount, error)
+	ListAWSAccounts(ctx context.Context) ([]*model.AWSAccount, error)
+	UpdateAWSAccount(ctx context.Context, a *model.AWSAccount) error
+	DeleteAWSAccount(ctx context.Context, id uuid.UUID) error
+
+	CreateAWSRole(ctx context.Context, r *model.AWSRole) error
+	GetAWSRole(ctx context.Context, id uuid.UUID) (*model.AWSRole, error)
+	ListAWSRoles(ctx context.Context) ([]*model.AWSRole, error)
+	UpdateAWSRole(ctx context.Context, r *model.AWSRole) error
+	DeleteAWSRole(ctx context.Context, id uuid.UUID) error
+
+	CreateAWSRoleAssignment(ctx context.Context, a *model.AWSRoleAssignment) error
+	ListAWSRoleAssignments(ctx context.Context) ([]*model.AWSRoleAssignment, error)
+	// ListAWSRolesForUser returns the distinct AWSRoles assignable to userID,
+	// derived from their SCIM group memberships. Used by the portal tile page.
+	ListAWSRolesForUser(ctx context.Context, userID uuid.UUID) ([]*model.AWSRole, error)
+	DeleteAWSRoleAssignment(ctx context.Context, id uuid.UUID) error
+
+	AddAWSRevokedUser(ctx context.Context, roleID uuid.UUID, subUUID string) error
+	ListAWSRevokedUsers(ctx context.Context, roleID uuid.UUID) ([]*model.AWSRevokedUser, error)
+	// ListAWSRevokedUsersOlderThan returns rows whose revoked_at is before
+	// cutoff. The reaper passes (now - role.MaxSessionDurationSec) — by then
+	// every session protected by the Deny statement has expired naturally.
+	ListAWSRevokedUsersOlderThan(ctx context.Context, cutoff time.Time) ([]*model.AWSRevokedUser, error)
+	DeleteAWSRevokedUser(ctx context.Context, roleID uuid.UUID, subUUID string) error
 }

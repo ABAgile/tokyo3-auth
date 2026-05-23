@@ -124,8 +124,9 @@ type SigningKey struct {
 // AppIntegration.Provider. Keep in sync with the provisioner builders in
 // cmd/authd/main.go.
 const (
-	AppIntegrationProviderSCIM = "scim"
-	AppIntegrationProviderIAM  = "aws_iam"
+	AppIntegrationProviderSCIM          = "scim"
+	AppIntegrationProviderIAM           = "aws_iam"
+	AppIntegrationProviderAWSFederation = "aws_federation"
 )
 
 // AppIntegrationAuthMode enumerates the mutually-exclusive ways auth proves
@@ -164,4 +165,64 @@ type AppIntegration struct {
 	EncryptedDEK   []byte
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+// AWSAccount is one AWS account that auth federates into. account_id is the
+// numeric account ID, alias is the human label, and oidc_provider_arn is what
+// auth needs to identify which OIDC provider object to reference in role trust
+// policies (matches the principal: arn:aws:iam::<account>:oidc-provider/...
+// shape — auth doesn't call AWS to read this, the operator records it once at
+// setup time so the federation handler can emit the right session-tag
+// confirmation in the audit row).
+type AWSAccount struct {
+	ID              uuid.UUID
+	AccountID       string
+	Alias           string
+	OIDCProviderARN string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// AWSRole is one assumable IAM role. Slug is a URL/CLI-safe stable
+// identifier the user supplies in `auth-aws-creds get --role <slug>` and
+// `/aws/credentials?role=<slug>`. Audience is server-global (configured
+// via AUTH_AWS_AUDIENCE), not per-role — every minted JWT carries the
+// same `aud` claim, and per-role authorization happens via
+// aws:RequestTag/<key> conditions in trust policies.
+//
+// RequireStepUpMFA forces a fresh MFA prompt before token mint regardless
+// of session age. MaxSessionDurationSec is passed as DurationSeconds on
+// AssumeRoleWithWebIdentity and capped by the role's AWS-side
+// MaxSessionDuration.
+type AWSRole struct {
+	ID                    uuid.UUID
+	AccountID             uuid.UUID
+	RoleARN               string
+	Slug                  string
+	DisplayName           string
+	RequireStepUpMFA      bool
+	MaxSessionDurationSec int
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+// AWSRoleAssignment links a SCIM group to an AWS role. Membership in the
+// group grants the user the right to assume the role via the portal. The
+// pair (group_id, role_id) is unique.
+type AWSRoleAssignment struct {
+	ID        uuid.UUID
+	GroupID   uuid.UUID
+	RoleID    uuid.UUID
+	CreatedAt time.Time
+}
+
+// AWSRevokedUser is one (role, user-uuid) entry that the revocation
+// provisioner has added to the role's AuthRevokedUsers inline policy.
+// RevokedAt is when the entry was added; the reaper trims rows older than
+// the role's MaxSessionDurationSec — by then every session denied by the
+// statement has expired naturally.
+type AWSRevokedUser struct {
+	RoleID    uuid.UUID
+	SubUUID   string
+	RevokedAt time.Time
 }

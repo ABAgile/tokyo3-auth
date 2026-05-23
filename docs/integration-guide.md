@@ -210,6 +210,173 @@ No `Provisioner` impl needed. The trade-off: no proactive deactivation — when 
 
 ---
 
+## Part 3 — AWS console federation (OIDC + ABAC, no IAM users)
+
+This is the recommended path for human access to AWS. Users log into auth, click a role tile, and land in the AWS Console with short-lived STS credentials. No IAM users are created; no long-lived AWS keys exist anywhere. Auth itself needs **no AWS credentials** for the federation flow — AWS verifies the signed id_token against auth's public JWKS, and the STS call is an unauthenticated POST whose body carries the JWT.
+
+The runbook for OIDC provider registration, role catalog setup, and the optional revocation provisioner lives in the [README's "AWS OIDC Federation" section](../README.md#aws-oidc-federation-console-sso-without-iam-users). What follows below is the layer that gets the most operational mileage: **what session tags auth injects, and what authorization patterns those tags unlock on the AWS side.**
+
+### Session tags auth injects
+
+Every JWT minted by auth's federation handler carries a `https://aws.amazon.com/tags` claim (a special claim name AWS recognises) containing:
+
+```json
+{
+  "principal_tags": {
+    "sub":   ["<auth user UUID>"],
+    "email": ["alice@example.com"],
+    "team":  ["<first SCIM group display name>"]
+  },
+  "transitive_tag_keys": ["email", "sub", "team"]
+}
+```
+
+`sub` is always emitted. `email` is emitted when the user has one. `team` is emitted from the user's first SCIM group (alphabetical order; rest of the groups go into the informational `groups` claim but are not session-tagged). All three are marked **transitive**, meaning they persist through any subsequent `sts:AssumeRole` chain calls.
+
+AWS reads this claim during `AssumeRoleWithWebIdentity` and surfaces each tag at two stages:
+
+- **At trust-policy evaluation time** (before the session exists) the tag values are available as `aws:RequestTag/<key>`. Role trust policies condition on `aws:RequestTag/team` to decide who can assume each role — this is the per-role discriminator now that audience is a single shared value (sourced from `AUTH_AWS_AUDIENCE`).
+- **For every subsequent API call** under the resulting STS session the same values surface as `aws:PrincipalTag/<key>`. Resource policies, permission policies, SCPs, and the awsfed revocation Deny all key on this form.
+
+**Prerequisite**: each federation role's trust policy must include `sts:TagSession` in the Action list:
+
+```json
+"Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"]
+```
+
+Omit this and AWS refuses the AssumeRole call when the JWT carries tags.
+
+### ABAC pattern catalogue
+
+Patterns operators apply on the AWS side, **owned and edited by AWS account operators** (typically via Terraform). Auth does not write these — auth's role is to deliver the session tags accurately. Once delivered, they're load-bearing primitives for every authz decision below.
+
+#### Pattern 1 — Per-user S3 prefix isolation
+
+The most common ask: each workforce member gets their own scratch prefix in a shared bucket.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "PerUserPrefix",
+    "Effect": "Allow",
+    "Principal": { "AWS": "arn:aws:iam::ACCOUNT:role/PlatformReadOnly" },
+    "Action": ["s3:GetObject", "s3:PutObject"],
+    "Resource": "arn:aws:s3:::shared-bucket/${aws:PrincipalTag/sub}/*"
+  }]
+}
+```
+
+`${aws:PrincipalTag/sub}` substitutes Alice's UUID for Alice, Bob's UUID for Bob. One statement, per-user isolation, scales to any number of users without policy edits. Without session tags this required either one IAM user per human (legacy) or one Allow statement per user (doesn't scale).
+
+#### Pattern 2 — Team-scoped KMS access
+
+Grant a team blanket Decrypt access to a key without naming individuals:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::ACCOUNT:role/DataAnalyst" },
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": { "aws:PrincipalTag/team": "data" }
+  }
+}
+```
+
+The role itself can be shared across teams; the KMS key policy filters which team sessions are accepted. Membership rotation is auth-side (move someone in/out of the `data` SCIM group); AWS-side policies don't change.
+
+#### Pattern 3 — Object-tag matching for object ownership
+
+Each S3 object's `owner` tag must equal the requester's `sub` tag. Lets you grant per-object access without per-user policies:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::user-uploads/*",
+  "Condition": {
+    "StringEquals": { "s3:ExistingObjectTag/owner": "${aws:PrincipalTag/sub}" }
+  }
+}
+```
+
+Combine with a separate write policy that requires `s3:RequestObjectTag/owner = ${aws:PrincipalTag/sub}` so users can only tag objects with their own UUID at upload time. Result: every object is owned by whoever uploaded it, readable only by its owner, without per-user policy management.
+
+#### Pattern 4 — Self-revocation via the awsfed provisioner
+
+The `internal/provision/awsfed` package adds deactivated users to each federation role's `AuthRevokedUsers` inline policy:
+
+```json
+{
+  "Sid": "AuthRevokedUsers",
+  "Effect": "Deny",
+  "Action": ["*"],
+  "Resource": ["*"],
+  "Condition": {
+    "StringEquals": {
+      "aws:PrincipalTag/sub": ["alice-uuid", "bob-uuid"]
+    }
+  }
+}
+```
+
+Sessions whose `sub` tag matches any UUID in the list get `AccessDenied` on every API call (~30s policy propagation). Auth manages the list automatically on `OpDeactivate`. A reaper trims entries past the role's `MaxSessionDuration` since by then the protected sessions have already expired. This is the **session revocation** primitive that closes the deactivation latency gap that pure expiry alone leaves open.
+
+#### Pattern 5 — Cross-account boundary enforcement
+
+If a role is shared across accounts and you want to ensure session tags weren't forged in a chained AssumeRole, require the originating IdP:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "s3:GetObject",
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {
+      "aws:FederatedProvider": "arn:aws:iam::ACCOUNT:oidc-provider/id.example.com"
+    }
+  }
+}
+```
+
+`aws:FederatedProvider` is set by STS during web-identity federation and survives role chaining. Combining it with `aws:PrincipalTag/*` guarantees the tags came from auth, not from a downstream role that an attacker manipulated.
+
+### Designing the role catalogue
+
+Two architectural decisions land in this area; both are worth being deliberate about:
+
+**Role granularity.** Build per-persona roles (`PlatformAdmin`, `BackendDev`, `DataAnalyst`) and lean on ABAC for per-user scoping inside them. Per-user roles (one per human) don't scale past a couple hundred users. Each role gets a unique trust-policy condition on `aws:RequestTag/team` (or another tag key) — that condition is what distinguishes "who can assume this role" rather than a per-role audience.
+
+**Audience model.** The federation handler emits a single audience value on every JWT, sourced from the `AUTH_AWS_AUDIENCE` env var (typically one value per AWS account — `tokyo3-aws-prod`, `tokyo3-aws-staging`, `tokyo3-aws-dev`). This value is registered once on each account's IAM OIDC provider and shared across every role in that account. Per-role gating moves entirely into `aws:RequestTag/<key>` conditions in trust policies — no role-specific audience values to keep in sync. Audience values are not secrets; they appear in CloudTrail under `webIdFederationData.attributes.aud`.
+
+**Role slug.** The `slug` field on each role (`platform-prod`, `backend-dev`) is the URL/CLI-safe identifier users supply in their `~/.aws/config` (`credential_process = auth-aws-creds get --role <slug>`) and the `role` form field on `POST /aws/credentials`. Auth validates slugs against `[a-z0-9][a-z0-9_-]{0,62}` at admin form time. The display name (`Platform: prod`) is the human-friendly label rendered on the user tile page.
+
+### Audit trail
+
+Every federation event lands in auth's JetStream audit stream:
+
+- `aws.console.assumed` on success, with `role_arn`, `role_slug`, `audience` (server-global from `AUTH_AWS_AUDIENCE`), `role_session_name`, `step_up`, `mfa_authenticated` in metadata
+- `aws.console.assume.failed` with `reason` (`not_assigned`, `step_up_required`, `sts_error`, `signin_token_error`)
+- `aws.federation.revoked` when the provisioner adds a user to a role's revocation list
+- `aws.federation.revoke.reaped` when the reaper prunes expired entries
+
+AWS-side, every API call carries the federated identity through CloudTrail's `userIdentity`:
+- `webIdFederationData.federatedProvider` = your issuer URL
+- `webIdFederationData.attributes.sub` = auth user UUID
+- `principalId` includes `RoleSessionName` = `<email-local>-<uuid-prefix>-<unix>`
+
+Join auth's audit on `user_id` with CloudTrail on `sub` for the complete story (auth side tells you "who triggered the role assumption"; CloudTrail tells you "what AWS actions ran under that session").
+
+### What's deliberately not in this design
+
+- **No IAM users created for workforce members.** Federation is identity-less in AWS — sessions are minted on demand, no per-user IAM rows. The `iam` provisioner (`internal/provision/iam`) is for environments that need stable IAM user ARNs (CodeCommit Git creds, SES SMTP creds, legacy resource policies hardcoding user ARNs). Most environments don't.
+- **No Identity Center.** Direct OIDC federation against auth is the architecturally simpler answer for ≤5 AWS accounts. Identity Center pays off at higher account counts and unlocks Trusted Identity Propagation for analytics services (QuickSight rows, S3 Access Grants, Redshift query authorization) — but requires SAML support in the IdP, which auth doesn't have today.
+- **CLI credential helper lives at `cmd/auth-aws-creds/`** in this same repo (not a separate project). Install with `go install github.com/abagile/tokyo3-auth/cmd/auth-aws-creds@latest`; users wire it via `credential_process` in `~/.aws/config`. The helper depends only on the standard library and `internal/awsclaims` — no DB or AWS SDK in its import graph, so installing it doesn't drag in server dependencies.
+
+---
+
 ## Decision flowchart
 
 ```
@@ -246,7 +413,13 @@ Adding a new app
 - `auth/internal/provision/registry.go` — hot-reloading wrapper around `Set` (rebuilt on integration save)
 - `auth/internal/provision/scim/client.go` — generic SCIM 2.0 outbound client (bearer + mTLS)
 - `auth/internal/provision/iam/iam.go` — AWS IAM provisioner (reference impl for non-SCIM targets)
+- `auth/internal/provision/awsfed/awsfed.go` — AWS OIDC federation revocation provisioner (session-tag Deny + reaper)
+- `auth/internal/api/web_portal_aws.go` — user-facing federation handler (`/portal/aws`, `/portal/aws/console`, `/portal/aws/refresh`)
+- `auth/internal/api/web_portal_aws_admin.go` — admin UI for the federation catalogue (accounts, roles, group→role assignments)
+- `auth/internal/api/aws_credentials.go` — programmatic `/aws/credentials` endpoint consumed by `auth-aws-creds`
+- `auth/internal/awsclaims/claims.go` — shared JWT claim constants (`PrincipalTagsClaim`, `PrincipalTagsValue`)
+- `auth/internal/jwt/signer.go` — `MintFederationToken`, session-tag claim shaping
+- `auth/cmd/auth-aws-creds/main.go` — CLI credential helper for boto3 `credential_process`
 - `auth/internal/api/admin.go`, `web_sso.go`, `web_portal.go`, `web_portal_groups.go` — native-path fan-out call sites
-- `auth/cmd/authd/main.go` — `buildProvisioner` (auth-mode dispatch), `outboundTLSFromEnv`, `admin sync` subcommand
-- `auth/cmd/authd/main.go` — provisioner construction + `admin sync` subcommand
+- `auth/cmd/authd/main.go` — `buildProvisioner` (auth-mode dispatch), `outboundTLSFromEnv`, `awsFedReapInterval`, `admin sync` subcommand
 - `vault/docs/oidc-sso-design.md` — vault-side protocol details, SCIM filter subset, "tokyo3-auth as IdP" appendix

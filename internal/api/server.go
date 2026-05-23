@@ -29,6 +29,14 @@ type Server struct {
 	audit       audit.Sink          // JetStream publisher; NoopSink when AUTH_NATS_URL is unset
 	auditSrc    journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTH_NATS_URL is unset
 	issuer      string
+	// awsAudience is the single value emitted as the `aud` claim on every
+	// federation JWT minted for AWS console / CLI assumption. Sourced from
+	// the AUTH_AWS_AUDIENCE env var at startup; empty disables federation
+	// (handlers fail with a clear server-misconfigured message). One audience
+	// per IdP (typically also per AWS account for cross-account replay
+	// safety); per-role authorisation moves to aws:RequestTag/<key>
+	// conditions in the role trust policies.
+	awsAudience string
 	masterKey   []byte
 	log         *slog.Logger
 	ssoTmpl     *tmplManager
@@ -48,6 +56,7 @@ type Config struct {
 	Audit             audit.Sink
 	AuditSource       journal.Source
 	Issuer            string
+	AWSAudience       string
 	MasterKey         []byte
 	Log               *slog.Logger
 	AllowRegistration bool
@@ -82,6 +91,7 @@ func New(cfg Config) (*Server, error) {
 		audit:       auditSink,
 		auditSrc:    auditSrc,
 		issuer:      cfg.Issuer,
+		awsAudience: cfg.AWSAudience,
 		masterKey:   cfg.MasterKey,
 		log:         cfg.Log,
 		ssoTmpl:     ssoTmpl,
@@ -120,6 +130,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /token", s.handleToken)
 	mux.HandleFunc("GET /userinfo", s.bearerAuth(s.handleUserInfo))
 	mux.HandleFunc("POST /revoke", s.handleRevoke)
+
+	// AWS OIDC federation — programmatic credentials issuance for the
+	// auth-aws-creds CLI helper (boto3 credential_process).
+	mux.HandleFunc("POST /aws/credentials", s.bearerAuth(s.handleAWSCredentials))
 
 	// Self-registration (optional)
 	mux.HandleFunc("GET /register", s.handleRegisterGET)
@@ -179,6 +193,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/register", s.handlePortalRegisterGET)
 	mux.HandleFunc("POST /portal/register", s.handlePortalRegisterPOST)
 
+	// Portal — AWS OIDC federation (requires portal session)
+	mux.HandleFunc("GET /portal/aws", s.portalAuth(s.handlePortalAWS))
+	mux.HandleFunc("POST /portal/aws/console", s.portalAuth(s.handlePortalAWSConsole))
+	mux.HandleFunc("GET /portal/aws/refresh", s.portalAuth(s.handlePortalAWSRefresh))
+
 	// Portal — account (requires portal session)
 	mux.HandleFunc("GET /portal", s.portalAuth(s.handlePortalHome))
 	mux.HandleFunc("GET /portal/account", s.portalAuth(s.handlePortalAccount))
@@ -215,6 +234,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/delete", s.portalAdminAuth(s.handlePortalAdminIntegrationDelete))
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/test", s.portalAdminAuth(s.handlePortalAdminIntegrationTest))
 	mux.HandleFunc("POST /portal/admin/integrations/{id}/sync", s.portalAdminAuth(s.handlePortalAdminIntegrationSync))
+	mux.HandleFunc("GET /portal/admin/aws", s.portalAdminAuth(s.handlePortalAdminAWS))
+	mux.HandleFunc("POST /portal/admin/aws/accounts/new", s.portalAdminAuth(s.handlePortalAdminAWSAccountNew))
+	mux.HandleFunc("POST /portal/admin/aws/accounts/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSAccountDelete))
+	mux.HandleFunc("POST /portal/admin/aws/roles/new", s.portalAdminAuth(s.handlePortalAdminAWSRoleNew))
+	mux.HandleFunc("POST /portal/admin/aws/roles/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSRoleDelete))
+	mux.HandleFunc("POST /portal/admin/aws/assignments/new", s.portalAdminAuth(s.handlePortalAdminAWSAssignmentNew))
+	mux.HandleFunc("POST /portal/admin/aws/assignments/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSAssignmentDelete))
 	mux.HandleFunc("GET /portal/admin/groups", s.portalAdminAuth(s.handlePortalAdminGroups))
 	mux.HandleFunc("GET /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))
 	mux.HandleFunc("POST /portal/admin/groups/new", s.portalAdminAuth(s.handlePortalAdminGroupNew))

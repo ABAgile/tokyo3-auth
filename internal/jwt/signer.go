@@ -9,8 +9,10 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/abagile/tokyo3-auth/internal/awsclaims"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
@@ -110,6 +112,89 @@ func generateAndStore(ctx context.Context, st store.SigningKeyStore, kp bcrypto.
 		return nil, fmt.Errorf("store signing key: %w", err)
 	}
 	return &Signer{privateKey: priv, kid: kid, issuer: issuer}, nil
+}
+
+// FederationClaims is the JWT payload shape minted by MintFederationToken
+// and exchanged for STS credentials via sts:AssumeRoleWithWebIdentity. The
+// ordinary OIDC claims (email, name, groups, …) are informational only —
+// AWS only expands a fixed set (iss, sub, aud, amr) as `<iss>:<claim>`
+// trust-policy condition keys. The mechanism that actually makes user
+// attributes available throughout the session is the AWSTags claim, which
+// STS reads out and exposes as `aws:PrincipalTag/<key>` in every policy
+// evaluated for the session. The claim name and inner type are defined in
+// internal/awsclaims so the CLI helper can validate token shape without
+// pulling in this package's full dependency graph.
+type FederationClaims struct {
+	gojwt.RegisteredClaims
+	Email             string                        `json:"email,omitempty"`
+	Name              string                        `json:"name,omitempty"`
+	PreferredUsername string                        `json:"preferred_username,omitempty"`
+	Groups            []string                      `json:"groups,omitempty"`
+	AMR               []string                      `json:"amr,omitempty"`
+	AuthTime          int64                         `json:"auth_time,omitempty"`
+	AWSTags           *awsclaims.PrincipalTagsValue `json:"https://aws.amazon.com/tags,omitempty"`
+}
+
+// MintFederationToken creates a signed RS256 JWT shaped for AWS STS
+// `sts:AssumeRoleWithWebIdentity`. The `aud` value is set per role from the
+// caller-supplied audience (matching the role trust policy's audience
+// condition). Subject is the user UUID — AWS surfaces this as the `sub`
+// claim that ends up in CloudTrail webIdFederationData.attributes.sub.
+//
+// principalTags is the **only** path by which user attributes (sub, email,
+// team, etc.) reach AWS's policy-evaluation context as
+// `aws:PrincipalTag/<key>`. Resource policies, permission policies, the
+// awsfed revocation Deny, ABAC patterns — all consume these tags. The
+// claim format is fixed by AWS; we shape it correctly here. Required
+// prerequisite: the target role's trust policy must include
+// `sts:TagSession` in Action, otherwise AWS rejects the AssumeRole when
+// tags are present.
+//
+// The token lifetime is bounded by `lifetime`, but should be short (≤15min
+// is standard) since it's exchanged for STS credentials almost immediately.
+// AWS only needs to verify the signature once, at exchange time.
+func (s *Signer) MintFederationToken(userID, audience, email, name string, groups []string, amr []string, authTime time.Time, lifetime time.Duration, principalTags map[string]string) (string, error) {
+	now := time.Now().UTC()
+	if lifetime <= 0 {
+		lifetime = 15 * time.Minute
+	}
+	claims := FederationClaims{
+		RegisteredClaims: gojwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Subject:   userID,
+			Audience:  gojwt.ClaimStrings{audience},
+			ExpiresAt: gojwt.NewNumericDate(now.Add(lifetime)),
+			IssuedAt:  gojwt.NewNumericDate(now),
+			NotBefore: gojwt.NewNumericDate(now),
+			ID:        uuid.NewString(),
+		},
+		Email:             email,
+		Name:              name,
+		PreferredUsername: email,
+		Groups:            groups,
+		AMR:               amr,
+		AuthTime:          authTime.Unix(),
+	}
+	if len(principalTags) > 0 {
+		// Deterministic key order keeps the JWT byte-stable for any given
+		// input — important for cache hashing and test diff readability.
+		keys := make([]string, 0, len(principalTags))
+		for k := range principalTags {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		pt := make(map[string][]string, len(principalTags))
+		for _, k := range keys {
+			pt[k] = []string{principalTags[k]}
+		}
+		claims.AWSTags = &awsclaims.PrincipalTagsValue{
+			PrincipalTags:     pt,
+			TransitiveTagKeys: keys,
+		}
+	}
+	token := gojwt.NewWithClaims(gojwt.SigningMethodRS256, claims)
+	token.Header["kid"] = s.kid
+	return token.SignedString(s.privateKey)
 }
 
 // MintIDToken creates a signed RS256 JWT ID token. sid (empty string accepted)

@@ -47,6 +47,22 @@ const (
 	ActionIntegrationDeleted  = "admin.integration.deleted"
 	ActionIntegrationTested   = "admin.integration.tested"
 	ActionIntegrationSynced   = "admin.integration.synced"
+	// AWS OIDC federation events — separate from admin.integration.* because
+	// these touch the federation catalog (accounts/roles/assignments) and
+	// the federation runtime (token exchange + role-side revocation), not
+	// the generic app_integrations row.
+	ActionAWSAccountCreated         = "admin.aws.account.created"
+	ActionAWSAccountUpdated         = "admin.aws.account.updated"
+	ActionAWSAccountDeleted         = "admin.aws.account.deleted"
+	ActionAWSRoleCreated            = "admin.aws.role.created"
+	ActionAWSRoleUpdated            = "admin.aws.role.updated"
+	ActionAWSRoleDeleted            = "admin.aws.role.deleted"
+	ActionAWSAssignmentCreated      = "admin.aws.assignment.created"
+	ActionAWSAssignmentDeleted      = "admin.aws.assignment.deleted"
+	ActionAWSConsoleAssumed         = "aws.console.assumed"
+	ActionAWSConsoleAssumeFailed    = "aws.console.assume.failed"
+	ActionAWSFederationRevoked      = "aws.federation.revoked"
+	ActionAWSFederationRevokeReaped = "aws.federation.revoke.reaped"
 )
 
 // logAudit publishes one audit event to the JetStream journal and returns

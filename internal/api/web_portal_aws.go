@@ -1,0 +1,425 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+
+	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/google/uuid"
+)
+
+// errFederationUnconfigured is returned by assumeRoleForUser when
+// AUTH_AWS_AUDIENCE is empty. Surfaces as a 503 in the API handler and as
+// a portal error banner in the browser handler — both more useful than
+// letting AWS reject the JWT with an opaque "InvalidIdentityToken: Token
+// has no audience" message.
+var errFederationUnconfigured = errors.New("AUTH_AWS_AUDIENCE is not set; aws federation is disabled")
+
+// AWS console federation endpoints. Both are well-known and stable. We
+// post unauthenticated requests against them — the user's id_token is the
+// authentication for STS, and the resulting STS session is the
+// authentication for getSigninToken.
+const (
+	awsSTSEndpoint     = "https://sts.amazonaws.com"
+	awsSigninFedURL    = "https://signin.aws.amazon.com/federation"
+	awsConsoleHomeURL  = "https://console.aws.amazon.com/"
+	federationTokenTTL = 15 * time.Minute
+)
+
+// stsAPI is the subset of *sts.Client this handler uses. Defined as an
+// interface so tests can supply a mock and verify the federation flow
+// without touching real AWS.
+type stsAPI interface {
+	AssumeRoleWithWebIdentity(ctx context.Context, in *sts.AssumeRoleWithWebIdentityInput, opts ...func(*sts.Options)) (*sts.AssumeRoleWithWebIdentityOutput, error)
+}
+
+// awsFedRoleView is one tile on /portal/aws.
+type awsFedRoleView struct {
+	*model.AWSRole
+	AccountID    string
+	AccountAlias string
+}
+
+type awsRolesPageData struct {
+	portalBase
+	Roles []awsFedRoleView
+	Error string
+}
+
+// handlePortalAWS shows the user the federation roles they can assume.
+// Resolved by joining the user's SCIM group memberships against
+// aws_role_assignments. Users with no matching assignments see an empty
+// state explaining what to ask their admin for.
+func (s *Server) handlePortalAWS(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	roles, err := s.store.ListAWSRolesForUser(r.Context(), pc.User.ID)
+	if err != nil {
+		http.Error(w, "list aws roles: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	accounts, _ := s.store.ListAWSAccounts(r.Context())
+	acctByID := make(map[uuid.UUID]*model.AWSAccount, len(accounts))
+	for _, a := range accounts {
+		acctByID[a.ID] = a
+	}
+	views := make([]awsFedRoleView, len(roles))
+	for i, role := range roles {
+		v := awsFedRoleView{AWSRole: role}
+		if a := acctByID[role.AccountID]; a != nil {
+			v.AccountID = a.AccountID
+			v.AccountAlias = a.Alias
+		}
+		views[i] = v
+	}
+	s.portalTmpl.render(w, "portal_aws.html", awsRolesPageData{
+		portalBase: newPortalBase(pc, "aws"),
+		Roles:      views,
+		Error:      r.URL.Query().Get("error"),
+	})
+}
+
+// handlePortalAWSConsole assumes the requested role on the user's behalf,
+// exchanges the resulting STS credentials for an AWS console SigninToken,
+// and 302-redirects the browser into the console with that token.
+//
+// Auth never holds AWS credentials for this path — the federation flow
+// is one-way: AWS verifies the id_token's RS256 signature via auth's
+// public JWKS, the SDK call to STS is sent with aws.AnonymousCredentials
+// (the JWT is the auth), and the federation endpoint authenticates via
+// the STS session credentials returned by step 1.
+func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	_ = r.ParseForm()
+	roleIDStr := r.FormValue("role_id")
+	if roleIDStr == "" {
+		roleIDStr = r.URL.Query().Get("role_id")
+	}
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("invalid role_id"), http.StatusFound)
+		return
+	}
+
+	role, allowed, err := s.resolveAuthorizedAWSRole(r.Context(), pc.User.ID, roleID)
+	if err != nil {
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("lookup failed"), http.StatusFound)
+		return
+	}
+	if !allowed {
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta("role_id", roleID.String(), "reason", "not_assigned"))
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Step-up MFA: roles flagged sensitive require the current session to
+	// carry an MFA assertion. Sessions minted at /portal/login that didn't
+	// see an MFA prompt have MFAVerified=false. We don't re-prompt within
+	// this flow today — a real "always re-MFA" hook is item O3 in the
+	// roadmap; for now we surface a clear refusal so the operator can
+	// flip the user's MFA on or relax the requirement.
+	if role.RequireStepUpMFA && !pc.Session.MFAVerified {
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta(
+				"role_id", roleID.String(),
+				"reason", "step_up_required",
+				"mfa_authenticated", false,
+			))
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("This role requires MFA. Enroll TOTP or a security key on your account, then sign in again."), http.StatusFound)
+		return
+	}
+
+	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role)
+	if err != nil {
+		s.log.Error("AssumeRoleWithWebIdentity", "role", role.RoleARN, "err", err)
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta("role_id", roleID.String(), "role_arn", role.RoleARN, "reason", "sts_error", "err", err.Error()))
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("AWS rejected the federation request: "+err.Error()), http.StatusFound)
+		return
+	}
+
+	signinToken, err := s.exchangeSigninToken(r.Context(), out)
+	if err != nil {
+		s.log.Error("getSigninToken", "err", err)
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta("role_id", roleID.String(), "reason", "signin_token_error", "err", err.Error()))
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("AWS console federation failed: "+err.Error()), http.StatusFound)
+		return
+	}
+
+	consoleURL := buildConsoleLoginURL(signinToken, s.issuer+"/portal/aws/refresh?role_id="+roleID.String(), awsConsoleHomeURL)
+	// mfa_authenticated mirrors what auditors look for in Identity Center
+	// CloudTrail events — surface it explicitly at the audit-row level
+	// rather than forcing a join against the session table. step_up
+	// records whether the role required step-up; combined the two
+	// distinguish "MFA was required and present" from "MFA was optional
+	// but present anyway" from "MFA not required, not present."
+	if err := s.logAudit(r, ActionAWSConsoleAssumed, &pc.User.ID, nil,
+		logMeta(
+			"role_id", roleID.String(),
+			"role_arn", role.RoleARN,
+			"role_slug", role.Slug,
+			"audience", s.awsAudience,
+			"role_session_name", sessionName,
+			"step_up", role.RequireStepUpMFA,
+			"mfa_authenticated", pc.Session.MFAVerified,
+		)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	http.Redirect(w, r, consoleURL, http.StatusFound)
+}
+
+// handlePortalAWSRefresh is the URL AWS bounces back to when the console
+// session expires (~hourly) so the same role can be re-federated silently.
+// AWS calls it via 302; we treat it as a GET equivalent of /console: if
+// the user's portal session is still alive, re-run the AssumeRole + signin
+// dance with a fresh id_token; if not, portalAuth has already redirected
+// to /portal/login.
+func (s *Server) handlePortalAWSRefresh(w http.ResponseWriter, r *http.Request) {
+	// Delegate to the same handler — accepting role_id from the query.
+	s.handlePortalAWSConsole(w, r)
+}
+
+// assumeRoleForUser performs the user-identity → STS-credentials exchange
+// that's shared by the console-redirect handler and the programmatic
+// /aws/credentials endpoint. Both paths need exactly the same auth-side
+// work (token mint with session tags, anonymous STS POST), differing only
+// in what they do with the result — the console handler trades it for a
+// SigninToken and 302s the browser; the API handler emits it as
+// credential_process JSON. Returning the raw STS output keeps the helper
+// free of presentation concerns.
+//
+// The audience claim comes from s.awsAudience (the AUTH_AWS_AUDIENCE env
+// var), not from the role row — per-role authorisation is delegated to
+// aws:RequestTag/<key> conditions in the role's trust policy. Returns
+// errFederationUnconfigured when the audience is empty so callers can
+// surface a clear "server misconfigured" error instead of letting AWS
+// reject a JWT with no aud.
+//
+// Returns the raw AssumeRoleWithWebIdentity output plus the
+// CloudTrail-friendly RoleSessionName for audit metadata.
+func (s *Server) assumeRoleForUser(ctx context.Context, user *model.User, sess *model.Session, role *model.AWSRole) (*sts.AssumeRoleWithWebIdentityOutput, string, error) {
+	if s.awsAudience == "" {
+		return nil, "", errFederationUnconfigured
+	}
+	groups, _ := s.groupNamesForUser(ctx, user.ID)
+	amr := []string{"pwd"}
+	if sess.MFAVerified {
+		amr = append(amr, "mfa")
+	}
+	// principalTags becomes the `https://aws.amazon.com/tags` claim that
+	// STS reads when minting the role session. Each key surfaces as
+	// `aws:RequestTag/<key>` at trust-policy evaluation time and as
+	// `aws:PrincipalTag/<key>` for the lifetime of the session. Trust
+	// policies for individual roles gate on aws:RequestTag/team so the
+	// shared audience is safe (the per-role discriminator moves from
+	// `aud` to `team`). The role trust policy MUST allow sts:TagSession
+	// for this to be accepted (see README); without it, AWS rejects the
+	// call with AccessDenied at AssumeRole time.
+	principalTags := map[string]string{
+		"sub": user.ID.String(),
+	}
+	if user.Email != "" {
+		principalTags["email"] = user.Email
+	}
+	if primary := firstNonEmpty(groups); primary != "" {
+		principalTags["team"] = primary
+	}
+	idToken, err := s.signer.MintFederationToken(
+		user.ID.String(),
+		s.awsAudience,
+		user.Email,
+		user.Name,
+		groups,
+		amr,
+		sess.CreatedAt,
+		federationTokenTTL,
+		principalTags,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("mint federation token: %w", err)
+	}
+	sessionName := buildRoleSessionName(user.Email, user.ID)
+	out, err := s.stsClient().AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          aws.String(role.RoleARN),
+		RoleSessionName:  aws.String(sessionName),
+		WebIdentityToken: aws.String(idToken),
+		DurationSeconds:  aws.Int32(int32(role.MaxSessionDurationSec)),
+	})
+	if err != nil {
+		return nil, sessionName, err
+	}
+	return out, sessionName, nil
+}
+
+// resolveAuthorizedAWSRole returns the role and whether userID is allowed
+// to assume it (i.e. role belongs to a group the user is a member of).
+func (s *Server) resolveAuthorizedAWSRole(ctx context.Context, userID, roleID uuid.UUID) (*model.AWSRole, bool, error) {
+	role, err := s.store.GetAWSRole(ctx, roleID)
+	if err != nil {
+		return nil, false, err
+	}
+	authorized, err := s.store.ListAWSRolesForUser(ctx, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, ar := range authorized {
+		if ar.ID == roleID {
+			return role, true, nil
+		}
+	}
+	return role, false, nil
+}
+
+// groupNamesForUser returns the display names of every SCIM group the
+// user belongs to. Sent as the `groups` claim on the federation id_token
+// for CloudTrail visibility — AWS does not use it for trust-policy
+// evaluation (custom claims aren't condition-key expanded).
+func (s *Server) groupNamesForUser(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	groups, err := s.store.ListGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, g := range groups {
+		if slices.Contains(g.Members, userID) {
+			out = append(out, g.DisplayName)
+		}
+	}
+	return out, nil
+}
+
+// stsClient builds an STS client with anonymous credentials.
+// AssumeRoleWithWebIdentity is one of the few AWS API calls that
+// authenticates via the JWT body rather than SigV4 — the SDK still
+// requires *some* credentials provider, so we pass aws.AnonymousCredentials
+// to suppress signing and avoid attempting to read ambient creds (which
+// authd may not even have if it's deployed without an IAM role).
+func (s *Server) stsClient() stsAPI {
+	cfg := aws.Config{
+		Region:      "us-east-1", // STS global endpoint is region-bound for SDK purposes; us-east-1 is canonical
+		Credentials: aws.AnonymousCredentials{},
+	}
+	return sts.NewFromConfig(cfg, func(o *sts.Options) {
+		o.BaseEndpoint = aws.String(awsSTSEndpoint)
+	})
+}
+
+// exchangeSigninToken trades STS session credentials for a single-use
+// SigninToken at https://signin.aws.amazon.com/federation. The request is
+// authenticated by the session JSON it carries — no SigV4 needed.
+func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleWithWebIdentityOutput) (string, error) {
+	if creds == nil || creds.Credentials == nil {
+		return "", errors.New("nil STS credentials")
+	}
+	session := struct {
+		SessionID    string `json:"sessionId"`
+		SessionKey   string `json:"sessionKey"`
+		SessionToken string `json:"sessionToken"`
+	}{
+		SessionID:    aws.ToString(creds.Credentials.AccessKeyId),
+		SessionKey:   aws.ToString(creds.Credentials.SecretAccessKey),
+		SessionToken: aws.ToString(creds.Credentials.SessionToken),
+	}
+	b, err := json.Marshal(session)
+	if err != nil {
+		return "", fmt.Errorf("marshal session: %w", err)
+	}
+	q := url.Values{}
+	q.Set("Action", "getSigninToken")
+	q.Set("Session", string(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, awsSigninFedURL+"?"+q.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("getSigninToken: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out struct {
+		SigninToken string `json:"SigninToken"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("decode SigninToken: %w", err)
+	}
+	if out.SigninToken == "" {
+		return "", errors.New("empty SigninToken in response")
+	}
+	return out.SigninToken, nil
+}
+
+// buildConsoleLoginURL constructs the redirect URL that signs the user
+// into the AWS Console. Issuer is the URL AWS bounces back to when the
+// console session expires — we point it at /portal/aws/refresh so the
+// re-federation is transparent.
+func buildConsoleLoginURL(signinToken, issuerURL, destination string) string {
+	q := url.Values{}
+	q.Set("Action", "login")
+	q.Set("Issuer", issuerURL)
+	q.Set("Destination", destination)
+	q.Set("SigninToken", signinToken)
+	return awsSigninFedURL + "?" + q.Encode()
+}
+
+// firstNonEmpty returns the first non-empty trimmed entry in s. Used to
+// pick a "primary" SCIM group to inject as the team session tag when the
+// user belongs to multiple groups — we keep the others available in the
+// id_token's `groups` claim for CloudTrail visibility but only one can
+// fit the single-value tag shape AWS recognises today.
+func firstNonEmpty(s []string) string {
+	for _, v := range s {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// buildRoleSessionName produces a CloudTrail-friendly identifier for the
+// STS session. Format: <emailLocal>-<uuidPrefix>-<unixSeconds>. AWS limits
+// session names to characters in [A-Za-z0-9=,.@-]; we sanitise by
+// replacing anything else with '-'.
+func buildRoleSessionName(email string, userID uuid.UUID) string {
+	local := strings.SplitN(email, "@", 2)[0]
+	uid := userID.String()
+	if len(uid) > 8 {
+		uid = uid[:8]
+	}
+	raw := fmt.Sprintf("%s-%s-%d", local, uid, time.Now().Unix())
+	out := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case 'a' <= c && c <= 'z',
+			'A' <= c && c <= 'Z',
+			'0' <= c && c <= '9',
+			c == '=' || c == ',' || c == '.' || c == '@' || c == '-':
+			out = append(out, c)
+		default:
+			out = append(out, '-')
+		}
+	}
+	// AWS caps RoleSessionName at 64 characters.
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return string(out)
+}

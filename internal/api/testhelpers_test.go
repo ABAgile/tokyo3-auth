@@ -60,14 +60,19 @@ func newTestRig(t *testing.T) *testRig {
 	}
 
 	api, err := New(Config{
-		Store:             db,
-		Signer:            signer,
-		Policy:            policy.New(policy.DefaultPCIRules()...),
-		WAHandler:         wa,
-		KP:                kp,
-		Audit:             audit.NoopSink,
-		AuditSource:       journal.NoopSource{},
-		Issuer:            "https://issuer.test",
+		Store:       db,
+		Signer:      signer,
+		Policy:      policy.New(policy.DefaultPCIRules()...),
+		WAHandler:   wa,
+		KP:          kp,
+		Audit:       audit.NoopSink,
+		AuditSource: journal.NoopSource{},
+		Issuer:      "https://issuer.test",
+		// AWSAudience non-empty in the default rig so federation handlers
+		// reach their authorization checks (which is what most tests
+		// exercise). The dedicated "federation_disabled" test instantiates
+		// its own rig with this field empty.
+		AWSAudience:       "tokyo3-aws-test",
 		MasterKey:         mk,
 		Log:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		AllowRegistration: true,

@@ -17,11 +17,13 @@
     </div>
     <nav>
       <a href="/portal" {{if eq .ActivePage "home"}}class="active"{{end}}>Overview</a>
+      <a href="/portal/aws" {{if eq .ActivePage "aws"}}class="active"{{end}}>AWS Console</a>
       {{if .IsAdmin}}
       <a href="/portal/admin/users" {{if eq .ActivePage "admin-users"}}class="active"{{end}}>Users</a>
       <a href="/portal/admin/groups" {{if eq .ActivePage "admin-groups"}}class="active"{{end}}>Groups</a>
       <a href="/portal/admin/clients" {{if eq .ActivePage "admin-clients"}}class="active"{{end}}>OAuth Clients</a>
       <a href="/portal/admin/integrations" {{if eq .ActivePage "admin-integrations"}}class="active"{{end}}>Integrations</a>
+      <a href="/portal/admin/aws" {{if eq .ActivePage "admin-aws"}}class="active"{{end}}>AWS Federation</a>
       <a href="/portal/admin/audit" {{if eq .ActivePage "admin-audit"}}class="active"{{end}}>Audit Log</a>
       {{end}}
     </nav>
