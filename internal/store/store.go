@@ -49,6 +49,23 @@ type ClientStore interface {
 	UpdateClient(ctx context.Context, id uuid.UUID, name string, redirectURIs, scopes []string, public bool, backchannelLogoutURI *string) error
 	UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error
 	DeleteClient(ctx context.Context, id uuid.UUID) error
+
+	// UpdateClientPortalConfig persists the /portal/apps fields
+	// independently of the core client metadata so admin handlers can
+	// edit visibility without touching redirect URIs / scopes / etc.
+	UpdateClientPortalConfig(ctx context.Context, id uuid.UUID, showInPortal bool, launchURL, brandColor, iconURL string, visibleToAll bool) error
+	// ReplaceClientVisibility sets the per-group visibility list for
+	// a client to exactly groupIDs (a la ReplaceGroupMembers).
+	ReplaceClientVisibility(ctx context.Context, clientID uuid.UUID, groupIDs []uuid.UUID) error
+	// ListClientVisibility returns the group IDs that can see this
+	// client's portal tile. Empty when visible_to_all is set OR when
+	// no groups are linked.
+	ListClientVisibility(ctx context.Context, clientID uuid.UUID) ([]uuid.UUID, error)
+	// ListPortalClientsForUser returns clients with show_in_portal=true
+	// and (visible_to_all=true OR userID is a member of any linked
+	// group). Sentinel clients (portal sentinel, etc.) are filtered out
+	// at the application layer if needed by setting show_in_portal=false.
+	ListPortalClientsForUser(ctx context.Context, userID uuid.UUID) ([]*model.Client, error)
 }
 
 type GrantStore interface {

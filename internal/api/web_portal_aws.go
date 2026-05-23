@@ -44,51 +44,6 @@ type stsAPI interface {
 	AssumeRoleWithWebIdentity(ctx context.Context, in *sts.AssumeRoleWithWebIdentityInput, opts ...func(*sts.Options)) (*sts.AssumeRoleWithWebIdentityOutput, error)
 }
 
-// awsFedRoleView is one tile on /portal/aws.
-type awsFedRoleView struct {
-	*model.AWSRole
-	AccountID    string
-	AccountAlias string
-}
-
-type awsRolesPageData struct {
-	portalBase
-	Roles []awsFedRoleView
-	Error string
-}
-
-// handlePortalAWS shows the user the federation roles they can assume.
-// Resolved by joining the user's SCIM group memberships against
-// aws_role_assignments. Users with no matching assignments see an empty
-// state explaining what to ask their admin for.
-func (s *Server) handlePortalAWS(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
-	roles, err := s.store.ListAWSRolesForUser(r.Context(), pc.User.ID)
-	if err != nil {
-		http.Error(w, "list aws roles: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	accounts, _ := s.store.ListAWSAccounts(r.Context())
-	acctByID := make(map[uuid.UUID]*model.AWSAccount, len(accounts))
-	for _, a := range accounts {
-		acctByID[a.ID] = a
-	}
-	views := make([]awsFedRoleView, len(roles))
-	for i, role := range roles {
-		v := awsFedRoleView{AWSRole: role}
-		if a := acctByID[role.AccountID]; a != nil {
-			v.AccountID = a.AccountID
-			v.AccountAlias = a.Alias
-		}
-		views[i] = v
-	}
-	s.portalTmpl.render(w, "portal_aws.html", awsRolesPageData{
-		portalBase: newPortalBase(pc, "aws"),
-		Roles:      views,
-		Error:      r.URL.Query().Get("error"),
-	})
-}
-
 // handlePortalAWSConsole assumes the requested role on the user's behalf,
 // exchanges the resulting STS credentials for an AWS console SigninToken,
 // and 302-redirects the browser into the console with that token.

@@ -1,0 +1,51 @@
+{{template "base" .}}
+
+{{define "title"}}Applications{{end}}
+{{define "pagetitle"}}Applications{{end}}
+
+{{define "content"}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+{{if .Tiles}}
+<p class="text-muted" style="max-width:640px">
+Apps you can launch from auth. OIDC tiles redirect to the app — the app starts its
+own SSO dance from there. AWS tiles trade your session for a short-lived STS
+session and drop you into the AWS Console; no IAM user is created.
+</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+  {{range .Tiles}}
+  <div class="card">
+    <div class="card-body" {{if .BrandColor}}style="border-left:4px solid {{.BrandColor}}"{{end}}>
+      <div style="display:flex;align-items:center;gap:10px">
+        {{if .IconURL}}<img src="{{.IconURL}}" alt="" style="width:32px;height:32px;border-radius:4px;object-fit:contain">{{end}}
+        <h3 style="margin:0;flex:1">{{.DisplayName}}</h3>
+      </div>
+      {{if .Subtitle}}<div class="text-muted" style="font-size:13px;margin-top:4px">{{.Subtitle}}</div>{{end}}
+      <div style="margin-top:8px;font-size:12px">
+        {{if eq .Kind "aws"}}
+          {{if .StepUpMFA}}<span class="badge badge-blue">step-up MFA</span>{{end}}
+          <span class="badge badge-gray">{{.TTLSeconds}}s</span>
+        {{end}}
+        {{if .VisibleToAll}}<span class="badge badge-gray">everyone</span>{{end}}
+      </div>
+      {{if eq .Kind "oidc"}}
+        <a href="{{.LaunchURL}}" class="btn btn-primary btn-sm" style="display:block;width:100%;margin-top:12px;text-align:center" rel="noopener">Launch</a>
+      {{else if eq .Kind "aws"}}
+        <form method="POST" action="/portal/aws/console" style="margin-top:12px">
+          <input type="hidden" name="role_id" value="{{.ID}}">
+          <button type="submit" class="btn btn-primary btn-sm" style="width:100%">Open AWS Console</button>
+        </form>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+{{else}}
+<div class="card">
+  <div class="card-body" style="text-align:center;padding:32px">
+    <p class="text-muted">You have no applications assigned yet.</p>
+    <p class="text-muted" style="font-size:13px">Ask an administrator to add your group to an OAuth client at <code>/portal/admin/clients</code> or to an AWS role at <code>/portal/admin/aws</code>.</p>
+  </div>
+</div>
+{{end}}
+{{end}}

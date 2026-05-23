@@ -29,6 +29,15 @@ type User struct {
 // logout, admin deactivation, SCIM deprovision, password reset) auth POSTs
 // a signed logout_token JWT to this URI so the RP can invalidate its local
 // session state without waiting for the credential to expire.
+//
+// The Portal* fields drive /portal/apps. ShowInPortal gates the tile;
+// LaunchURL is where the tile's click navigates (typically the RP's
+// initiate-login endpoint, e.g. https://vault.example.com/ui/vault/auth/oidc
+// — NOT auth's /authorize, since the RP needs to set its own state/nonce
+// for the code flow). BrandColor and IconURL are cosmetic. VisibleToAll
+// makes the tile show to every authenticated user; when false, visibility
+// is scoped via the client_visibility table (SCIM-group join, parallel
+// to aws_role_assignments).
 type Client struct {
 	ID                   uuid.UUID
 	ClientID             string
@@ -38,6 +47,11 @@ type Client struct {
 	Scopes               []string
 	Public               bool
 	BackchannelLogoutURI *string
+	ShowInPortal         bool
+	LaunchURL            string
+	BrandColor           string
+	IconURL              string
+	VisibleToAll         bool
 	SecretRotatedAt      time.Time
 	CreatedAt            time.Time
 }

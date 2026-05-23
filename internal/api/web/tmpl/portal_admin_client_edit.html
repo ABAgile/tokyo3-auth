@@ -37,6 +37,58 @@
         <div class="text-muted" style="font-size:12px;margin-top:4px">When set, auth POSTs a signed <code>logout_token</code> JWT here on every event that ends a user's session (portal logout, admin deactivation, SCIM deprovision, password reset). Leave empty to opt out.</div>
       </div>
 
+      <h3 style="margin-top:24px;margin-bottom:8px;font-size:14px">Portal visibility</h3>
+      <div class="text-muted" style="font-size:12px;margin-bottom:12px">
+        Controls whether this client renders as a launchable tile on the user-facing
+        <a href="/portal/apps">Applications</a> page. Leave disabled for machine clients
+        (service accounts, CI deploy keys) and confidential SaaS apps that initiate
+        their own SSO from outside.
+      </div>
+      <div class="form-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="show_in_portal" name="show_in_portal" value="1" {{if .Client.ShowInPortal}}checked{{end}}>
+          <label for="show_in_portal" style="margin:0">Show as tile on /portal/apps</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="launch_url">Launch URL <span class="text-muted" style="font-weight:400">(required when shown)</span></label>
+        <input type="url" id="launch_url" name="launch_url" value="{{.Client.LaunchURL}}"
+               placeholder="https://vault.example.com/ui/vault/auth/oidc">
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Where the tile's click navigates. Typically the RP's initiate-login endpoint, NOT auth's <code>/authorize</code> directly — the RP needs to set its own state/nonce for the code flow.</div>
+      </div>
+      <div class="form-group" style="display:flex;gap:12px">
+        <div style="flex:1">
+          <label for="brand_color">Brand color <span class="text-muted" style="font-weight:400">(optional)</span></label>
+          <input type="text" id="brand_color" name="brand_color" value="{{.Client.BrandColor}}" placeholder="#1a73e8" pattern="^#?[0-9a-fA-F]{3,8}$">
+        </div>
+        <div style="flex:2">
+          <label for="icon_url">Icon URL <span class="text-muted" style="font-weight:400">(optional)</span></label>
+          <input type="url" id="icon_url" name="icon_url" value="{{.Client.IconURL}}" placeholder="https://example.com/icon.svg">
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="visible_to_all" name="visible_to_all" value="1" {{if .Client.VisibleToAll}}checked{{end}}>
+          <label for="visible_to_all" style="margin:0">Visible to everyone (overrides group selection below)</label>
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Use for org-wide tools (status page, wiki). When unchecked, only members of the selected groups see the tile.</div>
+      </div>
+      {{if .VisibilityGroups}}
+      <div class="form-group">
+        <label>Visible to SCIM groups</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+          {{range .VisibilityGroups}}
+          <label class="checkbox-row" style="margin:0;flex:0 0 calc(50% - 4px)">
+            <input type="checkbox" name="visibility_group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
+            <span>{{.DisplayName}}</span>
+          </label>
+          {{end}}
+        </div>
+      </div>
+      {{else}}
+      <div class="text-muted" style="font-size:12px">No SCIM groups defined yet. <a href="/portal/admin/groups">Add groups</a> first to gate visibility per group.</div>
+      {{end}}
+
       <div style="display:flex;gap:10px;margin-top:8px">
         <button type="submit" class="btn btn-primary">{{if .IsNew}}Create client{{else}}Save changes{{end}}</button>
         <a href="/portal/admin/clients" class="btn btn-secondary">Cancel</a>

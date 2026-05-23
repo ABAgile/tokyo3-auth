@@ -1314,15 +1314,46 @@ func (s *Server) handlePortalAdminClients(w http.ResponseWriter, r *http.Request
 	}{newPortalBase(pc, "admin-clients"), clients, r.URL.Query().Get("success"), r.URL.Query().Get("error"), r.URL.Query().Get("secret")})
 }
 
+// adminClientEditView is the template data for new + edit client forms.
+// Portal-visibility fields (ShowInPortal, LaunchURL, …) and the
+// VisibilityGroups checkbox list power the new "Portal visibility"
+// section on the form; existing fields are unchanged.
+type adminClientEditView struct {
+	portalBase
+	Client           *model.Client
+	IsNew            bool
+	Error, NewSecret string
+	VisibilityGroups []groupCheckbox // every SCIM group + an IsMember flag indicating "currently linked to this client"
+}
+
+// renderClientForm assembles VisibilityGroups from the full SCIM group
+// list plus a selected-IDs set, so POST handlers can preserve the user's
+// submission on validation errors without re-querying the DB-of-truth.
+func (s *Server) renderClientForm(w http.ResponseWriter, r *http.Request, pc *portalCtx, cl *model.Client, isNew bool, errMsg, newSecret string, selectedGroupIDs []uuid.UUID) {
+	allGroups, _ := s.store.ListGroups(r.Context())
+	selSet := make(map[uuid.UUID]struct{}, len(selectedGroupIDs))
+	for _, id := range selectedGroupIDs {
+		selSet[id] = struct{}{}
+	}
+	checks := make([]groupCheckbox, len(allGroups))
+	for i, g := range allGroups {
+		_, in := selSet[g.ID]
+		checks[i] = groupCheckbox{ID: g.ID, DisplayName: g.DisplayName, IsMember: in}
+	}
+	s.portalTmpl.render(w, "portal_admin_client_edit.html", adminClientEditView{
+		portalBase:       newPortalBase(pc, "admin-clients"),
+		Client:           cl,
+		IsNew:            isNew,
+		Error:            errMsg,
+		NewSecret:        newSecret,
+		VisibilityGroups: checks,
+	})
+}
+
 func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
 	if r.Method == http.MethodGet {
-		s.portalTmpl.render(w, "portal_admin_client_edit.html", struct {
-			portalBase
-			Client           *model.Client
-			IsNew            bool
-			Error, NewSecret string
-		}{newPortalBase(pc, "admin-clients"), &model.Client{}, true, "", ""})
+		s.renderClientForm(w, r, pc, &model.Client{}, true, "", "", nil)
 		return
 	}
 	_ = r.ParseForm()
@@ -1337,19 +1368,28 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 	if v := strings.TrimSpace(r.FormValue("backchannel_logout_uri")); v != "" {
 		backchannelLogoutURI = &v
 	}
+	showInPortal := r.FormValue("show_in_portal") == "1"
+	launchURL := strings.TrimSpace(r.FormValue("launch_url"))
+	brandColor := strings.TrimSpace(r.FormValue("brand_color"))
+	iconURL := strings.TrimSpace(r.FormValue("icon_url"))
+	visibleToAll := r.FormValue("visible_to_all") == "1"
+	groupIDs := parseGroupIDs(r.Form["visibility_group_ids"])
 
 	showErr := func(msg string) {
-		cl := &model.Client{Name: name, RedirectURIs: redirectURIs, Scopes: scopes, Public: public, BackchannelLogoutURI: backchannelLogoutURI}
-		s.portalTmpl.render(w, "portal_admin_client_edit.html", struct {
-			portalBase
-			Client           *model.Client
-			IsNew            bool
-			Error, NewSecret string
-		}{newPortalBase(pc, "admin-clients"), cl, true, msg, ""})
+		cl := &model.Client{
+			Name: name, RedirectURIs: redirectURIs, Scopes: scopes, Public: public,
+			BackchannelLogoutURI: backchannelLogoutURI,
+			ShowInPortal:         showInPortal, LaunchURL: launchURL, BrandColor: brandColor, IconURL: iconURL, VisibleToAll: visibleToAll,
+		}
+		s.renderClientForm(w, r, pc, cl, true, msg, "", groupIDs)
 	}
 
 	if name == "" {
 		showErr("Name is required.")
+		return
+	}
+	if showInPortal && launchURL == "" {
+		showErr("Launch URL is required when the client is shown in the portal.")
 		return
 	}
 	rawClientID, err := auth.GenerateRawToken()
@@ -1372,7 +1412,19 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		showErr("An error occurred.")
 		return
 	}
-	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email)); err != nil {
+	// Portal config + visibility are persisted in two separate calls
+	// (the column update and the join-table reset) — UpdateClient's
+	// signature can't accept these without an additive refactor, so
+	// the dedicated UpdateClientPortalConfig + ReplaceClientVisibility
+	// methods carry the load. Both are no-ops when the operator left
+	// the portal section unchecked.
+	if err := s.store.UpdateClientPortalConfig(r.Context(), client.ID, showInPortal, launchURL, brandColor, iconURL, visibleToAll); err != nil {
+		s.log.Error("set client portal config", "id", client.ID, "err", err)
+	}
+	if err := s.store.ReplaceClientVisibility(r.Context(), client.ID, groupIDs); err != nil {
+		s.log.Error("set client visibility", "id", client.ID, "err", err)
+	}
+	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email, "portal_visible", showInPortal)); err != nil {
 		s.auditFail(w, err)
 		return
 	}
@@ -1396,25 +1448,13 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	showErr := func(msg string) {
-		s.portalTmpl.render(w, "portal_admin_client_edit.html", struct {
-			portalBase
-			Client           *model.Client
-			IsNew            bool
-			Error, NewSecret string
-		}{newPortalBase(pc, "admin-clients"), client, false, msg, ""})
-	}
-
 	if r.Method == http.MethodGet {
-		showErr("")
+		current, _ := s.store.ListClientVisibility(r.Context(), id)
+		s.renderClientForm(w, r, pc, client, false, "", "", current)
 		return
 	}
 	_ = r.ParseForm()
 	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		showErr("Name is required.")
-		return
-	}
 	redirectURIs := parseLines(r.FormValue("redirect_uris"))
 	scopes := strings.Fields(r.FormValue("scopes"))
 	if len(scopes) == 0 {
@@ -1425,13 +1465,53 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 	if v := strings.TrimSpace(r.FormValue("backchannel_logout_uri")); v != "" {
 		backchannelLogoutURI = &v
 	}
+	showInPortal := r.FormValue("show_in_portal") == "1"
+	launchURL := strings.TrimSpace(r.FormValue("launch_url"))
+	brandColor := strings.TrimSpace(r.FormValue("brand_color"))
+	iconURL := strings.TrimSpace(r.FormValue("icon_url"))
+	visibleToAll := r.FormValue("visible_to_all") == "1"
+	groupIDs := parseGroupIDs(r.Form["visibility_group_ids"])
 
+	showErr := func(msg string) {
+		// Echo back what the admin typed; visibility groups reflect their submission.
+		formClient := *client
+		formClient.Name = name
+		formClient.RedirectURIs = redirectURIs
+		formClient.Scopes = scopes
+		formClient.Public = public
+		formClient.BackchannelLogoutURI = backchannelLogoutURI
+		formClient.ShowInPortal = showInPortal
+		formClient.LaunchURL = launchURL
+		formClient.BrandColor = brandColor
+		formClient.IconURL = iconURL
+		formClient.VisibleToAll = visibleToAll
+		s.renderClientForm(w, r, pc, &formClient, false, msg, "", groupIDs)
+	}
+
+	if name == "" {
+		showErr("Name is required.")
+		return
+	}
+	if showInPortal && launchURL == "" {
+		showErr("Launch URL is required when the client is shown in the portal.")
+		return
+	}
 	if err := s.store.UpdateClient(r.Context(), id, name, redirectURIs, scopes, public, backchannelLogoutURI); err != nil {
 		s.log.Error("update client", "id", id, "err", err)
 		showErr("An error occurred. Please try again.")
 		return
 	}
-	if err := s.logAudit(r, ActionClientUpdated, nil, &id, logMeta("by", pc.User.Email)); err != nil {
+	if err := s.store.UpdateClientPortalConfig(r.Context(), id, showInPortal, launchURL, brandColor, iconURL, visibleToAll); err != nil {
+		s.log.Error("update client portal config", "id", id, "err", err)
+		showErr("An error occurred. Please try again.")
+		return
+	}
+	if err := s.store.ReplaceClientVisibility(r.Context(), id, groupIDs); err != nil {
+		s.log.Error("update client visibility", "id", id, "err", err)
+		showErr("An error occurred. Please try again.")
+		return
+	}
+	if err := s.logAudit(r, ActionClientUpdated, nil, &id, logMeta("by", pc.User.Email, "portal_visible", showInPortal)); err != nil {
 		s.auditFail(w, err)
 		return
 	}
