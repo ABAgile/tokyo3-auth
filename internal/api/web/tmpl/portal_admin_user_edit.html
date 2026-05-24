@@ -67,16 +67,28 @@
 </div>
 
 {{if not .IsNew}}
+{{if .TempPW}}
+<div class="alert alert-info" style="max-width:680px;margin-bottom:16px">
+  <strong>Temporary password (shown once — copy now):</strong>
+  <code class="mono" style="display:block;margin-top:6px;word-break:break-all">{{.TempPW}}</code>
+  <p style="margin:8px 0 0;font-size:13px">
+    Share this with the user through a trusted out-of-band channel. They will be required
+    to set a new password on their next login before any other action is permitted.
+  </p>
+</div>
+{{end}}
+
 <div class="card mb-4" style="max-width:680px">
   <div class="card-header"><h2>Reset password</h2></div>
   <div class="card-body">
+    <p class="text-muted" style="margin-top:0">
+      Generates a single-use temporary password and invalidates all current sessions.
+      The temp password is shown once on this page; share it with the user out-of-band.
+      The user will be forced to set a new password on next login (the temp credential
+      cannot be reused).
+    </p>
     <form method="POST" action="/portal/admin/users/{{.User.ID}}/reset-password"
-          onsubmit="return confirm('Set a new password for this user? Existing sessions will be revoked.')">
-      <div class="form-group">
-        <label for="reset_password">New password</label>
-        <input type="password" id="reset_password" name="new_password" required autocomplete="new-password">
-        <p class="text-muted" style="margin-top:4px;font-size:12px">Min 12 chars, upper, lower, digit, special. The user must change it on next login if your policy enforces it.</p>
-      </div>
+          onsubmit="return confirm('Issue a single-use temporary password and revoke this user\'s active sessions?')">
       <button type="submit" class="btn btn-warning btn-sm">Reset password</button>
     </form>
   </div>
@@ -89,6 +101,47 @@
     <form method="POST" action="/portal/admin/users/{{.User.ID}}/clear-mfa"
           onsubmit="return confirm('Clear all MFA credentials for this user?')">
       <button type="submit" class="btn btn-warning btn-sm">Clear MFA credentials</button>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4" style="max-width:680px">
+  <div class="card-header"><h2>AWS sessions</h2></div>
+  <div class="card-body">
+    <p class="text-muted" style="margin-top:0">
+      Adds this user's UUID to every AWS federation role's <code>AuthRevokedUsers</code>
+      inline policy, killing their current STS sessions within ~30s. The user can
+      <strong>re-authenticate to auth and federate again immediately</strong> — this
+      action does NOT deactivate the account. Use for lost-laptop / suspect-credential
+      scenarios; use <em>Delete user</em> below for full lockout.
+    </p>
+    <form method="POST" action="/portal/admin/users/{{.User.ID}}/revoke-aws"
+          onsubmit="return confirm('Revoke this user\'s active AWS STS sessions? Their auth login keeps working.')">
+      <button type="submit" class="btn btn-warning btn-sm">Revoke AWS sessions</button>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4" style="max-width:680px">
+  <div class="card-header"><h2>Compromised account reset</h2></div>
+  <div class="card-body">
+    <p class="text-muted" style="margin-top:0">
+      The "assume the worst" action when credentials may have leaked. In one click:
+    </p>
+    <ul class="text-muted" style="margin-top:4px;font-size:13px">
+      <li>Issues a single-use temporary password and forces rotation on next login</li>
+      <li>Deletes TOTP and every WebAuthn credential (user must re-enroll MFA)</li>
+      <li>Kills all auth sessions and broadcasts back-channel logout to every RP</li>
+      <li>Revokes active AWS STS sessions via the federation revocation provisioner</li>
+    </ul>
+    <p class="text-muted" style="font-size:13px">
+      The account remains Active. The user proves identity again via the temp password,
+      sets a new permanent password, re-enrolls MFA, and re-federates AWS — all forced
+      flows. Use <em>Delete user</em> below for full account lockoff.
+    </p>
+    <form method="POST" action="/portal/admin/users/{{.User.ID}}/compromised-reset"
+          onsubmit="return confirm('Treat this account as compromised: rotate password, wipe MFA, kill sessions, revoke AWS. Continue?')">
+      <button type="submit" class="btn btn-danger btn-sm">Compromised account reset</button>
     </form>
   </div>
 </div>

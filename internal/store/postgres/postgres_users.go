@@ -12,14 +12,14 @@ import (
 )
 
 const userCols = `id, email, password_hash, name, active, scim_external_id, mfa_enabled, is_admin,
-	password_changed_at, failed_attempts, locked_until, created_at, updated_at`
+	password_changed_at, failed_attempts, locked_until, must_change_password, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 	u := &model.User{}
 	err := row.Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Active,
 		&u.SCIMExternalID, &u.MFAEnabled, &u.IsAdmin, &u.PasswordChangedAt,
-		&u.FailedAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt,
+		&u.FailedAttempts, &u.LockedUntil, &u.MustChangePassword, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -77,10 +77,27 @@ func (s *DB) UpdateUser(ctx context.Context, id uuid.UUID, name string, active b
 	return err
 }
 
+// UpdateUserPassword writes a new password hash and resets the rotate-
+// required flag in the same statement. Every successful password change
+// — whether by self-service /portal/account/password, by admin reset,
+// or by the forced /portal/login/change-password page — therefore
+// unblocks the user automatically.
 func (s *DB) UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET password_hash = $2, password_changed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+		`UPDATE users
+		    SET password_hash = $2,
+		        password_changed_at = NOW(),
+		        must_change_password = FALSE,
+		        updated_at = NOW()
+		  WHERE id = $1`,
 		id, passwordHash)
+	return err
+}
+
+func (s *DB) SetUserMustChangePassword(ctx context.Context, id uuid.UUID, flag bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET must_change_password = $2, updated_at = NOW() WHERE id = $1`,
+		id, flag)
 	return err
 }
 

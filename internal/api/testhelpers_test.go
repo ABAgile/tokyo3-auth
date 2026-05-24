@@ -14,6 +14,7 @@ import (
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/policy"
+	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store/sqlite"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
@@ -59,15 +60,26 @@ func newTestRig(t *testing.T) *testRig {
 		t.Fatalf("NewWAHandler: %v", err)
 	}
 
+	// Empty provisioner registry — exercises the realistic "no integrations
+	// configured" branch in handlers that walk the registry. Tests that
+	// need an awsfed or scim provisioner inject their own via the builder.
+	provReg := provision.NewRegistry(func(ctx context.Context) (*provision.Set, error) {
+		return &provision.Set{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil
+	})
+	if err := provReg.Reload(ctx); err != nil {
+		t.Fatalf("provReg.Reload: %v", err)
+	}
+
 	api, err := New(Config{
-		Store:       db,
-		Signer:      signer,
-		Policy:      policy.New(policy.DefaultPCIRules()...),
-		WAHandler:   wa,
-		KP:          kp,
-		Audit:       audit.NoopSink,
-		AuditSource: journal.NoopSource{},
-		Issuer:      "https://issuer.test",
+		Store:        db,
+		Signer:       signer,
+		Policy:       policy.New(policy.DefaultPCIRules()...),
+		WAHandler:    wa,
+		KP:           kp,
+		Provisioners: provReg,
+		Audit:        audit.NoopSink,
+		AuditSource:  journal.NoopSource{},
+		Issuer:       "https://issuer.test",
 		// AWSAudience non-empty in the default rig so federation handlers
 		// reach their authorization checks (which is what most tests
 		// exercise). The dedicated "federation_disabled" test instantiates

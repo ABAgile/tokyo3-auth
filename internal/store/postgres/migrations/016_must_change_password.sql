@@ -1,0 +1,12 @@
+-- must_change_password is the "user must rotate before doing anything
+-- else" flag. Set by admin reset actions (the Reset Password button
+-- and the Compromised Account Reset button); cleared automatically on
+-- successful password change. The login flow checks this after
+-- validating credentials and routes to /portal/login/change-password
+-- when set, instead of issuing a session.
+--
+-- Defaults to FALSE so existing users are unaffected. New users created
+-- via /portal/register or admin/users-create start FALSE because they
+-- choose their own password at creation time; only admin-initiated
+-- credential lifecycle events (reset, compromised) flip the flag on.
+ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE;

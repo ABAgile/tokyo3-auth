@@ -18,8 +18,12 @@ type User struct {
 	PasswordChangedAt time.Time
 	FailedAttempts    int
 	LockedUntil       *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// MustChangePassword routes the user to /portal/login/change-password
+	// after successful CheckPassword, instead of issuing a session. Set by
+	// admin reset actions; cleared automatically when the user rotates.
+	MustChangePassword bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Client is an OAuth2/OIDC client registration.

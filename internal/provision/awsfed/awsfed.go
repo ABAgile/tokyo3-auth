@@ -116,9 +116,25 @@ func (p *Provisioner) User(ctx context.Context, op provision.Op, u *model.User, 
 	case provision.OpCreate, provision.OpUpdate:
 		return nil
 	case provision.OpDeactivate, provision.OpDelete:
-		return p.revokeAcrossAllRoles(ctx, u.ID.String())
+		return p.RevokeUser(ctx, u.ID.String())
 	}
 	return fmt.Errorf("awsfed: unknown op %v", op)
+}
+
+// RevokeUser pushes subUUID onto every managed role's AuthRevokedUsers
+// inline policy. Exported so admin handlers can trigger per-user
+// revocation independently of the full deactivation fan-out — the
+// "Revoke AWS sessions" portal button calls this directly without
+// flipping User.Active or invoking any other provisioner. The semantic
+// is "kick current STS sessions"; the user can re-authenticate to auth
+// and federate again immediately, which is the right behaviour for
+// lost-laptop scenarios where you want to invalidate stale credentials
+// but not lock the account.
+//
+// Idempotent on the bookkeeping side: re-revoking a user just refreshes
+// their revoked_at timestamp, restarting the reaper's window.
+func (p *Provisioner) RevokeUser(ctx context.Context, subUUID string) error {
+	return p.revokeAcrossAllRoles(ctx, subUUID)
 }
 
 // Group implements provision.Provisioner. Federation has no group-shaped

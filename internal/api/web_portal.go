@@ -17,6 +17,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
+	"github.com/abagile/tokyo3-auth/internal/provision/awsfed"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
@@ -432,6 +433,21 @@ func (s *Server) handlePortalLoginPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.UpdateUserFailedAttempts(r.Context(), user.ID, 0, nil)
 
+	// Forced password rotation gates everything else — set by admin
+	// reset actions (handlePortalAdminUserResetPassword,
+	// handlePortalAdminUserCompromisedReset). Routes to the rotation
+	// page BEFORE the MFA branch so the user can't MFA-verify and
+	// avoid the rotation; the change-password handler resumes the
+	// flow (MFA or direct session) once the rotation completes.
+	if user.MustChangePassword {
+		if err := s.setPortalLoginCookie(w, user.ID); err != nil {
+			showErr("An error occurred. Please try again.")
+			return
+		}
+		http.Redirect(w, r, "/portal/login/change-password", http.StatusFound)
+		return
+	}
+
 	if user.MFAEnabled {
 		// Send to TOTP MFA step.
 		if err := s.setPortalLoginCookie(w, user.ID); err != nil {
@@ -448,6 +464,108 @@ func (s *Server) handlePortalLoginPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		showErr("An error occurred. Please try again.")
+		return
+	}
+	http.Redirect(w, r, "/portal", http.StatusFound)
+}
+
+// handlePortalChangePassword is the forced-rotation page. The user has
+// already proved knowledge of the temp credential (via the password
+// form before being redirected here), so we trust portalLoginCookie's
+// identity assertion and just need to validate + persist the new
+// password. After rotation, resume the original login flow — MFA prompt
+// if enrolled, direct session otherwise.
+//
+// Defensive: re-check user.MustChangePassword on every request. If
+// somebody navigates here directly with a stale cookie after they've
+// already rotated, the cookie is valid but the user is no longer in
+// the must-rotate state — we just clear the cookie and bounce them to
+// /portal/login.
+func (s *Server) handlePortalChangePassword(w http.ResponseWriter, r *http.Request) {
+	st, err := s.getPortalLoginCookie(r)
+	if err != nil {
+		http.Redirect(w, r, "/portal/login", http.StatusFound)
+		return
+	}
+	user, err := s.store.GetUserByID(r.Context(), st.UserID)
+	if err != nil {
+		http.Redirect(w, r, "/portal/login", http.StatusFound)
+		return
+	}
+	if !user.MustChangePassword {
+		// Stale cookie; the rotation has already happened or was never
+		// required. Clear and route to a fresh login.
+		clearCookie(w, portalLoginCookie)
+		http.Redirect(w, r, "/portal/login", http.StatusFound)
+		return
+	}
+
+	showForm := func(msg string) {
+		s.ssoTmpl.render(w, "portal_change_password.html", struct {
+			Error, Email string
+		}{Error: msg, Email: user.Email})
+	}
+
+	if r.Method == http.MethodGet {
+		showForm("")
+		return
+	}
+
+	_ = r.ParseForm()
+	newPw := r.FormValue("new_password")
+	confirm := r.FormValue("confirm")
+	if newPw == "" {
+		showForm("New password is required.")
+		return
+	}
+	if newPw != confirm {
+		showForm("Passwords do not match.")
+		return
+	}
+	if v := s.policy.First(policy.PolicyContext{Password: newPw, User: user, Request: r}); v != nil {
+		showForm(v.Message)
+		return
+	}
+	hash, err := auth.HashPassword(newPw)
+	if err != nil {
+		showForm("An error occurred. Please try again.")
+		return
+	}
+	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash); err != nil {
+		s.log.Error("change-password update", "user", user.ID, "err", err)
+		showForm("An error occurred. Please try again.")
+		return
+	}
+	if err := s.logAudit(r, ActionUserUpdated, &user.ID, nil, logMeta("field", "password", "via", "forced_rotation")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	// Reload to pick up the cleared must_change_password flag — the
+	// subsequent MFA check + session creation expect the up-to-date
+	// state.
+	user, err = s.store.GetUserByID(r.Context(), user.ID)
+	if err != nil {
+		showForm("An error occurred. Please try again.")
+		return
+	}
+
+	// Continue the original login flow exactly as handlePortalLoginPOST
+	// would after a clean password validation.
+	if user.MFAEnabled {
+		// portalLoginCookie is already set with this user's ID — reuse
+		// it as the MFA-pending cookie. (Both states are "password
+		// verified, more steps required"; the cookie payload is
+		// identical.)
+		http.Redirect(w, r, "/portal/login/mfa", http.StatusFound)
+		return
+	}
+	clearCookie(w, portalLoginCookie)
+	if err := s.createPortalSession(w, r, user); err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			s.auditFail(w, err)
+			return
+		}
+		showForm("An error occurred. Please try again.")
 		return
 	}
 	http.Redirect(w, r, "/portal", http.StatusFound)
@@ -478,6 +596,16 @@ func (s *Server) handlePortalLoginMFA(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.GetUserByID(r.Context(), st.UserID)
 	if err != nil {
 		http.Redirect(w, r, "/portal/login", http.StatusFound)
+		return
+	}
+	// Belt-and-suspenders: if the user is in the must-rotate state,
+	// MFA verification can't issue a session. Route to rotation first.
+	// The login POST handler already does this gate before setting the
+	// MFA-pending cookie, but a user with both flags set who navigates
+	// directly here (or has a stale cookie from before flagged) needs
+	// the redirect too.
+	if user.MustChangePassword {
+		http.Redirect(w, r, "/portal/login/change-password", http.StatusFound)
 		return
 	}
 	hasTOTP, hasWebAuthn := s.portalMFAMethods(r.Context(), user.ID)
@@ -954,13 +1082,16 @@ func (s *Server) handlePortalAdminUsers(w http.ResponseWriter, r *http.Request) 
 // adminUserEditView feeds portal_admin_user_edit.html. It carries the form-state
 // User, an IsNew flag, banner messages, and the full group catalogue with each
 // row's IsMember pre-resolved so the template can render checkboxes without
-// looking anything up.
+// looking anything up. TempPW is populated after a Reset Password / Compromised
+// Reset action — the template renders it once and the value is gone on the
+// next request.
 type adminUserEditView struct {
 	portalBase
 	User    *model.User
 	IsNew   bool
 	Error   string
 	Success string
+	TempPW  string
 	Groups  []groupCheckbox
 }
 
@@ -993,6 +1124,7 @@ func (s *Server) renderUserForm(w http.ResponseWriter, r *http.Request, pc *port
 		IsNew:      isNew,
 		Error:      errMsg,
 		Success:    successMsg,
+		TempPW:     r.URL.Query().Get("temp_pw"),
 		Groups:     checks,
 	})
 }
@@ -1185,10 +1317,21 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/portal/admin/users?success=User+updated.", http.StatusFound)
 }
 
-// handlePortalAdminUserResetPassword lets an admin set a new password without
-// knowing the current one. Audited the same way self-service password updates
-// are (`field=password`) but with `by=<admin email>` so the trail distinguishes
-// admin overrides from user-driven changes.
+// handlePortalAdminUserResetPassword issues a single-use temporary
+// password (server-generated, 32 chars) and flips the user's
+// must_change_password flag. The temp credential is shown once in the
+// redirect's success banner and shared out-of-band by the admin
+// (Slack, phone call, etc.); on next login the user is forced through
+// /portal/login/change-password to set a real password before the
+// session is issued.
+//
+// Compared to admin-typed temp passwords (the previous behavior),
+// server-generation removes the operator-picks-a-weak-password class
+// of mistakes and matches the "shown once" UX already used for OAuth
+// client secret rotation.
+//
+// Audit: ActionUserUpdated with field=password, via=admin_reset so the
+// trail distinguishes admin overrides from user-driven changes.
 func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -1196,41 +1339,174 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	_ = r.ParseForm()
-	newPw := r.FormValue("new_password")
 	editURL := "/portal/admin/users/" + id.String() + "/edit"
 	redirect := func(qs string) { http.Redirect(w, r, editURL+"?"+qs, http.StatusFound) }
 
-	if newPw == "" {
-		redirect("error=" + url.QueryEscape("Password is required."))
+	tempPw, err := auth.GenerateRawToken()
+	if err != nil {
+		redirect("error=" + url.QueryEscape("An error occurred generating the temp password."))
 		return
 	}
-	if v := s.policy.First(policy.PolicyContext{Password: newPw, Request: r}); v != nil {
-		redirect("error=" + url.QueryEscape(v.Message))
-		return
-	}
-	hash, err := auth.HashPassword(newPw)
+	hash, err := auth.HashPassword(tempPw)
 	if err != nil {
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
 	}
 	if err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
+		s.log.Error("admin reset password: update", "user", id, "err", err)
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
 	}
-	// User-scoped back-channel logout: every RP that holds a session for
-	// this user is told to wipe its local state too. Must run BEFORE
-	// DeleteSessionsByUserID — broadcastLogout's first query is
-	// ListSessionClientIDsByUser, which returns nothing once sessions are
-	// gone.
+	// UpdateUserPassword clears must_change_password as part of its
+	// statement (any successful password change un-expires). Flip it
+	// back ON now so the temp credential cannot be used as a
+	// long-lived password — the user must rotate it on first use.
+	if err := s.store.SetUserMustChangePassword(r.Context(), id, true); err != nil {
+		s.log.Error("admin reset password: set flag", "user", id, "err", err)
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+	// User-scoped back-channel logout: every RP that holds a session
+	// for this user is told to wipe its local state too. Must run
+	// BEFORE DeleteSessionsByUserID — broadcastLogout's first query is
+	// ListSessionClientIDsByUser, which returns nothing once sessions
+	// are gone.
 	s.broadcastLogout(r.Context(), r, id, "")
-	// Force re-auth on every existing session — the old password no longer holds.
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
-	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("field", "password", "by", pc.User.Email)); err != nil {
+	if err := s.logAudit(r, ActionUserUpdated, &id, nil,
+		logMeta("field", "password", "by", pc.User.Email, "via", "admin_reset")); err != nil {
 		s.auditFail(w, err)
 		return
 	}
-	redirect("success=" + url.QueryEscape("Password reset."))
+	// Surface the temp password in a dedicated query param the edit
+	// page renders ONCE (analogous to OAuth client secret rotation).
+	redirect("temp_pw=" + url.QueryEscape(tempPw))
+}
+
+// handlePortalAdminUserCompromisedReset is the "assume the worst" admin
+// action. Bundles every credential-invalidation primitive into a single
+// click for the lost-laptop / suspected-breach scenario:
+//
+//  1. Generate a single-use temp password, persist + flip
+//     must_change_password (same mechanism as Reset Password — user
+//     forced through rotation on next login).
+//  2. Delete TOTP + every WebAuthn credential. The user must re-enroll
+//     MFA from scratch; previously-trusted devices are no longer trusted.
+//  3. Flip MFAEnabled=false so the rotation flow doesn't try to MFA
+//     against the now-empty credential set.
+//  4. Broadcast back-channel logout to every RP holding a session for
+//     this user, then delete auth-side sessions.
+//  5. Revoke active AWS STS sessions via the awsfed provisioner (same
+//     code path as the per-user Revoke AWS Sessions button).
+//  6. Audit ActionUserCompromisedReset with a single metadata-rich row
+//     covering targets cleared.
+//
+// The temp password is surfaced in the redirect's temp_pw query — same
+// pattern as Reset Password. Account stays Active=true; the user can
+// authenticate and re-establish their state via the forced flows.
+// Choose "Delete user" if full account lockoff is needed instead.
+func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	editURL := "/portal/admin/users/" + id.String() + "/edit"
+	redirect := func(qs string) { http.Redirect(w, r, editURL+"?"+qs, http.StatusFound) }
+
+	user, err := s.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		redirect("error=" + url.QueryEscape("user not found"))
+		return
+	}
+
+	// (1) Temp password + must-rotate.
+	tempPw, err := auth.GenerateRawToken()
+	if err != nil {
+		redirect("error=" + url.QueryEscape("An error occurred generating the temp password."))
+		return
+	}
+	hash, err := auth.HashPassword(tempPw)
+	if err != nil {
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+	if err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
+		s.log.Error("compromised reset: update password", "user", id, "err", err)
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+	if err := s.store.SetUserMustChangePassword(r.Context(), id, true); err != nil {
+		s.log.Error("compromised reset: set flag", "user", id, "err", err)
+		redirect("error=" + url.QueryEscape("An error occurred."))
+		return
+	}
+
+	// (2) MFA wipe. TOTP first, then every WebAuthn credential.
+	// Best-effort — log but don't abort if a single credential delete
+	// fails; the overall bundled action remains valuable even if one
+	// piece couldn't be cleared.
+	totpCleared := false
+	if err := s.store.DeleteTOTP(r.Context(), id); err == nil {
+		totpCleared = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.log.Error("compromised reset: delete totp", "user", id, "err", err)
+	}
+	waCreds, _ := s.store.ListWebAuthnCredentials(r.Context(), id)
+	waCleared := 0
+	for _, c := range waCreds {
+		if err := s.store.DeleteWebAuthnCredential(r.Context(), c.ID, id); err != nil {
+			s.log.Error("compromised reset: delete webauthn", "user", id, "cred", c.ID, "err", err)
+			continue
+		}
+		waCleared++
+	}
+
+	// (3) Flip MFAEnabled=false. The user re-enrolls if policy requires
+	// MFA — the forced-rotation flow doesn't gate on this directly, but
+	// keeping MFAEnabled=true with no credentials would make subsequent
+	// logins infinite-loop on the MFA page.
+	_ = s.store.UpdateUserMFAEnabled(r.Context(), id, false)
+
+	// (4) Auth sessions + RP notifications. Same order as the password-
+	// reset and user-delete paths: broadcast BEFORE delete so the
+	// client-id query still finds rows.
+	s.broadcastLogout(r.Context(), r, id, "")
+	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
+
+	// (5) AWS federation revocation. Walks the registry for awsfed
+	// provisioners. No-op when no aws_federation integration is
+	// enabled; logged as 0 in the audit metadata so investigators can
+	// tell whether AWS was in scope.
+	awsTargets := 0
+	if s.provReg != nil {
+		for _, prov := range s.provReg.Snapshot() {
+			fed, ok := prov.(*awsfed.Provisioner)
+			if !ok {
+				continue
+			}
+			if err := fed.RevokeUser(r.Context(), user.ID.String()); err != nil {
+				s.log.Error("compromised reset: aws revoke", "user", id, "target", fed.Name(), "err", err)
+				continue
+			}
+			awsTargets++
+		}
+	}
+
+	// (6) Single audit row covering the whole bundle. Investigators
+	// looking at "what did this admin do" see one event with the full
+	// scope, not five tangentially-related rows.
+	if err := s.logAudit(r, ActionUserCompromisedReset, &id, nil, logMeta(
+		"by", pc.User.Email,
+		"totp_cleared", totpCleared,
+		"webauthn_cleared", waCleared,
+		"aws_targets_revoked", awsTargets,
+	)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	redirect("temp_pw=" + url.QueryEscape(tempPw))
 }
 
 // handlePortalAdminUserClearMFA deletes every MFA credential (TOTP + WebAuthn)
@@ -1273,6 +1549,82 @@ func (s *Server) handlePortalAdminUserClearMFA(w http.ResponseWriter, r *http.Re
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), id, false)
 	http.Redirect(w, r, editURL+"?success="+url.QueryEscape("MFA credentials cleared."), http.StatusFound)
+}
+
+// handlePortalAdminUserRevokeAWS pushes the target user onto every AWS
+// federation role's AuthRevokedUsers inline policy, killing their
+// current STS sessions within ~30s. Does NOT deactivate the user — they
+// can re-authenticate to auth and federate again immediately. This is
+// the "Revoke AWS sessions" button on the user edit page; the right
+// action for lost-laptop / suspect-credential-leak scenarios where you
+// want to invalidate stale credentials but not lock the account.
+//
+// No-op when no aws_federation provisioner is enabled in the registry
+// — the operator sees an informational notice. Federation roles that
+// aren't auth-managed (no aws_federation integration row covers them)
+// are similarly not touched; only roles auth knows about get the deny.
+func (s *Server) handlePortalAdminUserRevokeAWS(w http.ResponseWriter, r *http.Request) {
+	pc := portalFromCtx(r)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	editURL := "/portal/admin/users/" + id.String() + "/edit"
+	redirect := func(qs string) { http.Redirect(w, r, editURL+"?"+qs, http.StatusFound) }
+
+	user, err := s.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		redirect("error=" + url.QueryEscape("user not found"))
+		return
+	}
+
+	if s.provReg == nil {
+		redirect("error=" + url.QueryEscape("provisioner registry not configured"))
+		return
+	}
+	// Walk the snapshot for awsfed provisioners and call RevokeUser on
+	// each. The same pattern as the reaper in cmd/authd. Multiple
+	// aws_federation rows are unusual but supported — each manages its
+	// own set of roles via the shared aws_roles table, so revoking the
+	// user across all of them is the right semantic.
+	revokedTargets := 0
+	var firstErr error
+	for _, prov := range s.provReg.Snapshot() {
+		fed, ok := prov.(*awsfed.Provisioner)
+		if !ok {
+			continue
+		}
+		if err := fed.RevokeUser(r.Context(), user.ID.String()); err != nil {
+			s.log.Error("admin revoke aws", "user", user.ID, "target", fed.Name(), "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		revokedTargets++
+	}
+
+	if revokedTargets == 0 && firstErr == nil {
+		// Surfaces via the existing error= channel — phrased as a config
+		// guidance message rather than a failure, but the user clicked a
+		// button that did nothing useful, which is what they need to know.
+		redirect("error=" + url.QueryEscape("No AWS federation integration is enabled; nothing to revoke. Enable one under /portal/admin/integrations."))
+		return
+	}
+	if err := s.logAudit(r, ActionAWSFederationRevokedManual, &user.ID, nil,
+		logMeta("by", pc.User.Email, "targets_revoked", revokedTargets, "any_error", firstErr != nil)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	if firstErr != nil {
+		// Partial success — some targets succeeded. The user's UUID is
+		// on those roles' deny lists; the reaper will eventually trim
+		// it. Failed targets can be retried by clicking again.
+		redirect("error=" + url.QueryEscape(fmt.Sprintf("Revoked on %d target(s); some failed — see logs.", revokedTargets)))
+		return
+	}
+	redirect("success=" + url.QueryEscape(fmt.Sprintf("AWS sessions revoked across %d target(s). Existing STS credentials will start failing within ~30 seconds.", revokedTargets)))
 }
 
 func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Request) {

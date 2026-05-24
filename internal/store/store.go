@@ -38,6 +38,11 @@ type UserStore interface {
 	SetUserActive(ctx context.Context, id uuid.UUID, active bool) error
 	SetUserSCIMExternalID(ctx context.Context, id uuid.UUID, externalID string) error
 	SetUserAdmin(ctx context.Context, id uuid.UUID, isAdmin bool) error
+	// SetUserMustChangePassword is set TRUE by admin reset actions to
+	// force the user through /portal/login/change-password on next
+	// login. UpdateUserPassword clears it automatically on success;
+	// callers who want to be explicit can also call it with FALSE.
+	SetUserMustChangePassword(ctx context.Context, id uuid.UUID, flag bool) error
 	DeleteUser(ctx context.Context, id uuid.UUID) error
 }
 

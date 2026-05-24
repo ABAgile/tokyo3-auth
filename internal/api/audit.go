@@ -26,14 +26,21 @@ const (
 	// per RP per notification; failures (HTTP non-2xx, dial errors) are
 	// recorded with the http status / error in metadata. The push is best-
 	// effort so a failure does NOT cause the originating logout to roll back.
-	ActionBackchannelLogout   = "auth.logout.backchannel"
-	ActionUserCreated         = "admin.user.created"
-	ActionUserUpdated         = "admin.user.updated"
-	ActionUserDeleted         = "admin.user.deleted"
-	ActionClientCreated       = "admin.client.created"
-	ActionClientUpdated       = "admin.client.updated"
-	ActionClientDeleted       = "admin.client.deleted"
-	ActionClientSecretRotated = "admin.client.secret.rotated"
+	ActionBackchannelLogout = "auth.logout.backchannel"
+	ActionUserCreated       = "admin.user.created"
+	ActionUserUpdated       = "admin.user.updated"
+	ActionUserDeleted       = "admin.user.deleted"
+	// ActionUserCompromisedReset bundles the "assume credentials are
+	// leaked, invalidate everything" admin action: temp password issued
+	// + must_change_password set, MFA wiped, auth sessions deleted,
+	// back-channel logout broadcast, AWS federation sessions revoked.
+	// One audit row covers the whole sequence so investigations see the
+	// intentional bundled action rather than five disconnected events.
+	ActionUserCompromisedReset = "admin.user.compromised_reset"
+	ActionClientCreated        = "admin.client.created"
+	ActionClientUpdated        = "admin.client.updated"
+	ActionClientDeleted        = "admin.client.deleted"
+	ActionClientSecretRotated  = "admin.client.secret.rotated"
 	// Group lifecycle — managed via portal; fanned out to downstream SCIM/IAM provisioners.
 	ActionGroupCreated        = "admin.group.created"
 	ActionGroupUpdated        = "admin.group.updated"
@@ -51,18 +58,24 @@ const (
 	// these touch the federation catalog (accounts/roles/assignments) and
 	// the federation runtime (token exchange + role-side revocation), not
 	// the generic app_integrations row.
-	ActionAWSAccountCreated         = "admin.aws.account.created"
-	ActionAWSAccountUpdated         = "admin.aws.account.updated"
-	ActionAWSAccountDeleted         = "admin.aws.account.deleted"
-	ActionAWSRoleCreated            = "admin.aws.role.created"
-	ActionAWSRoleUpdated            = "admin.aws.role.updated"
-	ActionAWSRoleDeleted            = "admin.aws.role.deleted"
-	ActionAWSAssignmentCreated      = "admin.aws.assignment.created"
-	ActionAWSAssignmentDeleted      = "admin.aws.assignment.deleted"
-	ActionAWSConsoleAssumed         = "aws.console.assumed"
-	ActionAWSConsoleAssumeFailed    = "aws.console.assume.failed"
-	ActionAWSFederationRevoked      = "aws.federation.revoked"
-	ActionAWSFederationRevokeReaped = "aws.federation.revoke.reaped"
+	ActionAWSAccountCreated      = "admin.aws.account.created"
+	ActionAWSAccountUpdated      = "admin.aws.account.updated"
+	ActionAWSAccountDeleted      = "admin.aws.account.deleted"
+	ActionAWSRoleCreated         = "admin.aws.role.created"
+	ActionAWSRoleUpdated         = "admin.aws.role.updated"
+	ActionAWSRoleDeleted         = "admin.aws.role.deleted"
+	ActionAWSAssignmentCreated   = "admin.aws.assignment.created"
+	ActionAWSAssignmentDeleted   = "admin.aws.assignment.deleted"
+	ActionAWSConsoleAssumed      = "aws.console.assumed"
+	ActionAWSConsoleAssumeFailed = "aws.console.assume.failed"
+	ActionAWSFederationRevoked   = "aws.federation.revoked"
+	// ActionAWSFederationRevokedManual is the operator-triggered variant
+	// (the "Revoke AWS sessions" button on the user edit page). Distinct
+	// from the auto-revoke that runs on full deactivation so investigations
+	// can tell "admin pulled the cord intentionally" apart from "user was
+	// deactivated and revocation came along for the ride."
+	ActionAWSFederationRevokedManual = "aws.federation.revoked.manual"
+	ActionAWSFederationRevokeReaped  = "aws.federation.revoke.reaped"
 )
 
 // logAudit publishes one audit event to the JetStream journal and returns

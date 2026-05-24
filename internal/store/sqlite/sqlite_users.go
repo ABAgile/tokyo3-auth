@@ -12,7 +12,7 @@ import (
 )
 
 const userCols = `id, email, password_hash, name, active, scim_external_id, mfa_enabled, is_admin,
-	password_changed_at, failed_attempts, locked_until, created_at, updated_at`
+	password_changed_at, failed_attempts, locked_until, must_change_password, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 	u := &model.User{}
@@ -20,7 +20,7 @@ func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 	err := row.Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Active,
 		&u.SCIMExternalID, &u.MFAEnabled, &u.IsAdmin, &u.PasswordChangedAt,
-		&u.FailedAttempts, &lockedUntil, &u.CreatedAt, &u.UpdatedAt,
+		&u.FailedAttempts, &lockedUntil, &u.MustChangePassword, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -98,10 +98,25 @@ func (s *DB) UpdateUser(ctx context.Context, id uuid.UUID, name string, active b
 	return err
 }
 
+// UpdateUserPassword writes a new password hash and resets the
+// rotate-required flag in the same statement. See the postgres
+// equivalent for design notes.
 func (s *DB) UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		`UPDATE users
+		    SET password_hash = ?,
+		        password_changed_at = CURRENT_TIMESTAMP,
+		        must_change_password = 0,
+		        updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ?`,
 		passwordHash, id)
+	return err
+}
+
+func (s *DB) SetUserMustChangePassword(ctx context.Context, id uuid.UUID, flag bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET must_change_password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		flag, id)
 	return err
 }
 
