@@ -8,6 +8,7 @@ import (
 
 	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
@@ -38,6 +39,15 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if req.Email == "" || req.Password == "" {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "email and password required")
+		return
+	}
+	// Same policy enforcement the portal admin form applies. Calling SDKs
+	// and provisioning scripts going through this endpoint shouldn't be
+	// allowed to slip weak passwords past the rules that gate the UI;
+	// surfaces as 400 weak_password with the violated rule's message so
+	// the operator's tooling can show something useful.
+	if v := s.policy.First(policy.PolicyContext{Password: req.Password, Request: r}); v != nil {
+		s.writeError(w, http.StatusBadRequest, "weak_password", v.Message)
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)

@@ -680,24 +680,61 @@ func adminUserCmd() *cobra.Command {
 
 func adminUserCreateCmd() *cobra.Command {
 	var email, password, name string
-	var isAdmin bool
+	var isAdmin, allowWeak bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a user",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runAdminUserCreate(email, password, name, isAdmin)
+			return runAdminUserCreate(email, password, name, isAdmin, allowWeak)
 		},
 	}
 	cmd.Flags().StringVar(&email, "email", "", "User email (required)")
 	cmd.Flags().StringVar(&password, "password", "", "User password (required)")
 	cmd.Flags().StringVar(&name, "name", "", "User display name")
 	cmd.Flags().BoolVar(&isAdmin, "admin", false, "Grant portal admin role")
+	cmd.Flags().BoolVar(&allowWeak, "allow-weak-password", false,
+		"Skip PCI password-policy validation. Use only for dev bootstrap; production accounts MUST meet policy.")
 	_ = cmd.MarkFlagRequired("email")
 	_ = cmd.MarkFlagRequired("password")
 	return cmd
 }
 
-func runAdminUserCreate(email, password, name string, isAdmin bool) error {
+// validateNewUserPassword runs the default PCI rule set against pw and
+// returns a non-nil error when any rule fails. Extracted from
+// runAdminUserCreate so unit tests can exercise the gate without
+// spinning up a database; runAdminUserCreate calls this directly and
+// surfaces the error to the operator's terminal.
+//
+// allowWeak short-circuits the check — kept as a flag because the CLI
+// is sometimes used during cold-start bootstrap of a dev environment
+// where the operator wants to set an obviously-weak password
+// (e.g. "password") on a throwaway account. Using it on a real
+// environment is operator error; the CLI logs a warning when invoked
+// with the flag set.
+func validateNewUserPassword(pw string, allowWeak bool) error {
+	if allowWeak {
+		return nil
+	}
+	// Empty is rejected here, not by the rule engine — PasswordComplexityRule
+	// deliberately treats empty Password as "not a credential-check context"
+	// so the same engine can be reused in session-state evaluations where
+	// only User/Request are populated. New-password validation has to do
+	// the non-empty check itself; the portal form handlers follow the
+	// same pattern.
+	if pw == "" {
+		return fmt.Errorf("password cannot be empty (pass --allow-weak-password to override; not for production)")
+	}
+	eng := policy.New(policy.DefaultPCIRules()...)
+	if v := eng.First(policy.PolicyContext{Password: pw}); v != nil {
+		return fmt.Errorf("password policy violation: %s (pass --allow-weak-password to override; not for production)", v.Message)
+	}
+	return nil
+}
+
+func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) error {
+	if err := validateNewUserPassword(password, allowWeak); err != nil {
+		return err
+	}
 	dbURL := mustEnv("AUTH_DATABASE_URL")
 	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
 
@@ -713,6 +750,14 @@ func runAdminUserCreate(email, password, name string, isAdmin bool) error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer db.Close()
+
+	if allowWeak {
+		// Loud warning so the operator notices in their shell history.
+		// Not fatal — they asked for this — but conspicuous enough that
+		// a CI pipeline using --allow-weak-password by accident shows
+		// up in build logs.
+		fmt.Fprintln(os.Stderr, "WARNING: --allow-weak-password set; password policy was NOT enforced for this user.")
+	}
 
 	hash, err := auth.HashPassword(password)
 	if err != nil {
