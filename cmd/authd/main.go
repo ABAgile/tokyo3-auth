@@ -246,6 +246,7 @@ func runServe() error {
 		AuditSource:       auditSource,
 		Issuer:            issuer,
 		AWSAudience:       os.Getenv("AUTH_AWS_AUDIENCE"),
+		StepUpMFATTL:      parseDurationEnv("AUTH_STEP_UP_MFA_TTL"),
 		MasterKey:         masterKey,
 		Log:               log,
 		AllowRegistration: strings.EqualFold(os.Getenv("AUTH_ALLOW_REGISTRATION"), "true"),
@@ -436,6 +437,22 @@ func runAdminSync(target string) error {
 			integration.Name, userOK, userFail, groupOK, groupFail)
 	}
 	return nil
+}
+
+// parseDurationEnv reads key from the environment and parses it as a
+// time.Duration. Returns 0 when unset or unparseable so the caller can
+// fall back to its own default — keeps env-var validation centralised
+// without forcing callers to thread a logger or error path through.
+func parseDurationEnv(key string) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the

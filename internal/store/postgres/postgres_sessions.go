@@ -11,21 +11,26 @@ import (
 	"github.com/google/uuid"
 )
 
-const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, last_activity_at, mfa_verified, created_at`
+const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, last_activity_at, mfa_verified, mfa_verified_at, created_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 	s := &model.Session{}
 	var nullUser sql.Null[uuid.UUID]
+	var mfaAt sql.NullTime
 	err := row.Scan(
 		&s.ID, &nullUser, &s.ClientID, &s.AccessTokenHash, &s.RefreshTokenHash,
 		(*stringArray)(&s.Scopes), &s.AccessExpiresAt, &s.RefreshExpiresAt, &s.LastActivityAt,
-		&s.MFAVerified, &s.CreatedAt,
+		&s.MFAVerified, &mfaAt, &s.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
 	if nullUser.Valid {
 		s.UserID = nullUser.V
+	}
+	if mfaAt.Valid {
+		t := mfaAt.Time
+		s.MFAVerifiedAt = &t
 	}
 	return s, err
 }
@@ -38,11 +43,25 @@ func (s *DB) CreateSession(ctx context.Context, sess *model.Session) error {
 	if sess.UserID == uuid.Nil {
 		userArg = nil
 	}
+	var mfaAt any
+	if sess.MFAVerifiedAt != nil {
+		mfaAt = *sess.MFAVerifiedAt
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified, mfa_verified_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		sess.ID, userArg, sess.ClientID, sess.AccessTokenHash, sess.RefreshTokenHash,
-		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified)
+		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified, mfaAt)
+	return err
+}
+
+// MarkSessionMFA updates the MFA freshness columns on an existing
+// session. Called after a step-up MFA challenge succeeds so the next
+// step-up gate sees a fresh timestamp without minting a new session
+// row.
+func (s *DB) MarkSessionMFA(ctx context.Context, id uuid.UUID, when time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET mfa_verified = TRUE, mfa_verified_at = $2 WHERE id = $1`, id, when)
 	return err
 }
 

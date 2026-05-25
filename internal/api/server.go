@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/audit"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
@@ -37,30 +38,46 @@ type Server struct {
 	// safety); per-role authorisation moves to aws:RequestTag/<key>
 	// conditions in the role trust policies.
 	awsAudience string
-	masterKey   []byte
-	log         *slog.Logger
-	ssoTmpl     *tmplManager
-	portalTmpl  *tmplManager
-	allowReg    bool
+	// stepUpMFATTL is the freshness window for the step-up MFA gate that
+	// protects AWS roles flagged require_step_up_mfa. A click on such a
+	// role's tile re-prompts MFA when the session's mfa_verified_at is
+	// older than this duration (or missing). Configured by
+	// AUTH_STEP_UP_MFA_TTL; defaults to 5m when unset.
+	stepUpMFATTL time.Duration
+	masterKey    []byte
+	log          *slog.Logger
+	ssoTmpl      *tmplManager
+	portalTmpl   *tmplManager
+	allowReg     bool
 }
 
 // Config holds server constructor options.
 type Config struct {
-	Store             store.Store
-	Signer            *internaljwt.Signer
-	Policy            *policy.Engine
-	WAHandler         *mfa.WAHandler
-	KP                bcrypto.KeyProvider
-	Provisioners      *provision.Registry
-	OutboundTLS       *tls.Config
-	Audit             audit.Sink
-	AuditSource       journal.Source
-	Issuer            string
-	AWSAudience       string
+	Store        store.Store
+	Signer       *internaljwt.Signer
+	Policy       *policy.Engine
+	WAHandler    *mfa.WAHandler
+	KP           bcrypto.KeyProvider
+	Provisioners *provision.Registry
+	OutboundTLS  *tls.Config
+	Audit        audit.Sink
+	AuditSource  journal.Source
+	Issuer       string
+	AWSAudience  string
+	// StepUpMFATTL bounds how recently the user must have completed an
+	// MFA challenge for sensitive role assumption to proceed without
+	// re-prompting. Zero or negative falls back to the package default.
+	StepUpMFATTL      time.Duration
 	MasterKey         []byte
 	Log               *slog.Logger
 	AllowRegistration bool
 }
+
+// defaultStepUpMFATTL is the fallback freshness window applied when
+// Config.StepUpMFATTL is zero/negative. Chosen to match the typical
+// IdP-suite default (Okta, Identity Center) so operators have one less
+// knob to think about for the average case.
+const defaultStepUpMFATTL = 5 * time.Minute
 
 // New creates a Server.
 func New(cfg Config) (*Server, error) {
@@ -80,23 +97,28 @@ func New(cfg Config) (*Server, error) {
 	if auditSrc == nil {
 		auditSrc = journal.NoopSource{}
 	}
+	stepUpTTL := cfg.StepUpMFATTL
+	if stepUpTTL <= 0 {
+		stepUpTTL = defaultStepUpMFATTL
+	}
 	return &Server{
-		store:       cfg.Store,
-		signer:      cfg.Signer,
-		policy:      cfg.Policy,
-		wa:          cfg.WAHandler,
-		kp:          cfg.KP,
-		provReg:     cfg.Provisioners,
-		outboundTLS: cfg.OutboundTLS,
-		audit:       auditSink,
-		auditSrc:    auditSrc,
-		issuer:      cfg.Issuer,
-		awsAudience: cfg.AWSAudience,
-		masterKey:   cfg.MasterKey,
-		log:         cfg.Log,
-		ssoTmpl:     ssoTmpl,
-		portalTmpl:  portalTmpl,
-		allowReg:    cfg.AllowRegistration,
+		store:        cfg.Store,
+		signer:       cfg.Signer,
+		policy:       cfg.Policy,
+		wa:           cfg.WAHandler,
+		kp:           cfg.KP,
+		provReg:      cfg.Provisioners,
+		outboundTLS:  cfg.OutboundTLS,
+		audit:        auditSink,
+		auditSrc:     auditSrc,
+		issuer:       cfg.Issuer,
+		awsAudience:  cfg.AWSAudience,
+		stepUpMFATTL: stepUpTTL,
+		masterKey:    cfg.MasterKey,
+		log:          cfg.Log,
+		ssoTmpl:      ssoTmpl,
+		portalTmpl:   portalTmpl,
+		allowReg:     cfg.AllowRegistration,
 	}, nil
 }
 
@@ -204,6 +226,17 @@ func (s *Server) Routes() http.Handler {
 	}))
 	mux.HandleFunc("POST /portal/aws/console", s.portalAuth(s.handlePortalAWSConsole))
 	mux.HandleFunc("GET /portal/aws/refresh", s.portalAuth(s.handlePortalAWSRefresh))
+
+	// Portal — step-up MFA challenge interposed between clicking a
+	// sensitive launcher tile and reaching the underlying action. Today
+	// only AWS console assumption uses it (handlePortalAWSConsole 302s
+	// here when the role requires step-up and the session's MFA is
+	// stale); the `next` dispatch table extends to additional targets
+	// as they come online.
+	mux.HandleFunc("GET /portal/step-up", s.portalAuth(s.handlePortalStepUp))
+	mux.HandleFunc("POST /portal/step-up", s.portalAuth(s.handlePortalStepUp))
+	mux.HandleFunc("POST /portal/step-up/webauthn/begin", s.portalAuth(s.handlePortalStepUpWebAuthnBegin))
+	mux.HandleFunc("POST /portal/step-up/webauthn/finish", s.portalAuth(s.handlePortalStepUpWebAuthnFinish))
 
 	// Portal — account (requires portal session)
 	mux.HandleFunc("GET /portal", s.portalAuth(s.handlePortalHome))

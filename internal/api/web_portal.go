@@ -794,6 +794,12 @@ func (s *Server) ensurePortalCookie(w http.ResponseWriter, r *http.Request, user
 		RefreshExpiresAt: now.Add(portalCookieTTL),
 		MFAVerified:      user.MFAEnabled,
 	}
+	// Mirror MFAVerified: callers only reach createPortalSession after a
+	// successful MFA challenge (or with MFAEnabled=false). Setting the
+	// timestamp here is what gives step-up gates a freshness signal.
+	if user.MFAEnabled {
+		sess.MFAVerifiedAt = &now
+	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		s.log.Warn("ensure portal cookie: create session", "err", err)
 		return
@@ -830,6 +836,9 @@ func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, use
 		AccessExpiresAt:  now.Add(portalCookieTTL),
 		RefreshExpiresAt: now.Add(portalCookieTTL),
 		MFAVerified:      user.MFAEnabled,
+	}
+	if user.MFAEnabled {
+		sess.MFAVerifiedAt = &now
 	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		s.log.Error("create portal session", "err", err)

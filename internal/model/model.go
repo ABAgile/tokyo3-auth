@@ -96,7 +96,13 @@ type Session struct {
 	RefreshExpiresAt time.Time
 	LastActivityAt   time.Time
 	MFAVerified      bool
-	CreatedAt        time.Time
+	// MFAVerifiedAt is when the session last completed an MFA challenge.
+	// MFAVerified is "ever?" — kept for the audit/policy code paths that
+	// just need a yes/no — and MFAVerifiedAt is "when?", used by step-up
+	// gates that demand a freshly proven MFA. Nil for sessions that
+	// never saw an MFA prompt (e.g. user has MFA disabled).
+	MFAVerifiedAt *time.Time
+	CreatedAt     time.Time
 }
 
 type TOTPCredential struct {

@@ -95,6 +95,11 @@ type SessionStore interface {
 	// new access + refresh pair and slide the row. The caller is responsible
 	// for capping both expiries at the absolute session lifetime.
 	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
+	// MarkSessionMFA bumps mfa_verified_at (and mfa_verified) on an
+	// existing session row. Used by the step-up MFA flow so that a
+	// freshly proven challenge resets the freshness window without
+	// minting a new session.
+	MarkSessionMFA(ctx context.Context, id uuid.UUID, when time.Time) error
 	DeleteSession(ctx context.Context, id uuid.UUID) error
 	DeleteSessionsByUserID(ctx context.Context, userID uuid.UUID) error
 	// ListSessionClientIDsByUser returns the distinct client_ids that

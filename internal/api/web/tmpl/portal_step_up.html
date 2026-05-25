@@ -1,0 +1,72 @@
+{{template "base" .}}
+
+{{define "title"}}Verify your identity{{end}}
+
+{{define "content"}}
+<h1>Confirm it's you</h1>
+<p class="subtitle">This action requires a fresh MFA challenge. Verify to continue.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+{{if .HasTOTP}}
+<form method="POST" action="/portal/step-up">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <input type="hidden" name="role_id" value="{{.RoleID}}">
+  <div class="form-group">
+    <label for="code">Authenticator app code</label>
+    <input type="text" id="code" name="code" class="code-input"
+           inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+           placeholder="000000" required autofocus autocomplete="one-time-code">
+  </div>
+  <button type="submit" class="btn btn-primary btn-block">Verify code</button>
+</form>
+{{end}}
+
+{{if and .HasTOTP .HasWebAuthn}}
+<div class="mfa-divider"><span>or</span></div>
+{{end}}
+
+{{if .HasWebAuthn}}
+<button class="btn btn-secondary btn-block"
+        data-next="{{.Next}}" data-role-id="{{.RoleID}}"
+        onclick="stepUpWithKey(this)">
+  Use security key
+</button>
+<div id="wa-status" style="margin-top:8px;text-align:center;font-size:13px"></div>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+{{if .HasWebAuthn}}
+<script>
+async function stepUpWithKey(btn) {
+  const next = btn.dataset.next || "";
+  const roleID = btn.dataset.roleId || "";
+  const q = new URLSearchParams();
+  if (next) q.set("next", next);
+  if (roleID) q.set("role_id", roleID);
+  const status = document.getElementById("wa-status");
+  status.textContent = "Waiting for security key…";
+  try {
+    const beginResp = await fetch("/portal/step-up/webauthn/begin", { method: "POST" });
+    if (!beginResp.ok) throw new Error(await beginResp.text());
+    const { options, session_id } = await beginResp.json();
+    q.set("session_id", session_id);
+
+    const assertion = await navigator.credentials.get({ publicKey: prepareRequestOptions(options.publicKey) });
+
+    const finishResp = await fetch("/portal/step-up/webauthn/finish?" + q.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(encodeCredential(assertion)),
+    });
+    if (!finishResp.ok) throw new Error(await finishResp.text());
+    const { redirect_to } = await finishResp.json();
+    window.location.href = redirect_to;
+  } catch(e) {
+    status.textContent = "Error: " + e.message;
+  }
+}
+</script>
+{{end}}
+{{end}}

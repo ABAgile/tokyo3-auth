@@ -79,51 +79,73 @@ func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Step-up MFA: roles flagged sensitive require the current session to
-	// carry an MFA assertion. Sessions minted at /portal/login that didn't
-	// see an MFA prompt have MFAVerified=false. We don't re-prompt within
-	// this flow today — a real "always re-MFA" hook is item O3 in the
-	// roadmap; for now we surface a clear refusal so the operator can
-	// flip the user's MFA on or relax the requirement.
-	if role.RequireStepUpMFA && !pc.Session.MFAVerified {
+	// Step-up gate: a role flagged sensitive requires a freshly proven
+	// MFA challenge — not just "did MFA happen at login." Sessions whose
+	// mfa_verified_at is nil or older than s.stepUpMFATTL get bounced to
+	// /portal/step-up, which prompts and then dispatches back here.
+	if role.RequireStepUpMFA && !s.stepUpMFAFresh(pc.Session) {
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
 			logMeta(
 				"role_id", roleID.String(),
 				"reason", "step_up_required",
-				"mfa_authenticated", false,
+				"mfa_authenticated", pc.Session.MFAVerified,
 			))
-		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("This role requires MFA. Enroll TOTP or a security key on your account, then sign in again."), http.StatusFound)
+		q := url.Values{"next": {"aws_console"}, "role_id": {roleID.String()}}
+		http.Redirect(w, r, "/portal/step-up?"+q.Encode(), http.StatusFound)
 		return
 	}
 
+	consoleURL, err := s.buildAWSConsoleURL(r, pc, role)
+	if err != nil {
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape(err.Error()), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, consoleURL, http.StatusFound)
+}
+
+// stepUpMFAFresh returns true when sess completed an MFA challenge
+// recently enough to satisfy a step-up gate. Older or never-verified
+// sessions must re-prompt.
+func (s *Server) stepUpMFAFresh(sess *model.Session) bool {
+	if sess == nil || sess.MFAVerifiedAt == nil {
+		return false
+	}
+	return time.Since(*sess.MFAVerifiedAt) <= s.stepUpMFATTL
+}
+
+// buildAWSConsoleURL runs the role-assume + getSigninToken steps and
+// returns the AWS Console SigninToken URL for the resulting session.
+// Audit-logs success and the two failure modes; callers translate the
+// returned error to a redirect or JSON response.
+//
+// Extracted from handlePortalAWSConsole because the step-up MFA path
+// needs to reach the same finish line from a different entrypoint
+// (the step-up handler), and the two callers need different response
+// shapes (302 vs JSON for WebAuthn).
+func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.AWSRole) (string, error) {
 	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role)
 	if err != nil {
 		s.log.Error("AssumeRoleWithWebIdentity", "role", role.RoleARN, "err", err)
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
-			logMeta("role_id", roleID.String(), "role_arn", role.RoleARN, "reason", "sts_error", "err", err.Error()))
-		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("AWS rejected the federation request: "+err.Error()), http.StatusFound)
-		return
+			logMeta("role_id", role.ID.String(), "role_arn", role.RoleARN, "reason", "sts_error", "err", err.Error()))
+		return "", fmt.Errorf("AWS rejected the federation request: %s", err.Error())
 	}
 
 	signinToken, err := s.exchangeSigninToken(r.Context(), out)
 	if err != nil {
 		s.log.Error("getSigninToken", "err", err)
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
-			logMeta("role_id", roleID.String(), "reason", "signin_token_error", "err", err.Error()))
-		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("AWS console federation failed: "+err.Error()), http.StatusFound)
-		return
+			logMeta("role_id", role.ID.String(), "reason", "signin_token_error", "err", err.Error()))
+		return "", fmt.Errorf("AWS console federation failed: %s", err.Error())
 	}
 
-	consoleURL := buildConsoleLoginURL(signinToken, s.issuer+"/portal/aws/refresh?role_id="+roleID.String(), awsConsoleHomeURL)
-	// mfa_authenticated mirrors what auditors look for in Identity Center
-	// CloudTrail events — surface it explicitly at the audit-row level
-	// rather than forcing a join against the session table. step_up
-	// records whether the role required step-up; combined the two
-	// distinguish "MFA was required and present" from "MFA was optional
-	// but present anyway" from "MFA not required, not present."
+	consoleURL := buildConsoleLoginURL(signinToken, s.issuer+"/portal/aws/refresh?role_id="+role.ID.String(), awsConsoleHomeURL)
+	// mfa_authenticated and step_up together let auditors distinguish
+	// "MFA required and present" from "MFA optional but present" from
+	// "MFA not required, not present" without joining against sessions.
 	if err := s.logAudit(r, ActionAWSConsoleAssumed, &pc.User.ID, nil,
 		logMeta(
-			"role_id", roleID.String(),
+			"role_id", role.ID.String(),
 			"role_arn", role.RoleARN,
 			"role_slug", role.Slug,
 			"audience", s.awsAudience,
@@ -131,10 +153,9 @@ func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) 
 			"step_up", role.RequireStepUpMFA,
 			"mfa_authenticated", pc.Session.MFAVerified,
 		)); err != nil {
-		s.auditFail(w, err)
-		return
+		return "", err
 	}
-	http.Redirect(w, r, consoleURL, http.StatusFound)
+	return consoleURL, nil
 }
 
 // handlePortalAWSRefresh is the URL AWS bounces back to when the console

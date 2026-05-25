@@ -128,6 +128,7 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTH_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
 | `AUTH_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on `/portal/apps` won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
+| `AUTH_STEP_UP_MFA_TTL` | No | `5m` | Freshness window for the step-up MFA gate that protects AWS roles flagged `require_step_up_mfa`. A click on such a role re-prompts MFA when the session's last MFA challenge is older than this duration (or never happened). Accepts any `time.ParseDuration` value (`30s`, `10m`, `1h`); invalid or empty values fall back to `5m`. |
 | `AUTH_AWSFED_REAP_INTERVAL` | No | `6h` | Period for the AWS federation revocation reaper. Trims `aws_revoked_users` entries past each role's `MaxSessionDuration` and re-pushes the trimmed inline policy. No-op when no `aws_federation` integration is enabled. Set to `0` to disable. |
 | `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
@@ -397,14 +398,14 @@ Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`;
      }]
    }
    ```
-   `aws:RequestTag/team` evaluates the team value being requested in the JWT's `https://aws.amazon.com/tags` claim — auth sets it server-side from the user's first SCIM group, so users can't forge a different team. See `docs/integration-guide.md` Part 3 for the full ABAC pattern catalogue (per-user S3 prefix, team-scoped KMS, etc.).
+   `aws:RequestTag/team` evaluates the team value being requested in the JWT's `https://aws.amazon.com/tags` claim — auth sets it server-side from the SCIM group that actually authorized this assumption (the alphabetically-first group that contains the user *and* is mapped to the requested role via `aws_role_assignments`), so users can't forge a different team. See `docs/integration-guide.md` Part 3 for the full ABAC pattern catalogue (per-user S3 prefix, team-scoped KMS, etc.).
 
 4. **Configure auth** at `/portal/admin/aws`:
    - Add each AWS account: account ID, alias, OIDC provider ARN.
    - Add each role: ARN, slug (URL/CLI-safe identifier — e.g. `platform-prod`), display name, optional step-up MFA flag, session TTL.
    - Add SCIM-group → role assignments mapping group membership to assumable roles.
 
-5. **Users log in** at `/portal/apps`, click an AWS tile, land in the AWS Console.
+5. **Users log in** at `/portal/apps`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTH_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
 
 ### Revocation (optional but recommended)
 
