@@ -57,6 +57,15 @@ async function loginWithKey() {
     status.textContent = "Error: " + e.message;
   }
 }
+{{if and .HasWebAuthn (not .HasTOTP) (not .Error)}}
+// WebAuthn-only: auto-invoke the ceremony so the user isn't asked to
+// click a button just to confirm the single factor they have. Skipped
+// on error re-renders so a failed attempt doesn't immediately loop.
+// The button remains as fallback if the browser refuses the
+// auto-trigger (some browsers require a user gesture, in which case
+// loginWithKey() throws and the status div shows the error).
+document.addEventListener("DOMContentLoaded", loginWithKey);
+{{end}}
 </script>
 {{end}}
 {{end}}

@@ -27,7 +27,7 @@
 {{end}}
 
 {{if .HasWebAuthn}}
-<button class="btn btn-secondary btn-block"
+<button id="step-up-key" class="btn btn-secondary btn-block"
         data-next="{{.Next}}" data-role-id="{{.RoleID}}"
         onclick="stepUpWithKey(this)">
   Use security key
@@ -67,6 +67,15 @@ async function stepUpWithKey(btn) {
     status.textContent = "Error: " + e.message;
   }
 }
+{{if and .HasWebAuthn (not .HasTOTP) (not .Error)}}
+// WebAuthn-only: auto-invoke the ceremony so the user isn't asked to
+// click a button to confirm the single factor they have. Skipped on
+// error re-renders so a failed attempt doesn't immediately loop. The
+// button remains as fallback if the browser refuses the auto-trigger.
+document.addEventListener("DOMContentLoaded", function() {
+  stepUpWithKey(document.getElementById("step-up-key"));
+});
+{{end}}
 </script>
 {{end}}
 {{end}}
