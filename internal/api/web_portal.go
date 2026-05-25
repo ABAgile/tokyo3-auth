@@ -1831,6 +1831,7 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 	brandColor := strings.TrimSpace(r.FormValue("brand_color"))
 	iconURL := strings.TrimSpace(r.FormValue("icon_url"))
 	visibleToAll := r.FormValue("visible_to_all") == "1"
+	allowDeviceGrant := r.FormValue("allow_device_grant") == "1"
 	groupIDs := parseGroupIDs(r.Form["visibility_group_ids"])
 
 	showErr := func(msg string) {
@@ -1846,6 +1847,7 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 		formClient.BrandColor = brandColor
 		formClient.IconURL = iconURL
 		formClient.VisibleToAll = visibleToAll
+		formClient.AllowDeviceGrant = allowDeviceGrant
 		s.renderClientForm(w, r, pc, &formClient, false, msg, "", groupIDs)
 	}
 
@@ -1864,6 +1866,11 @@ func (s *Server) handlePortalAdminClientEdit(w http.ResponseWriter, r *http.Requ
 	}
 	if err := s.store.UpdateClientPortalConfig(r.Context(), id, showInPortal, launchURL, brandColor, iconURL, visibleToAll); err != nil {
 		s.log.Error("update client portal config", "id", id, "err", err)
+		showErr("An error occurred. Please try again.")
+		return
+	}
+	if err := s.store.UpdateClientDeviceGrant(r.Context(), id, allowDeviceGrant); err != nil {
+		s.log.Error("update client device grant flag", "id", id, "err", err)
 		showErr("An error occurred. Please try again.")
 		return
 	}

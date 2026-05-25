@@ -280,6 +280,7 @@ func runServe() error {
 	if interval := awsFedReapInterval(log); interval > 0 {
 		go runAWSFedReaper(ctx, provReg, interval, log)
 	}
+	go runDeviceGrantReaper(ctx, db, time.Minute, log)
 
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
 	go func() {
@@ -453,6 +454,29 @@ func parseDurationEnv(key string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// runDeviceGrantReaper deletes expired device_grants rows on a fixed
+// tick. Cheap query, runs every minute by default; long-lived pending
+// or terminal rows just sit in the table until expires_at passes.
+// Errors are logged but never propagated — the reaper is best-effort
+// housekeeping, not load-bearing for correctness (the /token handler
+// also rejects expired rows at read time).
+func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Duration, log *slog.Logger) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := db.DeleteExpiredDeviceGrants(ctx); err != nil {
+				log.Error("device grant reap", "err", err)
+			} else if n > 0 {
+				log.Debug("device grant reap", "deleted", n)
+			}
+		}
+	}
 }
 
 // provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the

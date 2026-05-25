@@ -76,6 +76,15 @@ const (
 	// deactivated and revocation came along for the ride."
 	ActionAWSFederationRevokedManual = "aws.federation.revoked.manual"
 	ActionAWSFederationRevokeReaped  = "aws.federation.revoke.reaped"
+	// Device authorization grant (RFC 8628) lifecycle. Four distinct
+	// events keyed off the device_grants state machine — separate so
+	// investigations can distinguish "code created but never approved"
+	// (likely user gave up) from "approved then denied at /token"
+	// (likely replay attempt) at audit-tail time.
+	ActionDeviceAuthorizationCreated = "auth.device.authorization.created"
+	ActionDeviceCodeApproved         = "auth.device.code.approved"
+	ActionDeviceCodeDenied           = "auth.device.code.denied"
+	ActionDeviceCodeRedeemed         = "auth.device.code.redeemed"
 )
 
 // logAudit publishes one audit event to the JetStream journal and returns

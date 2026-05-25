@@ -37,6 +37,14 @@
         <div class="text-muted" style="font-size:12px;margin-top:4px">When set, auth POSTs a signed <code>logout_token</code> JWT here on every event that ends a user's session (portal logout, admin deactivation, SCIM deprovision, password reset). Leave empty to opt out.</div>
       </div>
 
+      <div class="form-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="allow_device_grant" name="allow_device_grant" value="1" {{if .Client.AllowDeviceGrant}}checked{{end}}>
+          <label for="allow_device_grant" style="margin:0">Allow device authorization grant (RFC 8628)</label>
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px">Enables headless clients (CLI helpers, IoT) to authenticate via <code>POST /device_authorization</code> &rarr; user code on <code>/device</code> &rarr; poll <code>/token</code>. Off by default; enable only for clients that genuinely need it.</div>
+      </div>
+
       <h3 style="margin-top:24px;margin-bottom:8px;font-size:14px">Portal visibility</h3>
       <div class="text-muted" style="font-size:12px;margin-bottom:12px">
         Controls whether this client renders as a launchable tile on the user-facing

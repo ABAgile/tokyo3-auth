@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, show_in_portal, launch_url, brand_color, icon_url, visible_to_all, secret_rotated_at, created_at`
+const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, show_in_portal, launch_url, brand_color, icon_url, visible_to_all, allow_device_grant, secret_rotated_at, created_at`
 
 func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	c := &model.Client{}
@@ -21,6 +21,7 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 		(*stringArray)(&c.Scopes),
 		&c.Public, &c.BackchannelLogoutURI,
 		&c.ShowInPortal, &c.LaunchURL, &c.BrandColor, &c.IconURL, &c.VisibleToAll,
+		&c.AllowDeviceGrant,
 		&c.SecretRotatedAt, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -73,6 +74,21 @@ func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redire
 		`UPDATE clients SET name = $2, redirect_uris = $3, scopes = $4, public = $5, backchannel_logout_uri = $6 WHERE id = $1`,
 		id, name, stringArray(redirectURIs), stringArray(scopes), public, backchannelLogoutURI)
 	return err
+}
+
+// UpdateClientDeviceGrant flips the per-client opt-in for the RFC
+// 8628 device authorization flow. Separate entry point so the admin
+// edit form can save this independently of the core fields.
+func (s *DB) UpdateClientDeviceGrant(ctx context.Context, id uuid.UUID, allow bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE clients SET allow_device_grant = $2 WHERE id = $1`, id, allow)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (s *DB) UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error {

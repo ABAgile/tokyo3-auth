@@ -56,8 +56,13 @@ type Client struct {
 	BrandColor           string
 	IconURL              string
 	VisibleToAll         bool
-	SecretRotatedAt      time.Time
-	CreatedAt            time.Time
+	// AllowDeviceGrant opts this client into the RFC 8628 device
+	// authorization flow. Off by default; ops flips on for headless
+	// clients (auth-aws-creds and similar). /device_authorization
+	// rejects clients without this flag set.
+	AllowDeviceGrant bool
+	SecretRotatedAt  time.Time
+	CreatedAt        time.Time
 }
 
 type Grant struct {
@@ -249,4 +254,44 @@ type AWSRevokedUser struct {
 	RoleID    uuid.UUID
 	SubUUID   string
 	RevokedAt time.Time
+}
+
+// DeviceGrant status values. State machine:
+//
+//	pending  → approved   (user clicks Approve at /device/confirm)
+//	pending  → denied     (user clicks Deny)
+//	pending  → expired    (lazy transition at /token if expires_at passed)
+//	approved → redeemed   (CLI exchanges device_code at /token)
+//
+// `expired` is also written by the periodic reaper for housekeeping;
+// redeemed and denied rows linger briefly for audit before reap.
+const (
+	DeviceGrantStatusPending  = "pending"
+	DeviceGrantStatusApproved = "approved"
+	DeviceGrantStatusDenied   = "denied"
+	DeviceGrantStatusRedeemed = "redeemed"
+	DeviceGrantStatusExpired  = "expired"
+)
+
+// DeviceGrant backs RFC 8628. See migration 018 for the schema doc.
+// device_code and user_code are stored hashed; the plaintext values
+// only exist in memory at creation time, are returned to the caller
+// once, and are otherwise unrecoverable. mfa_verified / mfa_verified_at
+// are captured at approval time from the approver's portal session so
+// the issued bearer session inherits a stable MFA snapshot.
+type DeviceGrant struct {
+	ID             uuid.UUID
+	DeviceCodeHash string
+	UserCodeHash   string
+	ClientID       uuid.UUID
+	Scopes         []string
+	Status         string
+	UserID         *uuid.UUID
+	MFAVerified    bool
+	MFAVerifiedAt  *time.Time
+	ApproverIP     string
+	IntervalSec    int
+	LastPolledAt   *time.Time
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }

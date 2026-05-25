@@ -464,6 +464,18 @@ auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli
 # Opens browser, completes OIDC code flow on a loopback port, caches the refresh token.
 ```
 
+**Headless login** (no local browser — CI host, jump box, Docker exec session): add `--device` for the RFC 8628 device authorization grant. The CLI prints a verification URL + short code; complete the browser step on any device (phone, another laptop), and the CLI polls for the result.
+
+```bash
+auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli --device
+# Visit this URL to approve sign-in:
+#    https://id.example.com/device?user_code=ABCD-WXYZ
+# Or open https://id.example.com/device and enter ABCD-WXYZ
+# Waiting for approval…
+```
+
+The OAuth client must have `allow_device_grant` set under `/portal/admin/clients/{id}/edit` for this to work — off by default to keep the device grant surface narrow. After login completes, `auth-aws-creds get` behaves identically regardless of which login flow you used.
+
 **Configure each AWS profile to invoke the helper** as its credential source. The `role` flag matches the slug an admin set under `/portal/admin/aws/roles`:
 
 ```ini

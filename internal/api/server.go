@@ -153,6 +153,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /userinfo", s.bearerAuth(s.handleUserInfo))
 	mux.HandleFunc("POST /revoke", s.handleRevoke)
 
+	// RFC 8628 — device authorization grant. /device_authorization is
+	// public (the device has no user yet); /device and /device/confirm
+	// wrap in portalAuth so the approver's identity drives the issued
+	// session. The /token endpoint above gates the new grant_type
+	// internally.
+	mux.HandleFunc("POST /device_authorization", s.handleDeviceAuthorization)
+	mux.HandleFunc("GET /device", s.portalAuth(s.handleDevice))
+	mux.HandleFunc("POST /device", s.portalAuth(s.handleDevice))
+	mux.HandleFunc("POST /device/confirm", s.portalAuth(s.handleDeviceConfirm))
+
 	// AWS OIDC federation — programmatic credentials issuance for the
 	// auth-aws-creds CLI helper (boto3 credential_process).
 	mux.HandleFunc("POST /aws/credentials", s.bearerAuth(s.handleAWSCredentials))

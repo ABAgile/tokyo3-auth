@@ -23,6 +23,7 @@ type Store interface {
 	ExternalIDStore
 	IntegrationStore
 	AWSFederationStore
+	DeviceGrantStore
 }
 
 type UserStore interface {
@@ -59,6 +60,10 @@ type ClientStore interface {
 	// independently of the core client metadata so admin handlers can
 	// edit visibility without touching redirect URIs / scopes / etc.
 	UpdateClientPortalConfig(ctx context.Context, id uuid.UUID, showInPortal bool, launchURL, brandColor, iconURL string, visibleToAll bool) error
+	// UpdateClientDeviceGrant toggles the per-client opt-in for the RFC
+	// 8628 device authorization flow. Separate from UpdateClient so the
+	// admin edit form can save the flag independently.
+	UpdateClientDeviceGrant(ctx context.Context, id uuid.UUID, allow bool) error
 	// ReplaceClientVisibility sets the per-group visibility list for
 	// a client to exactly groupIDs (a la ReplaceGroupMembers).
 	ReplaceClientVisibility(ctx context.Context, clientID uuid.UUID, groupIDs []uuid.UUID) error
@@ -201,4 +206,34 @@ type AWSFederationStore interface {
 	// every session protected by the Deny statement has expired naturally.
 	ListAWSRevokedUsersOlderThan(ctx context.Context, cutoff time.Time) ([]*model.AWSRevokedUser, error)
 	DeleteAWSRevokedUser(ctx context.Context, roleID uuid.UUID, subUUID string) error
+}
+
+// DeviceGrantStore backs RFC 8628. Lookups are by hash on both
+// device_code (CLI-side bearer) and user_code (user-typed at /device);
+// the plaintext values are never stored. Approval mutates user_id +
+// mfa state + status atomically so a partial write can't leave the
+// row in an approve-but-no-user-bound state at /token redemption.
+type DeviceGrantStore interface {
+	CreateDeviceGrant(ctx context.Context, g *model.DeviceGrant) error
+	GetDeviceGrantByDeviceCodeHash(ctx context.Context, hash string) (*model.DeviceGrant, error)
+	GetDeviceGrantByUserCodeHash(ctx context.Context, hash string) (*model.DeviceGrant, error)
+	// MarkDeviceGrantApproved writes the captured approver session
+	// attributes onto the row and transitions status pending → approved.
+	// userID is the approving portal user; mfaVerifiedAt may be nil if
+	// the approver's session never saw MFA (still allowed, just means
+	// the resulting bearer session inherits MFAVerified=false).
+	MarkDeviceGrantApproved(ctx context.Context, id uuid.UUID, userID uuid.UUID, mfaVerified bool, mfaVerifiedAt *time.Time, approverIP string) error
+	// MarkDeviceGrantDenied transitions status pending → denied. The
+	// approver's identity is recorded for audit but not used at /token
+	// redemption (denied codes never mint tokens).
+	MarkDeviceGrantDenied(ctx context.Context, id uuid.UUID, approverIP string) error
+	// MarkDeviceGrantRedeemed transitions status approved → redeemed
+	// at /token. Single-use enforcement: a second redemption attempt
+	// finds the row in redeemed state and is rejected.
+	MarkDeviceGrantRedeemed(ctx context.Context, id uuid.UUID) error
+	// UpdateDeviceGrantPoll records the last poll time + bumps interval_sec
+	// for slow_down responses. Best-effort: a failure here doesn't block
+	// the /token response.
+	UpdateDeviceGrantPoll(ctx context.Context, id uuid.UUID, now time.Time, intervalSec int) error
+	DeleteExpiredDeviceGrants(ctx context.Context) (int, error)
 }

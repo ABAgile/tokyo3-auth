@@ -1,0 +1,39 @@
+{{template "base" .}}
+
+{{define "title"}}Confirm device access{{end}}
+
+{{define "content"}}
+<h1>Confirm device access</h1>
+<p class="subtitle">A device wants to sign in as you. Approve only if you started this request.</p>
+
+<div class="card">
+  <div class="card-body">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div><strong>App:</strong> {{.ClientName}}</div>
+      <div><strong>Code:</strong> <code style="font-family:monospace;letter-spacing:0.15em">{{.UserCode}}</code></div>
+      <div><strong>Approving from:</strong> {{.ApproverIP}}</div>
+      <div>
+        <strong>Requested access:</strong>
+        {{if .Scopes}}
+          <span style="display:inline-block;margin-left:6px">
+            {{range .Scopes}}<span class="badge badge-gray">{{.}}</span> {{end}}
+          </span>
+        {{else}}
+          <span class="text-muted">no scopes</span>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</div>
+
+<form method="POST" action="/device/confirm" style="margin-top:14px;display:flex;gap:10px">
+  <input type="hidden" name="grant_id" value="{{.GrantID}}">
+  <button type="submit" name="action" value="approve" class="btn btn-primary" style="flex:1">Approve</button>
+  <button type="submit" name="action" value="deny" class="btn btn-secondary" style="flex:1">Deny</button>
+</form>
+
+<p class="text-muted" style="font-size:13px;margin-top:14px">
+  Verify the code shown above matches the one displayed by your device. If it doesn't,
+  <strong>deny</strong>.
+</p>
+{{end}}

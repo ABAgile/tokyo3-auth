@@ -358,6 +358,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.handleTokenRefresh(w, r)
 	case "client_credentials":
 		s.handleTokenClientCreds(w, r)
+	case "urn:ietf:params:oauth:grant-type:device_code":
+		s.handleTokenDeviceCode(w, r)
 	default:
 		s.writeError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant_type")
 	}
@@ -604,6 +606,15 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, nonce string) (map[string]any, error) {
+	return s.mintTokenResponseWithMFAAt(r, user, client, scopes, mfaVerified, nil, nonce)
+}
+
+// mintTokenResponseWithMFAAt is the same as mintTokenResponse but lets
+// the caller stamp the session's mfa_verified_at to a specific time
+// rather than leaving it nil. Used by the device-code grant to carry
+// forward the approver's MFA freshness onto the bearer session so
+// step-up gates continue to see it as verified.
+func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, mfaVerifiedAt *time.Time, nonce string) (map[string]any, error) {
 	rawAccess, err := auth.GenerateRawToken()
 	if err != nil {
 		return nil, err
@@ -623,6 +634,7 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 		AccessExpiresAt:  now.Add(accessTokenTTL),
 		RefreshExpiresAt: now.Add(refreshTokenTTL),
 		MFAVerified:      mfaVerified,
+		MFAVerifiedAt:    mfaVerifiedAt,
 	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		return nil, fmt.Errorf("create session: %w", err)

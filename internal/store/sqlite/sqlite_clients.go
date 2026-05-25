@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, show_in_portal, launch_url, brand_color, icon_url, visible_to_all, secret_rotated_at, created_at`
+const clientCols = `id, client_id, client_secret_hash, name, redirect_uris, scopes, public, backchannel_logout_uri, show_in_portal, launch_url, brand_color, icon_url, visible_to_all, allow_device_grant, secret_rotated_at, created_at`
 
 func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 	c := &model.Client{}
@@ -21,6 +21,7 @@ func scanClient(row interface{ Scan(...any) error }) (*model.Client, error) {
 		(*stringArray)(&c.Scopes),
 		&c.Public, &c.BackchannelLogoutURI,
 		&c.ShowInPortal, &c.LaunchURL, &c.BrandColor, &c.IconURL, &c.VisibleToAll,
+		&c.AllowDeviceGrant,
 		&c.SecretRotatedAt, &c.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -88,6 +89,21 @@ func (s *DB) UpdateClient(ctx context.Context, id uuid.UUID, name string, redire
 		`UPDATE clients SET name = ?, redirect_uris = ?, scopes = ?, public = ?, backchannel_logout_uri = ? WHERE id = ?`,
 		name, stringArray(redirectURIs), stringArray(scopes), public, backchannelLogoutURI, id)
 	return err
+}
+
+// UpdateClientDeviceGrant flips the per-client opt-in for the RFC
+// 8628 device authorization flow. Separate from UpdateClient so the
+// admin edit form can save this independently of the core fields.
+func (s *DB) UpdateClientDeviceGrant(ctx context.Context, id uuid.UUID, allow bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE clients SET allow_device_grant = ? WHERE id = ?`, allow, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (s *DB) UpdateClientSecret(ctx context.Context, id uuid.UUID, secretHash string) error {
@@ -167,7 +183,7 @@ func (s *DB) ListPortalClientsForUser(ctx context.Context, userID uuid.UUID) ([]
 		    c.id, c.client_id, c.client_secret_hash, c.name,
 		    c.redirect_uris, c.scopes, c.public, c.backchannel_logout_uri,
 		    c.show_in_portal, c.launch_url, c.brand_color, c.icon_url, c.visible_to_all,
-		    c.secret_rotated_at, c.created_at
+		    c.allow_device_grant, c.secret_rotated_at, c.created_at
 		  FROM clients c
 		  LEFT JOIN client_visibility v   ON v.client_id = c.id
 		  LEFT JOIN scim_group_members m  ON m.group_id  = v.group_id AND m.user_id = ?

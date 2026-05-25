@@ -1,0 +1,19 @@
+{{template "base" .}}
+
+{{define "title"}}Device authorization{{end}}
+
+{{define "content"}}
+{{if .Error}}
+<h1>Already processed</h1>
+<div class="alert alert-error" style="margin-top:14px">{{.Error}}</div>
+<p class="text-muted">If your device is still waiting, restart the sign-in from the device.</p>
+{{else if .Approved}}
+<h1>Approved</h1>
+<p class="subtitle">Return to the device — it should complete sign-in within a few seconds.</p>
+<p class="text-muted">You can close this tab.</p>
+{{else}}
+<h1>Denied</h1>
+<p class="subtitle">The request was rejected. The device will not receive credentials.</p>
+<p class="text-muted">You can close this tab.</p>
+{{end}}
+{{end}}
