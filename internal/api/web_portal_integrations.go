@@ -425,6 +425,9 @@ func (f integrationFormInput) validate(needToken bool) string {
 		}
 	case model.AppIntegrationProviderIAM:
 		// no required fields beyond name
+	case model.AppIntegrationProviderAWSFederation:
+		// Credential-less provisioner: name + enabled is the whole row.
+		// IAM permissions come from the SDK default chain on the host.
 	case "":
 		return "Provider is required."
 	default:

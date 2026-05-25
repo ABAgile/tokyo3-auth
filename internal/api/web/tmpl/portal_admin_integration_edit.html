@@ -20,6 +20,7 @@
         {{if .IsNew}}
         <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
           <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
+          <option value="aws_federation" {{if eq .Integration.Provider "aws_federation"}}selected{{end}}>AWS OIDC Federation (session revocation)</option>
           <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM Users (legacy)</option>
         </select>
         {{else}}
@@ -75,6 +76,21 @@
             <code>AUTH_SCIM_MTLS_CA</code> (env vars, not portal-managed). The cert is
             hot-reloaded; the downstream must allow-list auth's CA + SAN/CN.
           </div>
+        </div>
+      </div>
+
+      <div data-provider="aws_federation" {{if ne .Integration.Provider "aws_federation"}}style="display:none"{{end}}>
+        <div class="alert alert-info" style="font-size:13px;margin-bottom:12px">
+          <strong>Session revocation only.</strong> Federation itself (login → AWS Console / CLI) works without this integration — it lives on
+          <a href="/portal/admin/aws"><strong>/portal/admin/aws</strong></a>. Enabling this row adds a deactivation-time push that writes a Deny
+          statement into each managed role's <code>AuthRevokedUsers</code> inline policy, killing in-flight STS sessions within ~30s instead of
+          waiting up to the role's <code>MaxSessionDuration</code> for natural expiry.
+          <br><br>
+          No fields below — the provisioner reads AWS credentials from the SDK default chain (instance profile / IRSA / task role / IAM Roles
+          Anywhere). The IAM principal authd assumes must have <code>iam:GetRolePolicy</code>, <code>iam:PutRolePolicy</code>, and
+          <code>iam:DeleteRolePolicy</code> on every federation role; scoping with
+          <code>"Condition": {"StringEquals": {"iam:PolicyName": "AuthRevokedUsers"}}</code>
+          keeps the blast radius to just this inline policy.
         </div>
       </div>
 
