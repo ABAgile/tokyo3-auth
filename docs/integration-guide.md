@@ -225,13 +225,13 @@ Every JWT minted by auth's federation handler carries a `https://aws.amazon.com/
   "principal_tags": {
     "sub":   ["<auth user UUID>"],
     "email": ["alice@example.com"],
-    "team":  ["<first SCIM group display name>"]
+    "team":  ["<authorizing SCIM group display name>"]
   },
   "transitive_tag_keys": ["email", "sub", "team"]
 }
 ```
 
-`sub` is always emitted. `email` is emitted when the user has one. `team` is emitted from the user's first SCIM group (alphabetical order; rest of the groups go into the informational `groups` claim but are not session-tagged). All three are marked **transitive**, meaning they persist through any subsequent `sts:AssumeRole` chain calls.
+`sub` is always emitted. `email` is emitted when the user has one. `team` is the alphabetically-first SCIM group that **both** contains the user and is mapped to the role being assumed via `aws_role_assignments` — i.e. the group that actually authorized this particular assumption. A user who belongs to several mapped groups will see different `team` values depending on which role they're assuming, which is what makes `aws:RequestTag/team` viable as a per-role trust-policy discriminator. The user's full group list still rides on the informational `groups` claim (not session-tagged). All three principal tags are marked **transitive**, meaning they persist through any subsequent `sts:AssumeRole` chain calls.
 
 AWS reads this claim during `AssumeRoleWithWebIdentity` and surfaces each tag at two stages:
 

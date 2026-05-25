@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,14 +184,25 @@ func (s *Server) assumeRoleForUser(ctx context.Context, user *model.User, sess *
 	// `aud` to `team`). The role trust policy MUST allow sts:TagSession
 	// for this to be accepted (see README); without it, AWS rejects the
 	// call with AccessDenied at AssumeRole time.
+	//
+	// `team` is set to the group that actually authorized this assumption
+	// (intersection of the user's SCIM groups and aws_role_assignments
+	// for role.ID), not the user's first group overall — otherwise a user
+	// with multiple group memberships would always present the same
+	// `team` value regardless of which role they're assuming, breaking
+	// per-role trust-policy gating.
 	principalTags := map[string]string{
 		"sub": user.ID.String(),
 	}
 	if user.Email != "" {
 		principalTags["email"] = user.Email
 	}
-	if primary := firstNonEmpty(groups); primary != "" {
-		principalTags["team"] = primary
+	authzGroups, err := s.authorizingGroupsForRole(ctx, user.ID, role.ID)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve authorizing groups: %w", err)
+	}
+	if len(authzGroups) > 0 {
+		principalTags["team"] = authzGroups[0]
 	}
 	idToken, err := s.signer.MintFederationToken(
 		user.ID.String(),
@@ -334,18 +346,45 @@ func buildConsoleLoginURL(signinToken, issuerURL, destination string) string {
 	return awsSigninFedURL + "?" + q.Encode()
 }
 
-// firstNonEmpty returns the first non-empty trimmed entry in s. Used to
-// pick a "primary" SCIM group to inject as the team session tag when the
-// user belongs to multiple groups — we keep the others available in the
-// id_token's `groups` claim for CloudTrail visibility but only one can
-// fit the single-value tag shape AWS recognises today.
-func firstNonEmpty(s []string) string {
-	for _, v := range s {
-		if v != "" {
-			return v
+// authorizingGroupsForRole returns the display names of SCIM groups
+// that both contain userID and map to roleID in aws_role_assignments —
+// i.e. the groups that gave this user the right to assume this role.
+// Sorted lexicographically so the caller can deterministically pick a
+// single value (e.g. for the `team` session tag) without re-sorting.
+//
+// The two-table walk is intentional: ListAWSRolesForUser collapses
+// assignments to roles and loses the originating group, but the team
+// tag has to name a group, not a role.
+func (s *Server) authorizingGroupsForRole(ctx context.Context, userID, roleID uuid.UUID) ([]string, error) {
+	assigns, err := s.store.ListAWSRoleAssignments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	authorizing := make(map[uuid.UUID]struct{})
+	for _, a := range assigns {
+		if a.RoleID == roleID {
+			authorizing[a.GroupID] = struct{}{}
 		}
 	}
-	return ""
+	if len(authorizing) == 0 {
+		return nil, nil
+	}
+	groups, err := s.store.ListGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, g := range groups {
+		if _, ok := authorizing[g.ID]; !ok {
+			continue
+		}
+		if !slices.Contains(g.Members, userID) {
+			continue
+		}
+		names = append(names, g.DisplayName)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // buildRoleSessionName produces a CloudTrail-friendly identifier for the
