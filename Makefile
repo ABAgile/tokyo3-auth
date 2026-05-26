@@ -219,11 +219,11 @@ gen-certs:
 
 ## test: Run all tests
 test:
-	$(GO) test ./... -count=1
+	$(GO) test ./...
 
 ## test-verbose: Run all tests with verbose output
 test-verbose:
-	$(GO) test ./... -count=1 -v
+	$(GO) test ./... -v
 
 ## tidy: Run go mod tidy
 tidy:
@@ -240,7 +240,7 @@ lint:
 ## check: Full pre-commit sequence (gofmt + test + staticcheck + gopls + govulncheck)
 check:
 	gofmt -s -w .
-	$(GO) test ./... -count=1
+	$(GO) test ./...
 	staticcheck ./...
 	find . -type f -name "*.go" -print0 | xargs -0 -n 100 gopls check -severity=hint
 	govulncheck ./...
