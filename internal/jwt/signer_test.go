@@ -66,6 +66,7 @@ func TestMintIDToken_ClaimsAndHeader(t *testing.T) {
 		"user-123", "client-abc", "alice@example.com", "Alice",
 		"nonce-xyz", []string{"openid", "email"},
 		true, []string{"pwd", "mfa"}, authTime, "sid-456",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("MintIDToken: %v", err)
@@ -113,7 +114,7 @@ func TestMintIDToken_ClaimsAndHeader(t *testing.T) {
 
 func TestMintIDToken_NoMFAOmitsACR(t *testing.T) {
 	s := newTestSigner(t)
-	tok, err := s.MintIDToken("u", "c", "e@x", "", "", nil, false, nil, time.Now(), "")
+	tok, err := s.MintIDToken("u", "c", "e@x", "", "", nil, false, nil, time.Now(), "", nil)
 	if err != nil {
 		t.Fatalf("MintIDToken: %v", err)
 	}
@@ -129,9 +130,41 @@ func TestMintIDToken_NoMFAOmitsACR(t *testing.T) {
 	}
 }
 
+// TestMintIDToken_GroupsClaim pins the emit/omit contract on the
+// groups claim: present-when-passed, absent-when-empty. The api-layer
+// caller gates this on the `groups` OAuth scope — at the signer
+// level, "the caller decides" is the right shape.
+func TestMintIDToken_GroupsClaim(t *testing.T) {
+	s := newTestSigner(t)
+
+	withGroups, err := s.MintIDToken("u", "c", "e@x", "", "", []string{"openid"},
+		false, nil, time.Now(), "", []string{"platform", "data"})
+	if err != nil {
+		t.Fatalf("MintIDToken (with groups): %v", err)
+	}
+	_, claims := parseUnverified(t, withGroups)
+	got, ok := claims["groups"].([]any)
+	if !ok {
+		t.Fatalf("groups claim missing or wrong type: %v", claims["groups"])
+	}
+	if len(got) != 2 || got[0] != "platform" || got[1] != "data" {
+		t.Errorf("groups = %v, want [platform data]", got)
+	}
+
+	withoutGroups, err := s.MintIDToken("u", "c", "e@x", "", "", []string{"openid"},
+		false, nil, time.Now(), "", nil)
+	if err != nil {
+		t.Fatalf("MintIDToken (no groups): %v", err)
+	}
+	_, claims = parseUnverified(t, withoutGroups)
+	if _, present := claims["groups"]; present {
+		t.Errorf("groups claim should be omitted when nil, got %v", claims["groups"])
+	}
+}
+
 func TestMintIDToken_SignatureVerifies(t *testing.T) {
 	s := newTestSigner(t)
-	tok, err := s.MintIDToken("u", "c", "e@x", "n", "", nil, true, nil, time.Now(), "")
+	tok, err := s.MintIDToken("u", "c", "e@x", "n", "", nil, true, nil, time.Now(), "", nil)
 	if err != nil {
 		t.Fatalf("MintIDToken: %v", err)
 	}

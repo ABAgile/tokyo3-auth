@@ -483,9 +483,14 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if containsStr(sess.Scopes, "openid") {
 		// aud must be the OAuth client_id string the RP is configured with,
 		// not the database row UUID — RPs (e.g. go-oidc) reject otherwise.
+		var groups []string
+		if containsStr(sess.Scopes, "groups") {
+			groups, _ = s.groupNamesForUser(r.Context(), sess.UserID)
+		}
 		idToken, err = s.signer.MintIDToken(
 			sess.UserID.String(), client.ClientID,
 			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, time.Now(), sess.ID.String(),
+			groups,
 		)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "server_error", "id token failed")
@@ -647,9 +652,18 @@ func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, c
 		"scope":         strings.Join(scopes, " "),
 	}
 	if containsStr(scopes, "openid") {
+		// Look up groups at mint time so newly-added (or removed)
+		// memberships propagate to the next token, not just at the
+		// next /authorize round trip. Gated on the `groups` scope to
+		// keep tokens lean for RPs that don't consume the claim.
+		var groups []string
+		if containsStr(scopes, "groups") {
+			groups, _ = s.groupNamesForUser(r.Context(), user.ID)
+		}
 		idToken, err := s.signer.MintIDToken(
 			user.ID.String(), client.ClientID,
 			user.Email, user.Name, nonce, scopes, mfaVerified, nil, time.Now(), sess.ID.String(),
+			groups,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("mint id token: %w", err)

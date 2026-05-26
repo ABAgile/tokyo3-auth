@@ -22,7 +22,7 @@ A minimal self-hosted Identity Provider (IdP) for internal applications.
 ### Token model
 - **Access tokens**: Opaque random 32-byte hex strings. SHA-256 hashes stored in the database. Never stored in plain text.
 - **Refresh tokens**: Same opaque model; rotated on each use.
-- **ID tokens**: RS256 JWT with OIDC Core 1.0 claims (`sub`, `iss`, `aud`, `exp`, `iat`, `email`, `name`, `nonce`, `auth_time`, `acr`, `amr`).
+- **ID tokens**: RS256 JWT with OIDC Core 1.0 claims (`sub`, `iss`, `aud`, `exp`, `iat`, `email`, `name`, `nonce`, `auth_time`, `acr`, `amr`). `groups` (SCIM group display names) is emitted when the RP requests the `groups` scope — useful for RPs that map roles from a team/group claim (OpenSearch Security `backend_roles`, Vault JWT `claim_mappings`, etc.).
 - **Code grant**: 10-minute authorization codes; single-use; PKCE S256 verified at exchange.
 
 ### Policy engine

@@ -40,6 +40,13 @@ type IDClaims struct {
 	Email             string   `json:"email,omitempty"`
 	Name              string   `json:"name,omitempty"`
 	PreferredUsername string   `json:"preferred_username,omitempty"`
+	// Groups carries the user's SCIM group display names. Gated by the
+	// caller on the `groups` OAuth scope so clients that don't request
+	// it don't get bloated tokens. Consumed by RPs that map roles from
+	// a group/team claim (OpenSearch Security `backend_roles`, Vault
+	// JWT auth `claim_mappings`, etc.). Empty slice or nil → claim is
+	// omitted entirely via omitempty.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // Signer holds an active RS256 private key and mints ID tokens.
@@ -200,7 +207,7 @@ func (s *Signer) MintFederationToken(userID, audience, email, name string, group
 // MintIDToken creates a signed RS256 JWT ID token. sid (empty string accepted)
 // is emitted as the OIDC Back-Channel Logout 1.0 `sid` claim and lets RPs
 // correlate a logout_token back to a specific local session row.
-func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes []string, mfaVerified bool, amr []string, authTime time.Time, sid string) (string, error) {
+func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes []string, mfaVerified bool, amr []string, authTime time.Time, sid string, groups []string) (string, error) {
 	now := time.Now().UTC()
 	acr := ""
 	if mfaVerified {
@@ -223,6 +230,7 @@ func (s *Signer) MintIDToken(userID, clientID, email, name, nonce string, scopes
 		Email:             email,
 		Name:              name,
 		PreferredUsername: email,
+		Groups:            groups,
 	}
 	token := gojwt.NewWithClaims(gojwt.SigningMethodRS256, claims)
 	token.Header["kid"] = s.kid
