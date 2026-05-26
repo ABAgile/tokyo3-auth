@@ -1734,6 +1734,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 	brandColor := strings.TrimSpace(r.FormValue("brand_color"))
 	iconURL := strings.TrimSpace(r.FormValue("icon_url"))
 	visibleToAll := r.FormValue("visible_to_all") == "1"
+	allowDeviceGrant := r.FormValue("allow_device_grant") == "1"
 	groupIDs := parseGroupIDs(r.Form["visibility_group_ids"])
 
 	showErr := func(msg string) {
@@ -1741,6 +1742,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 			Name: name, RedirectURIs: redirectURIs, Scopes: scopes, Public: public,
 			BackchannelLogoutURI: backchannelLogoutURI,
 			ShowInPortal:         showInPortal, LaunchURL: launchURL, BrandColor: brandColor, IconURL: iconURL, VisibleToAll: visibleToAll,
+			AllowDeviceGrant: allowDeviceGrant,
 		}
 		s.renderClientForm(w, r, pc, cl, true, msg, "", groupIDs)
 	}
@@ -1784,6 +1786,14 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 	}
 	if err := s.store.ReplaceClientVisibility(r.Context(), client.ID, groupIDs); err != nil {
 		s.log.Error("set client visibility", "id", client.ID, "err", err)
+	}
+	// allow_device_grant defaults to FALSE at the DB level, so only push
+	// an update when the operator opted in — keeps the no-op-create path
+	// from doing an unnecessary write.
+	if allowDeviceGrant {
+		if err := s.store.UpdateClientDeviceGrant(r.Context(), client.ID, true); err != nil {
+			s.log.Error("set client device grant flag", "id", client.ID, "err", err)
+		}
 	}
 	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email, "portal_visible", showInPortal)); err != nil {
 		s.auditFail(w, err)
