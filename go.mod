@@ -15,7 +15,7 @@ require (
 	github.com/nats-io/nats.go v1.51.0
 	github.com/pquerna/otp v1.5.0
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/crypto v0.50.0
+	golang.org/x/crypto v0.52.0
 	modernc.org/sqlite v1.48.2
 )
 
@@ -53,8 +53,8 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

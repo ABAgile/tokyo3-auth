@@ -1,75 +1,66 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestSafeFilename(t *testing.T) {
-	// Allowed character set is [A-Za-z0-9._-]; everything else becomes '_'.
-	// Crucially the / character is replaced even when adjacent to dots,
-	// which neutralises path-traversal payloads — without a slash, ".."
-	// is just a filename segment, not a parent-directory escape.
-	cases := map[string]string{
-		"tokyo3-platform-prod":  "tokyo3-platform-prod",
-		"with.dots":             "with.dots",
-		"with/slash":            "with_slash",
-		"../../../etc/passwd":   ".._.._.._etc_passwd",
-		"a b c":                 "a_b_c",
-		"":                      "default",
-		"unicode-嗨":             "unicode-___",
-		"shell$injection`echo`": "shell_injection_echo_",
-	}
-	for in, want := range cases {
-		if got := safeFilename(in); got != want {
-			t.Errorf("safeFilename(%q) = %q, want %q", in, got, want)
+// TestFetchAWSCredentials_HappyPath exercises the AWS-specific wire
+// shape: form-encoded role slug, bearer access token, JSON response
+// in credential_process v1 format.
+func TestFetchAWSCredentials_HappyPath(t *testing.T) {
+	var (
+		gotAuth string
+		gotForm url.Values
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/aws/credentials" {
+			http.NotFound(w, r)
+			return
 		}
+		gotAuth = r.Header.Get("Authorization")
+		_ = r.ParseForm()
+		gotForm = r.PostForm
+		_ = json.NewEncoder(w).Encode(awsCredentialsResponse{
+			Version:         1,
+			AccessKeyID:     "AKIA",
+			SecretAccessKey: "secret",
+			SessionToken:    "session",
+			Expiration:      time.Now().Add(time.Hour).UTC(),
+		})
+	}))
+	defer srv.Close()
+
+	got, err := fetchAWSCredentials(srv.URL, "tok-access", "platform-prod")
+	if err != nil {
+		t.Fatalf("fetchAWSCredentials: %v", err)
+	}
+	if got.AccessKeyID != "AKIA" {
+		t.Errorf("AccessKeyID = %q", got.AccessKeyID)
+	}
+	if gotAuth != "Bearer tok-access" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if gotForm.Get("role") != "platform-prod" {
+		t.Errorf("role = %q", gotForm.Get("role"))
 	}
 }
 
-// TestSafeFilename_NoSlashesInResult is the load-bearing safety property:
-// no input produces an output containing a path separator, so writes
-// against `<cachedir>/<result>.json` cannot escape the cache directory.
-func TestSafeFilename_NoSlashesInResult(t *testing.T) {
-	for _, in := range []string{
-		"../etc", "/etc/passwd", "..\\windows", "foo/bar/baz", "..\\..\\x",
-	} {
-		got := safeFilename(in)
-		if strings.ContainsAny(got, "/\\") {
-			t.Errorf("safeFilename(%q) = %q — contains path separator", in, got)
-		}
-	}
-}
+// TestFetchAWSCredentials_NonOK_Surfaces propagates the status code
+// and body so users see why STS exchange failed.
+func TestFetchAWSCredentials_NonOK_Surfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "role 'nope' not configured", http.StatusForbidden)
+	}))
+	defer srv.Close()
 
-func TestBuildAuthorizeURL_PKCEAndScopes(t *testing.T) {
-	url := buildAuthorizeURL("https://id.example.com", "tokyo3-cli",
-		"http://127.0.0.1:54321/callback", "test-state", "test-challenge")
-	// Brittle whole-string match would break on map-iteration order;
-	// assert on individual query params instead.
-	wants := []string{
-		"https://id.example.com/authorize?",
-		"client_id=tokyo3-cli",
-		"response_type=code",
-		"code_challenge=test-challenge",
-		"code_challenge_method=S256",
-		"state=test-state",
-		"redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2Fcallback",
-		"scope=openid+email+profile+offline_access",
-	}
-	for _, w := range wants {
-		if !strings.Contains(url, w) {
-			t.Errorf("buildAuthorizeURL missing %q in %s", w, url)
-		}
-	}
-}
-
-// TestBuildAuthorizeURL_TrailingSlashIssuer guards against double-slash
-// in the authorize URL when the issuer is configured with a trailing
-// slash (a common operator typo). The result should still produce one
-// "/authorize?" with exactly one leading slash.
-func TestBuildAuthorizeURL_TrailingSlashIssuer(t *testing.T) {
-	url := buildAuthorizeURL("https://id.example.com/", "c", "http://x", "s", "ch")
-	if strings.Contains(url, "//authorize") {
-		t.Errorf("double-slash in authorize URL: %s", url)
+	_, err := fetchAWSCredentials(srv.URL, "tok", "nope")
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "nope") {
+		t.Errorf("err = %v, want 403 + body message", err)
 	}
 }

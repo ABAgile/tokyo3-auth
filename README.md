@@ -543,6 +543,70 @@ To set realistic expectations:
 
 These omissions are deliberate — credentials are policy decisions, not provisioning decisions — but they mean the IAM provisioner is not a "create a fully-usable IAM user" feature. Pair it with whatever credential-issuance tooling your org uses.
 
+## SSH access via `auth-ssh-creds`
+
+`auth-ssh-creds` is the SSH counterpart to `auth-aws-creds`: it uses auth's OIDC code/device flow to obtain an ID token, then sends that token to `certd` (the SSH cert authority) in exchange for a short-lived SSH user certificate. The helper writes the cert + private key into a local directory; you point `ssh` at them with `-i`, or `Include` the generated `ssh_config` snippet.
+
+The OIDC plumbing (browser flow, PKCE, token cache, refresh-rotation) lives in [`internal/oidcclient`](internal/oidcclient) and is shared with `auth-aws-creds`. Only the SSH-specific bits (keypair generation, `POST /api/v1/ssh/sign-user`, on-disk cert layout) live in [`cmd/auth-ssh-creds`](cmd/auth-ssh-creds).
+
+```bash
+go install github.com/abagile/tokyo3-auth/cmd/auth-ssh-creds@latest
+```
+
+**One-time setup** (re-use the same OAuth public client you registered for `auth-aws-creds`):
+
+```bash
+auth-ssh-creds login --issuer https://id.example.com --client-id tokyo3-cli
+# Opens browser, completes OIDC code flow on a loopback port, caches the
+# refresh + id tokens.
+```
+
+`--device` selects the RFC 8628 grant for headless hosts (same UX as `auth-aws-creds login --device`).
+
+**On-demand cert minting**:
+
+```bash
+auth-ssh-creds get \
+    --certd https://certd.internal \
+    --principals alice,deployer \
+    --ttl 1h
+# auth-ssh-creds: cert written
+#   key:  ~/.config/auth-ssh-creds/keys/id_ed25519
+#   cert: ~/.config/auth-ssh-creds/keys/id_ed25519-cert.pub
+#   ttl:  59m59s (valid_before 2026-05-26T15:00:00Z)
+#   principals: alice,deployer
+```
+
+The first `get` generates an ed25519 keypair in `~/.config/auth-ssh-creds/keys/`; subsequent calls reuse it and only refresh the signed certificate. `key_id` defaults to the `email` claim in the ID token (falling back to `sub`); override with `--key-id`. Pass `--groups eng,sre` when certd is configured with `Policy` to enforce role-table membership.
+
+**Drop-in `ssh_config` snippet** — pass `--proxy-jump <ssh-proxyd-host:port>` and the helper prints a block you can append to `~/.ssh/config` (or to a file `Include`d from it):
+
+```bash
+auth-ssh-creds get \
+    --certd https://certd.internal \
+    --principals alice \
+    --proxy-jump ssh-proxyd.internal:2222 \
+    > ~/.ssh/config.d/abagile
+```
+
+After that, `ssh db-1.prod.internal` routes through `ssh-proxyd` using the certd-issued user cert — no manual `-i` / `-J` flags.
+
+**How the bearer token reaches certd**: `auth-ssh-creds` sends `Authorization: Bearer <id_token>` to certd's `/api/v1/ssh/sign-user` endpoint. certd validates the token against auth's JWKS (`<issuer>/.well-known/jwks.json`) — no certd → auth callback needed; the client carries the token end-to-end. JWKS caching means a transient auth restart doesn't break cert issuance.
+
+**Cache layout** under `${XDG_CONFIG_HOME:-~/.config}/auth-ssh-creds/`:
+
+```
+config.json                 ← issuer + client_id (non-secret, 0600)
+tokens.json                 ← OAuth access + refresh + id tokens (0600)
+keys/id_ed25519             ← ed25519 private key (0600)
+keys/id_ed25519.pub         ← public key (0644)
+keys/id_ed25519-cert.pub    ← certd-signed user cert (0644)
+```
+
+`auth-ssh-creds logout` wipes both the token cache and `keys/` (so a fresh `login` doesn't leave a stale signed cert next to a new identity). `config.json` is preserved so you can re-`login` without re-typing flags.
+
+**Programmatic endpoint**: the helper talks to `POST /api/v1/ssh/sign-user` with JSON body `{public_key, key_id, principals, groups, ttl_seconds}`. See `ca/internal/server/api/sign_ssh.go` for the certd-side shape.
+
 ## Outbound provisioning
 
 Auth fans out user and group lifecycle events to downstream systems whenever an authoritative mutation occurs — inbound SCIM, the admin API, self-registration, and the portal admin actions all trigger the same fan-out. Each downstream is a `provision.Provisioner` (`internal/provision/`); failures are logged but never block the originating request.
