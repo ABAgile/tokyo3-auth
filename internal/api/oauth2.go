@@ -707,7 +707,59 @@ func (s *Server) incrementFailedAttempts(r *http.Request, user *model.User) {
 }
 
 func validRedirectURI(client *model.Client, uri string) bool {
-	return slices.Contains(client.RedirectURIs, uri)
+	if slices.Contains(client.RedirectURIs, uri) {
+		return true
+	}
+	// RFC 8252 §7.3 — for native apps using the loopback IP, the
+	// authorization server should ignore the port component when
+	// matching the redirect URI. The CLI helpers (auth-aws-creds,
+	// auth-ssh-creds) listen on an ephemeral port chosen at runtime,
+	// so requiring exact matches would force users to either pin a
+	// port via --port and pre-register `127.0.0.1:<port>/callback`,
+	// or pre-register every port they might ever pick. Loopback-aware
+	// matching lets them register `http://127.0.0.1/callback` once.
+	return loopbackRedirectMatch(client.RedirectURIs, uri)
+}
+
+// loopbackRedirectMatch returns true when uri's host is a loopback
+// address (127.0.0.1, ::1, localhost) and the registered list contains
+// a matching scheme + host + path with any port (or no port). Scheme
+// must still be http for loopback; path must match exactly.
+//
+// Returns false on parse errors, non-loopback hosts, scheme/path
+// mismatches — caller's strict-equality check already covers those.
+func loopbackRedirectMatch(registered []string, uri string) bool {
+	in, err := url.Parse(uri)
+	if err != nil || in.Scheme != "http" {
+		return false
+	}
+	if !isLoopbackHost(in.Hostname()) {
+		return false
+	}
+	for _, reg := range registered {
+		r, err := url.Parse(reg)
+		if err != nil || r.Scheme != "http" {
+			continue
+		}
+		if !isLoopbackHost(r.Hostname()) {
+			continue
+		}
+		// Hosts must both be loopback but need not be the same family
+		// (127.0.0.1 registered, ::1 used, or vice versa) — both are
+		// valid for native apps per the RFC. Path must match exactly.
+		if r.Path == in.Path {
+			return true
+		}
+	}
+	return false
+}
+
+// isLoopbackHost returns true for the three host names a native app's
+// loopback redirect is allowed to use. Matched case-insensitively;
+// trimmed of brackets so [::1] and ::1 both qualify.
+func isLoopbackHost(host string) bool {
+	h := strings.ToLower(strings.Trim(host, "[]"))
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
 func verifyPKCE(challenge, verifier string) bool {

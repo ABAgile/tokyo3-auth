@@ -464,6 +464,8 @@ auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli
 # Opens browser, completes OIDC code flow on a loopback port, caches the refresh token.
 ```
 
+Register the public client with **`http://127.0.0.1/callback`** (or `http://localhost/callback`) as a redirect URI. Auth applies RFC 8252 §7.3 loopback-aware matching, so the port the CLI picks at runtime (kernel-assigned by default, or `--port N` if you want to pin) is ignored — no per-port pre-registration needed. Same client_id works for both `auth-aws-creds` and `auth-ssh-creds`.
+
 **Headless login** (no local browser — CI host, jump box, Docker exec session): add `--device` for the RFC 8628 device authorization grant. The CLI prints a verification URL + short code; complete the browser step on any device (phone, another laptop), and the CLI polls for the result.
 
 ```bash
