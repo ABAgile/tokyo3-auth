@@ -96,6 +96,24 @@ cd auth
 go build -o authd ./cmd/authd
 ```
 
+### Docker images
+
+Tagged releases push two images to GHCR:
+
+| Image | Contents | Typical use |
+| --- | --- | --- |
+| `ghcr.io/abagile/tokyo3-auth` | `authd` server | Run the IdP itself; `docker run` + the env vars in [Configuration](#configuration) |
+| `ghcr.io/abagile/tokyo3-auth-cli` | `auth-aws-creds` + `auth-ssh-creds` helpers | CI runners and dev containers that prefer a containerized binary over `go install` |
+
+The CLI image has no `ENTRYPOINT` — pick which binary to run:
+
+```bash
+docker run --rm ghcr.io/abagile/tokyo3-auth-cli auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli
+docker run --rm ghcr.io/abagile/tokyo3-auth-cli auth-ssh-creds login --issuer https://id.example.com --client-id tokyo3-cli
+```
+
+Both images are multi-arch (`linux/amd64`, `linux/arm64`). Tags follow semver (`{{version}}`, `{{major}}.{{minor}}`, `{{major}}`, `latest`) on git tag pushes; commit-SHA tags on every build for traceability.
+
 ### Database setup
 
 ```bash

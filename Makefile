@@ -1,20 +1,20 @@
 ## tokyo3-auth — build targets
 ##
 ## Usage:
-##   make build             Build authd + auth-aws-creds binaries to ./bin/
+##   make build             Build authd + auth-aws-creds + auth-ssh-creds binaries to ./bin/
 ##   make run               Start authd with dev defaults (Postgres + NATS via compose)
 ##   make run-mtls          Start authd with mTLS (cert auth, no password in DSN)
 ##   make keygen            Generate an AUTH_MASTER_KEY
 ##   make check             Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
 ##   make docker-build      Build the server Docker image (authd only)
-##   make docker-build-cli  Build a thin Docker image containing only the auth-aws-creds CLI
+##   make docker-build-cli  Build a thin Docker image containing both CLI helpers (auth-aws-creds + auth-ssh-creds)
 ##   make docker-up         Bring up the full stack (Postgres + NATS + auth + Traefik + Teleport)
 ##   make docker-up-mtls    Bring up the full stack + mTLS overlay (auto-generates certs)
 ##   make docker-down       Stop the stack (overlay-aware; safe in any mode)
 ##   make docker-down-all   Stop + remove orphan containers AND named volumes (destroys DB data)
 ##   make gen-certs         Generate mTLS certs in shared/certs/ (manual; auto-run elsewhere)
 ##   make install           Install authd to GOPATH/bin
-##   make install-cli       Install auth-aws-creds to GOPATH/bin
+##   make install-cli       Install both CLI helpers (auth-aws-creds + auth-ssh-creds) to GOPATH/bin
 ##   make clean             Remove ./bin/
 ##   make clean-all         Remove ./bin/, shared/certs/*.{crt,key,srl}, and .env
 ##   make test              Run tests
@@ -25,10 +25,12 @@
 MODULE               := github.com/abagile/tokyo3-auth
 CMD_AUTHD            := ./cmd/authd
 CMD_AUTH_AWS_CREDS   := ./cmd/auth-aws-creds
+CMD_AUTH_SSH_CREDS   := ./cmd/auth-ssh-creds
 
 BIN_DIR              := bin
 AUTHD_BIN            := $(BIN_DIR)/authd
 AWS_CREDS_BIN        := $(BIN_DIR)/auth-aws-creds
+SSH_CREDS_BIN        := $(BIN_DIR)/auth-ssh-creds
 
 GIT_TAG    := $(shell git describe --tags --exact-match 2>/dev/null || true)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -64,11 +66,12 @@ all: build
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-## build: Compile authd + auth-aws-creds into ./bin/
+## build: Compile authd + auth-aws-creds + auth-ssh-creds into ./bin/
 build: $(BIN_DIR)
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(AUTHD_BIN) $(CMD_AUTHD)
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(AWS_CREDS_BIN) $(CMD_AUTH_AWS_CREDS)
-	@echo "  built $(AUTHD_BIN) + $(AWS_CREDS_BIN) ($(VERSION))"
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(SSH_CREDS_BIN) $(CMD_AUTH_SSH_CREDS)
+	@echo "  built $(AUTHD_BIN) + $(AWS_CREDS_BIN) + $(SSH_CREDS_BIN) ($(VERSION))"
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -77,19 +80,22 @@ $(BIN_DIR):
 build-linux: $(BIN_DIR)
 	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-arm64 $(CMD_AUTHD)
 	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-aws-creds-linux-arm64 $(CMD_AUTH_AWS_CREDS)
-	@echo "  built authd-linux-arm64 + auth-aws-creds-linux-arm64"
+	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-ssh-creds-linux-arm64 $(CMD_AUTH_SSH_CREDS)
+	@echo "  built authd-linux-arm64 + auth-aws-creds-linux-arm64 + auth-ssh-creds-linux-arm64"
 
 ## build-linux-amd64: Cross-compile for Linux amd64
 build-linux-amd64: $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-linux-amd64 $(CMD_AUTHD)
 	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-aws-creds-linux-amd64 $(CMD_AUTH_AWS_CREDS)
-	@echo "  built authd-linux-amd64 + auth-aws-creds-linux-amd64"
+	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-ssh-creds-linux-amd64 $(CMD_AUTH_SSH_CREDS)
+	@echo "  built authd-linux-amd64 + auth-aws-creds-linux-amd64 + auth-ssh-creds-linux-amd64"
 
 ## build-darwin: Cross-compile for macOS arm64 (M-series)
 build-darwin: $(BIN_DIR)
 	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/authd-darwin-arm64 $(CMD_AUTHD)
 	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-aws-creds-darwin-arm64 $(CMD_AUTH_AWS_CREDS)
-	@echo "  built authd-darwin-arm64 + auth-aws-creds-darwin-arm64"
+	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-ssh-creds-darwin-arm64 $(CMD_AUTH_SSH_CREDS)
+	@echo "  built authd-darwin-arm64 + auth-aws-creds-darwin-arm64 + auth-ssh-creds-darwin-arm64"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -267,11 +273,15 @@ docker-build-amd64:
 	  -t $(IMAGE_NAME):$(IMAGE_TAG)-amd64 \
 	  .
 
-## docker-build-cli: Build a thin image containing only auth-aws-creds (the
-## developer-side CLI helper). The default server image deliberately omits
-## this binary — developers `go install` it on their laptops rather than
-## running it in the cluster. The CLI image is offered for shops that
-## prefer a containerized installation path (CI runners, dev containers).
+## docker-build-cli: Build a thin image containing the developer-side CLI
+## helpers (auth-aws-creds + auth-ssh-creds). The default server image
+## deliberately omits these — developers `go install` them on their
+## laptops rather than running them in the cluster. The CLI image is
+## offered for shops that prefer a containerized installation path (CI
+## runners, dev containers). No ENTRYPOINT; users explicitly invoke the
+## binary they want:
+##   docker run --rm <image> auth-aws-creds login --issuer ... --client-id ...
+##   docker run --rm <image> auth-ssh-creds login --issuer ... --client-id ...
 docker-build-cli:
 	docker build \
 	  --platform linux/arm64 \
@@ -347,12 +357,14 @@ install:
 	$(GO) install -ldflags "$(LDFLAGS)" $(CMD_AUTHD)
 	@echo "  installed authd"
 
-## install-cli: Install auth-aws-creds to GOPATH/bin (or ~/go/bin).
-## Independent target so developers can install just the helper without
-## pulling the server's build dependencies into their workflow.
+## install-cli: Install both CLI helpers (auth-aws-creds + auth-ssh-creds)
+## to GOPATH/bin (or ~/go/bin). Independent target so developers can
+## install just the helpers without pulling the server's build
+## dependencies into their workflow.
 install-cli:
 	$(GO) install -ldflags "$(LDFLAGS)" $(CMD_AUTH_AWS_CREDS)
-	@echo "  installed auth-aws-creds"
+	$(GO) install -ldflags "$(LDFLAGS)" $(CMD_AUTH_SSH_CREDS)
+	@echo "  installed auth-aws-creds + auth-ssh-creds"
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
