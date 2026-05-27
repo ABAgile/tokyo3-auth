@@ -32,7 +32,7 @@ func TestLoadOrCreate_Generates(t *testing.T) {
 	db, kp := newStoreAndKP(t)
 	ctx := context.Background()
 
-	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test")
+	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test", internaljwt.Config{})
 	if err != nil {
 		t.Fatalf("LoadOrCreate: %v", err)
 	}
@@ -63,11 +63,11 @@ func TestLoadOrCreate_ReusesExisting(t *testing.T) {
 	db, kp := newStoreAndKP(t)
 	ctx := context.Background()
 
-	first, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test")
+	first, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test", internaljwt.Config{})
 	if err != nil {
 		t.Fatalf("first LoadOrCreate: %v", err)
 	}
-	second, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test")
+	second, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test", internaljwt.Config{})
 	if err != nil {
 		t.Fatalf("second LoadOrCreate: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestBuildJWKS_ReflectsStore(t *testing.T) {
 		t.Errorf("empty store should yield 0 keys, got %d", len(jwks.Keys))
 	}
 
-	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test")
+	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test", internaljwt.Config{})
 	if err != nil {
 		t.Fatalf("LoadOrCreate: %v", err)
 	}

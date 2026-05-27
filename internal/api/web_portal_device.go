@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -89,8 +89,8 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 
 	grant := &model.DeviceGrant{
 		ID:             uuid.New(),
-		DeviceCodeHash: auth.HashToken(deviceCode),
-		UserCodeHash:   auth.HashToken(normalizeUserCode(userCode)),
+		DeviceCodeHash: creds.HashToken(deviceCode),
+		UserCodeHash:   creds.HashToken(normalizeUserCode(userCode)),
 		ClientID:       client.ID,
 		Scopes:         scopes,
 		Status:         model.DeviceGrantStatusPending,
@@ -171,7 +171,7 @@ func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalized := normalizeUserCode(userCode)
-	grant, err := s.store.GetDeviceGrantByUserCodeHash(r.Context(), auth.HashToken(normalized))
+	grant, err := s.store.GetDeviceGrantByUserCodeHash(r.Context(), creds.HashToken(normalized))
 	if err != nil {
 		render("Invalid or expired code.")
 		return
@@ -259,7 +259,7 @@ func (s *Server) handleTokenDeviceCode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
 		return
 	}
-	grant, err := s.store.GetDeviceGrantByDeviceCodeHash(r.Context(), auth.HashToken(deviceCode))
+	grant, err := s.store.GetDeviceGrantByDeviceCodeHash(r.Context(), creds.HashToken(deviceCode))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "expired_token", "device_code not found or expired")
 		return
@@ -345,7 +345,7 @@ func (s *Server) handleTokenDeviceCode(w http.ResponseWriter, r *http.Request) {
 // to /token. Sized like other auth tokens in this codebase (32 random
 // bytes → base64url) so its entropy is equivalent to a refresh token.
 func generateDeviceCode() (string, error) {
-	return auth.GenerateRawToken()
+	return creds.GenerateRawToken()
 }
 
 // generateUserCode produces a 4-4 hyphenated code from the

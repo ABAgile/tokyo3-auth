@@ -23,9 +23,12 @@
 // designed to be fast enough for the AWS SDK's invocation timeout.
 //
 // The OIDC code (browser/device flow, token cache, refresh-token
-// rotation) lives in internal/oidcclient and is shared with
-// auth-ssh-creds. The AWS-specific bits — STS-cache handling and the
-// /aws/credentials call — stay here.
+// rotation) lives in github.com/abagile/tokyo3-base/oidcclient and is
+// shared with auth-ssh-creds and any future SSO helper. The shared
+// SSO cache means a single `login` serves every helper — this binary
+// only owns the AWS-specific bits: STS-cache handling at
+// ~/.config/auth-sso/aws-creds/sts/<slug>.json and the
+// /aws/credentials call.
 package main
 
 import (
@@ -41,14 +44,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/oidcclient"
+	"github.com/abagile/tokyo3-base/auth/oidcclient"
 )
 
 const (
-	// appName names this helper's per-tool cache directory under
-	// $XDG_CONFIG_HOME/. Keeping it equal to the binary name makes
-	// it easy for users to find.
-	appName = "auth-aws-creds"
+	// appCacheSubdir names this helper's subdir under the shared SSO
+	// cache root (~/.config/auth-sso/aws-creds/). Conventionally
+	// matches the binary name minus the "auth-" prefix.
+	appCacheSubdir = "aws-creds"
 
 	// stsExpirySkew is the safety margin we apply when deciding whether
 	// cached STS credentials are still good to use. Returning creds within
@@ -103,10 +106,10 @@ The --role flag identifies which AWS role to assume by its admin-set slug
 (see /portal/admin/aws/roles). For backward compatibility with 0.x
 configurations the deprecated alias --audience is also accepted.
 
-Files:
-  ~/.config/auth-aws-creds/config.json     issuer + client_id (non-secret)
-  ~/.config/auth-aws-creds/tokens.json     OAuth refresh + access tokens (0600)
-  ~/.config/auth-aws-creds/sts/<slug>.json cached STS credentials per role (0600)`)
+Files (shared SSO cache; same root for all auth-* helpers):
+  ~/.config/auth-sso/config.json                issuer + client_id (non-secret)
+  ~/.config/auth-sso/tokens.json                OAuth refresh + access tokens (0600)
+  ~/.config/auth-sso/aws-creds/sts/<slug>.json  cached STS credentials per role (0600)`)
 }
 
 // ── login ────────────────────────────────────────────────────────────────────
@@ -125,7 +128,7 @@ func cmdLogin(args []string) int {
 		fmt.Fprintln(os.Stderr, "--issuer and --client-id are required for login")
 		return 2
 	}
-	if _, err := oidcclient.Login(context.Background(), appName,
+	if _, err := oidcclient.Login(context.Background(),
 		oidcclient.Config{Issuer: *issuer, ClientID: *clientID},
 		oidcclient.LoginOptions{Port: *port, Device: *device, Stderr: os.Stderr}); err != nil {
 		fmt.Fprintf(os.Stderr, "login: %v\n", err)
@@ -166,12 +169,12 @@ func cmdGet(args []string) int {
 		return 0
 	}
 
-	cfg, err := oidcclient.LoadConfig(appName)
+	cfg, err := oidcclient.LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v (run `auth-aws-creds login` first)\n", err)
 		return 1
 	}
-	tokens, err := oidcclient.EnsureFreshTokens(context.Background(), appName, *cfg, accessTokenSkew)
+	tokens, err := oidcclient.EnsureFreshTokens(context.Background(), *cfg, accessTokenSkew)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -235,9 +238,12 @@ func fetchAWSCredentials(issuer, accessToken, slug string) (*awsCredentialsRespo
 // ── logout ───────────────────────────────────────────────────────────────────
 
 func cmdLogout(_ []string) int {
-	// "sts" is the per-role STS-credentials sub-cache; Logout removes
-	// tokens.json plus any extras we name here.
-	if err := oidcclient.Logout(appName, "sts"); err != nil {
+	// Logout wipes the shared tokens.json plus any helper-specific
+	// sub-trees we name as extras. "aws-creds" here is the whole
+	// per-helper subdir under ~/.config/auth-sso/ — clearing it
+	// removes the STS sub-cache in one shot. config.json (shared SSO
+	// state, no secrets) stays.
+	if err := oidcclient.Logout(appCacheSubdir); err != nil {
 		fmt.Fprintf(os.Stderr, "logout: %v\n", err)
 		return 1
 	}
@@ -250,9 +256,9 @@ func cmdLogout(_ []string) int {
 // loadSTSCache returns the cached credentials for the role slug if they
 // have at least stsExpirySkew remaining; otherwise (file missing,
 // expired, malformed) returns false so the caller falls through to a
-// fresh exchange.
+// fresh exchange. Cache path: ~/.config/auth-sso/aws-creds/sts/<slug>.json.
 func loadSTSCache(slug string) (*awsCredentialsResponse, bool) {
-	dir, err := oidcclient.CacheDir(appName)
+	dir, err := oidcclient.AppCacheDir(appCacheSubdir)
 	if err != nil {
 		return nil, false
 	}
@@ -271,7 +277,7 @@ func loadSTSCache(slug string) (*awsCredentialsResponse, bool) {
 }
 
 func saveSTSCache(slug string, c *awsCredentialsResponse) error {
-	dir, err := oidcclient.CacheDir(appName)
+	dir, err := oidcclient.AppCacheDir(appCacheSubdir)
 	if err != nil {
 		return err
 	}

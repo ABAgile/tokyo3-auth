@@ -50,7 +50,7 @@ func newTestRig(t *testing.T) *testRig {
 	}
 	kp := bcrypto.NewLocalKeyProvider(mk)
 
-	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test")
+	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, "https://issuer.test", internaljwt.Config{})
 	if err != nil {
 		t.Fatalf("LoadOrCreate signer: %v", err)
 	}

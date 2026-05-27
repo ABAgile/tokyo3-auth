@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 )
 
 // deviceAuthzResp is the subset of the /device_authorization JSON we
@@ -97,7 +97,7 @@ func approveGrant(t *testing.T, r *testRig, userCode string, userID model.User) 
 // at /device. Tests live in this package so the production helpers
 // are directly accessible.
 func hashUserCodeForTest(in string) string {
-	return auth.HashToken(normalizeUserCode(in))
+	return creds.HashToken(normalizeUserCode(in))
 }
 
 // TestDeviceGrant_HappyPath: full round-trip — authorize, approve as

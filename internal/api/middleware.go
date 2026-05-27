@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 )
 
 type contextKey int
@@ -49,7 +49,7 @@ func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
 			s.writeError(w, http.StatusUnauthorized, "unauthorized", "missing token")
 			return
 		}
-		sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), auth.HashToken(raw))
+		sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), creds.HashToken(raw))
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeError(w, http.StatusUnauthorized, "invalid_token", "token not found")
 			return
@@ -77,7 +77,7 @@ func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 			s.writeError(w, http.StatusUnauthorized, "unauthorized", "missing token")
 			return
 		}
-		sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), auth.HashToken(raw))
+		sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), creds.HashToken(raw))
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeError(w, http.StatusUnauthorized, "invalid_token", "token not found")
 			return

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -84,7 +84,7 @@ func TestListAWSRolesForUser(t *testing.T) {
 	ctx := context.Background()
 	db := freshDB(t)
 
-	hash, _ := auth.HashPassword("pw0rd-very-strong-123!")
+	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	user, err := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

@@ -106,7 +106,6 @@ import (
 
 	"github.com/abagile/tokyo3-auth/internal/api"
 	"github.com/abagile/tokyo3-auth/internal/audit"
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	internaljwt "github.com/abagile/tokyo3-auth/internal/jwt"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
@@ -117,6 +116,7 @@ import (
 	scimprov "github.com/abagile/tokyo3-auth/internal/provision/scim"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
 	"github.com/abagile/tokyo3-base/applog"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
 	"github.com/abagile/tokyo3-base/journal/jetstream"
@@ -208,7 +208,7 @@ func runServe() error {
 	defer cancel()
 	kp := bcrypto.NewLocalKeyProvider(masterKey)
 
-	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, issuer)
+	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, issuer, internaljwt.Config{})
 	if err != nil {
 		return fmt.Errorf("jwt signer: %w", err)
 	}
@@ -800,7 +800,7 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 		fmt.Fprintln(os.Stderr, "WARNING: --allow-weak-password set; password policy was NOT enforced for this user.")
 	}
 
-	hash, err := auth.HashPassword(password)
+	hash, err := creds.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}

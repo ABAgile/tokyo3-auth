@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 )
 
 // handleGitHubAuthorize redirects to the standard /authorize endpoint.
@@ -46,7 +46,7 @@ func (s *Server) handleGitHubAccessToken(w http.ResponseWriter, r *http.Request)
 	redirectURI := r.FormValue("redirect_uri")
 	codeVerifier := r.FormValue("code_verifier")
 
-	grant, err := s.store.GetGrantByCodeHash(r.Context(), auth.HashToken(code))
+	grant, err := s.store.GetGrantByCodeHash(r.Context(), creds.HashToken(code))
 	if err != nil {
 		githubTokenError(w, r, "bad_verification_code", "code not found")
 		return

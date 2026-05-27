@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -19,7 +19,7 @@ func TestListPortalClientsForUser(t *testing.T) {
 	ctx := context.Background()
 	db := freshDB(t)
 
-	hash, _ := auth.HashPassword("pw0rd-very-strong-123!")
+	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	alice, err := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
 	if err != nil {
 		t.Fatalf("CreateUser alice: %v", err)
@@ -39,7 +39,7 @@ func TestListPortalClientsForUser(t *testing.T) {
 
 	// Helper to create a client with all the portal knobs set in one shot.
 	mkClient := func(name string, showInPortal, visibleToAll bool, launchURL string) uuid.UUID {
-		c, err := db.CreateClient(ctx, name+"-cid", auth.HashToken("sec"), name,
+		c, err := db.CreateClient(ctx, name+"-cid", creds.HashToken("sec"), name,
 			[]string{"http://localhost/cb"}, []string{"openid"}, false, nil)
 		if err != nil {
 			t.Fatalf("CreateClient %s: %v", name, err)
@@ -107,14 +107,14 @@ func TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T)
 	ctx := context.Background()
 	db := freshDB(t)
 
-	hash, _ := auth.HashPassword("pw0rd-very-strong-123!")
+	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	u, _ := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
 	g1, _ := db.CreateGroup(ctx, "g1")
 	g2, _ := db.CreateGroup(ctx, "g2")
 	_ = db.AddGroupMember(ctx, g1.ID, u.ID)
 	_ = db.AddGroupMember(ctx, g2.ID, u.ID)
 
-	c, _ := db.CreateClient(ctx, "shared-cid", auth.HashToken("sec"), "shared",
+	c, _ := db.CreateClient(ctx, "shared-cid", creds.HashToken("sec"), "shared",
 		[]string{"http://localhost/cb"}, []string{"openid"}, false, nil)
 	_ = db.UpdateClientPortalConfig(ctx, c.ID, true, "https://shared.example/login", "", "", false)
 	_ = db.ReplaceClientVisibility(ctx, c.ID, []uuid.UUID{g1.ID, g2.ID})
@@ -140,7 +140,7 @@ func TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T)
 func TestReplaceClientVisibility_RemovesPriorRows(t *testing.T) {
 	ctx := context.Background()
 	db := freshDB(t)
-	c, _ := db.CreateClient(ctx, "test-cid", auth.HashToken("sec"), "test",
+	c, _ := db.CreateClient(ctx, "test-cid", creds.HashToken("sec"), "test",
 		[]string{"http://localhost/cb"}, []string{"openid"}, false, nil)
 	g1, _ := db.CreateGroup(ctx, "g1")
 	g2, _ := db.CreateGroup(ctx, "g2")

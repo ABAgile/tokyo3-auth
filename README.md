@@ -519,13 +519,17 @@ After that, `aws --profile platform-prod s3 ls` (or any boto3 / SDK invocation) 
 
 A full browser-based re-login is only required when the refresh token expires (matches the OAuth client's refresh-token lifetime auth was configured with). `auth-aws-creds logout` clears the local cache.
 
-**Cache layout** under `${XDG_CONFIG_HOME:-~/.config}/auth-aws-creds/`:
+**Cache layout** under `${XDG_CONFIG_HOME:-~/.config}/auth-sso/` (shared across every `auth-*-creds` helper, so one `login` serves all of them):
 
 ```
-config.json        ← issuer + client_id (non-secret, 0600)
-tokens.json        ← OAuth access + refresh tokens (0600)
-sts/<slug>.json    ← STS session credentials per role (0600)
+auth-sso/
+├── config.json              ← issuer + client_id (non-secret, 0600)
+├── tokens.json              ← OAuth access + refresh + id tokens (0600)
+└── aws-creds/
+    └── sts/<slug>.json      ← STS session credentials per role (0600)
 ```
+
+> **Upgrading from a previous version that used `~/.config/auth-aws-creds/`?** Just run `auth-aws-creds login` once — the helper writes to the new location and ignores the old cache. You can `rm -rf ~/.config/auth-aws-creds` at your leisure.
 
 **Programmatic endpoint**: the helper talks to `POST /aws/credentials` (bearer-auth, form body `role=<slug>`; `audience=<slug>` accepted as a deprecated alias). The response shape matches AWS CLI v2's `credential_process` JSON so a passthrough helper requires no marshalling.
 
@@ -567,7 +571,7 @@ These omissions are deliberate — credentials are policy decisions, not provisi
 
 `auth-ssh-creds` is the SSH counterpart to `auth-aws-creds`: it uses auth's OIDC code/device flow to obtain an ID token, then sends that token to `certd` (the SSH cert authority) in exchange for a short-lived SSH user certificate. The helper writes the cert + private key into a local directory; you point `ssh` at them with `-i`, or `Include` the generated `ssh_config` snippet.
 
-The OIDC plumbing (browser flow, PKCE, token cache, refresh-rotation) lives in [`internal/oidcclient`](internal/oidcclient) and is shared with `auth-aws-creds`. Only the SSH-specific bits (keypair generation, `POST /api/v1/ssh/sign-user`, on-disk cert layout) live in [`cmd/auth-ssh-creds`](cmd/auth-ssh-creds).
+The OIDC plumbing (browser flow, PKCE, token cache, refresh-rotation) lives in [`github.com/abagile/tokyo3-base/oidcclient`](https://github.com/abagile/tokyo3-base) and is shared with `auth-aws-creds` (and any future SSO helper). The SSO cache itself is unified at `~/.config/auth-sso/`, so one `login` from either helper covers them both. Only the SSH-specific bits (keypair generation, `POST /api/v1/ssh/sign-user`, on-disk cert layout) live in [`cmd/auth-ssh-creds`](cmd/auth-ssh-creds).
 
 ```bash
 go install github.com/abagile/tokyo3-auth/cmd/auth-ssh-creds@latest
@@ -591,13 +595,13 @@ auth-ssh-creds get \
     --principals alice,deployer \
     --ttl 1h
 # auth-ssh-creds: cert written
-#   key:  ~/.config/auth-ssh-creds/keys/id_ed25519
-#   cert: ~/.config/auth-ssh-creds/keys/id_ed25519-cert.pub
+#   key:  ~/.config/auth-sso/ssh-creds/keys/id_ed25519
+#   cert: ~/.config/auth-sso/ssh-creds/keys/id_ed25519-cert.pub
 #   ttl:  59m59s (valid_before 2026-05-26T15:00:00Z)
 #   principals: alice,deployer
 ```
 
-The first `get` generates an ed25519 keypair in `~/.config/auth-ssh-creds/keys/`; subsequent calls reuse it and only refresh the signed certificate. `key_id` defaults to the `email` claim in the ID token (falling back to `sub`); override with `--key-id`. Pass `--groups eng,sre` when certd is configured with `Policy` to enforce role-table membership.
+The first `get` generates an ed25519 keypair in `~/.config/auth-sso/ssh-creds/keys/`; subsequent calls reuse it and only refresh the signed certificate. `key_id` defaults to the `email` claim in the ID token (falling back to `sub`); override with `--key-id`. Pass `--groups eng,sre` when certd is configured with `Policy` to enforce role-table membership.
 
 **Drop-in `ssh_config` snippet** — pass `--proxy-jump <ssh-proxyd-host:port>` and the helper prints a block you can append to `~/.ssh/config` (or to a file `Include`d from it):
 

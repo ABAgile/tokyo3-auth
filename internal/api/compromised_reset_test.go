@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -54,7 +54,7 @@ func TestResetPassword_GeneratesTempAndSetsFlag(t *testing.T) {
 	}
 	// The new password hash must verify against the temp credential —
 	// proves the server-generated token is what got stored.
-	if !auth.CheckPassword(updated.PasswordHash, temp) {
+	if !creds.CheckPassword(updated.PasswordHash, temp) {
 		t.Error("stored password hash doesn't verify against the surfaced temp_pw")
 	}
 }
@@ -166,10 +166,10 @@ func TestChangePassword_ClearsFlagAndIssuesSession(t *testing.T) {
 	if updated.MustChangePassword {
 		t.Error("must_change_password still TRUE after successful rotation")
 	}
-	if !auth.CheckPassword(updated.PasswordHash, newPw) {
+	if !creds.CheckPassword(updated.PasswordHash, newPw) {
 		t.Error("stored hash doesn't verify against the new password")
 	}
-	if auth.CheckPassword(updated.PasswordHash, oldPw) {
+	if creds.CheckPassword(updated.PasswordHash, oldPw) {
 		t.Error("old (temp) password still verifies — rotation didn't actually replace it")
 	}
 }
@@ -313,7 +313,7 @@ func TestUserStore_MustChangePasswordRoundTrip(t *testing.T) {
 		t.Error("flag didn't persist; expected TRUE after SetUserMustChangePassword")
 	}
 	// UpdateUserPassword should clear the flag in the same statement.
-	hash, _ := auth.HashPassword("NewP@ssw0rd-12!")
+	hash, _ := creds.HashPassword("NewP@ssw0rd-12!")
 	if err := r.store.UpdateUserPassword(context.Background(), u.ID, hash); err != nil {
 		t.Fatalf("UpdateUserPassword: %v", err)
 	}

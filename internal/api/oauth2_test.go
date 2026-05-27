@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store/sqlite"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -20,7 +20,7 @@ import (
 // the plaintext password used.
 func seedTestUser(t *testing.T, db *sqlite.DB, email, password string) *model.User {
 	t.Helper()
-	hash, err := auth.HashPassword(password)
+	hash, err := creds.HashPassword(password)
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
@@ -41,7 +41,7 @@ func seedTestUser(t *testing.T, db *sqlite.DB, email, password string) *model.Us
 // seedPublicClient for interactive-login tests that don't exercise MFA.
 func seedTestClient(t *testing.T, db *sqlite.DB, name, redirectURI, rawSecret string, scopes []string) *model.Client {
 	t.Helper()
-	secretHash := auth.HashToken(rawSecret)
+	secretHash := creds.HashToken(rawSecret)
 	c, err := db.CreateClient(context.Background(), name+"-cid", secretHash, name,
 		[]string{redirectURI}, scopes, false, nil)
 	if err != nil {
@@ -268,7 +268,7 @@ func TestToken_ClientCredentialsGrant(t *testing.T) {
 
 	// Session was persisted with NULL user_id — verify the access token works
 	// for bearerAuth-protected endpoints.
-	sess, err := r.store.GetSessionByAccessTokenHash(context.Background(), auth.HashToken(rawAccess))
+	sess, err := r.store.GetSessionByAccessTokenHash(context.Background(), creds.HashToken(rawAccess))
 	if err != nil {
 		t.Fatalf("session not persisted: %v", err)
 	}
@@ -313,14 +313,14 @@ func TestToken_Refresh_RoundTripAndExpiry(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 
 	// Mint a session row directly. Avoid the full login + code-exchange dance.
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	now := time.Now().UTC().Truncate(time.Second)
 	u := seedTestUser(t, r.store, "bob@example.com", "AnotherG00d!")
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(2 * time.Hour),
@@ -377,12 +377,12 @@ func TestUserInfo_BearerAuth(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid", "profile"})
 	u := seedTestUser(t, r.store, "carol@example.com", "S0meL0ng!Pass")
 
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"openid", "profile"},
 		AccessExpiresAt:  time.Now().Add(time.Hour),
 		RefreshExpiresAt: time.Now().Add(2 * time.Hour),
@@ -440,12 +440,12 @@ func TestUserInfo_ExpiredToken(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "dave@example.com", "Tr0ub4dor!&3")
 
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	expired := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  time.Now().Add(-time.Minute),
 		RefreshExpiresAt: time.Now().Add(time.Hour),
@@ -472,12 +472,12 @@ func TestRevoke(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "eve@example.com", "Lots0fStuff#1")
 
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  time.Now().Add(time.Hour),
 		RefreshExpiresAt: time.Now().Add(2 * time.Hour),
@@ -490,7 +490,7 @@ func TestRevoke(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/revoke status = %d, want 200", resp.StatusCode)
 	}
-	if _, err := r.store.GetSessionByAccessTokenHash(context.Background(), auth.HashToken(rawAccess)); err == nil {
+	if _, err := r.store.GetSessionByAccessTokenHash(context.Background(), creds.HashToken(rawAccess)); err == nil {
 		t.Error("session should be gone after revoke")
 	}
 
@@ -501,12 +501,12 @@ func TestRevoke(t *testing.T) {
 	}
 
 	// Revoke via refresh token hash also works.
-	rawAccess2, _ := auth.GenerateRawToken()
-	rawRefresh2, _ := auth.GenerateRawToken()
+	rawAccess2, _ := creds.GenerateRawToken()
+	rawRefresh2, _ := creds.GenerateRawToken()
 	sess2 := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess2),
-		RefreshTokenHash: auth.HashToken(rawRefresh2),
+		AccessTokenHash:  creds.HashToken(rawAccess2),
+		RefreshTokenHash: creds.HashToken(rawRefresh2),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  time.Now().Add(time.Hour),
 		RefreshExpiresAt: time.Now().Add(2 * time.Hour),
@@ -531,12 +531,12 @@ func seedAdminSession(t *testing.T, r *testRig) string {
 		c = seedTestClient(t, r.store, "admin-client", "https://x/cb", "sec", []string{"admin"})
 	}
 	u := seedTestUser(t, r.store, "admin@example.com", "AdminPass!1")
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"admin"},
 		AccessExpiresAt:  time.Now().Add(time.Hour),
 		RefreshExpiresAt: time.Now().Add(2 * time.Hour),
@@ -707,12 +707,12 @@ func TestAdmin_RequiresAdminScope(t *testing.T) {
 	// but adminAuth must reject it.
 	c := seedTestClient(t, r.store, "app", "https://x/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "user@example.com", "AbCdEfG1!@")
-	raw, _ := auth.GenerateRawToken()
-	refresh, _ := auth.GenerateRawToken()
+	raw, _ := creds.GenerateRawToken()
+	refresh, _ := creds.GenerateRawToken()
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(raw),
-		RefreshTokenHash: auth.HashToken(refresh),
+		AccessTokenHash:  creds.HashToken(raw),
+		RefreshTokenHash: creds.HashToken(refresh),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  time.Now().Add(time.Hour),
 		RefreshExpiresAt: time.Now().Add(2 * time.Hour),

@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -50,7 +50,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "weak_password", v.Message)
 		return
 	}
-	hash, err := auth.HashPassword(req.Password)
+	hash, err := creds.HashPassword(req.Password)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "hash failed")
 		return
@@ -178,7 +178,7 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "name required")
 		return
 	}
-	rawClientID, err := auth.GenerateRawToken()
+	rawClientID, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "generation failed")
 		return
@@ -186,12 +186,12 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 	clientID := rawClientID[:24] // shorter, readable client_id
 	var secretHash, rawSecret string
 	if !req.Public {
-		rawSecret, err = auth.GenerateRawToken()
+		rawSecret, err = creds.GenerateRawToken()
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "server_error", "generation failed")
 			return
 		}
-		secretHash = auth.HashToken(rawSecret)
+		secretHash = creds.HashToken(rawSecret)
 	}
 	if len(req.Scopes) == 0 {
 		req.Scopes = []string{"openid", "profile", "email"}
@@ -243,12 +243,12 @@ func (s *Server) handleAdminRotateClientSecret(w http.ResponseWriter, r *http.Re
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "public clients have no secret")
 		return
 	}
-	rawSecret, err := auth.GenerateRawToken()
+	rawSecret, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "generation failed")
 		return
 	}
-	if err := s.store.UpdateClientSecret(r.Context(), client.ID, auth.HashToken(rawSecret)); err != nil {
+	if err := s.store.UpdateClientSecret(r.Context(), client.ID, creds.HashToken(rawSecret)); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "update failed")
 		return
 	}

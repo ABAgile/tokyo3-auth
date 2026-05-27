@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -17,19 +17,19 @@ import (
 // the raw access token so tests can present it as a bearer credential.
 func seedSessionWithToken(t *testing.T, r *testRig, userID uuid.UUID, mfa bool) string {
 	t.Helper()
-	rawAccess, _ := auth.GenerateRawToken()
-	rawRefresh, _ := auth.GenerateRawToken()
+	rawAccess, _ := creds.GenerateRawToken()
+	rawRefresh, _ := creds.GenerateRawToken()
 	now := time.Now().UTC().Truncate(time.Second)
 	c, err := r.store.CreateClient(context.Background(),
-		"awscreds-test-cid-"+rawAccess[:8], auth.HashToken("nope"),
+		"awscreds-test-cid-"+rawAccess[:8], creds.HashToken("nope"),
 		"awscreds-test", []string{"http://localhost/cb"}, []string{"openid"}, false, nil)
 	if err != nil {
 		t.Fatalf("CreateClient: %v", err)
 	}
 	sess := &model.Session{
 		ID: uuid.New(), UserID: userID, ClientID: c.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           []string{"openid"},
 		AccessExpiresAt:  now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(2 * time.Hour),

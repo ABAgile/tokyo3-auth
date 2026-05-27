@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
 
@@ -109,7 +109,7 @@ func (s *Server) handleRegisterPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := auth.HashPassword(password)
+	hash, err := creds.HashPassword(password)
 	if err != nil {
 		s.log.Error("hash password", "err", err)
 		showErr("An error occurred. Please try again.")
@@ -217,7 +217,7 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 	// success) so the user is also logged into auth's own portal.
 	s.ensurePortalCookie(w, r, user)
 
-	rawCode, err := auth.GenerateRawToken()
+	rawCode, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
@@ -226,7 +226,7 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 		ID:            uuid.New(),
 		UserID:        user.ID,
 		ClientID:      client.ID,
-		CodeHash:      auth.HashToken(rawCode),
+		CodeHash:      creds.HashToken(rawCode),
 		CodeChallenge: st.CodeChallenge,
 		Nonce:         st.Nonce,
 		Scopes:        st.Scopes,

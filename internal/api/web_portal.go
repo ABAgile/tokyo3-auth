@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	iMFA "github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/provision/awsfed"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 )
@@ -124,7 +124,7 @@ func (s *Server) readAuthPortalSession(r *http.Request) (*model.Session, *model.
 		return nil, nil, "", err
 	}
 	rawToken := string(raw)
-	sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), auth.HashToken(rawToken))
+	sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), creds.HashToken(rawToken))
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil, "", err
 	}
@@ -348,7 +348,7 @@ func (s *Server) handlePortalRegisterPOST(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	hash, err := auth.HashPassword(password)
+	hash, err := creds.HashPassword(password)
 	if err != nil {
 		showErr("An error occurred. Please try again.")
 		return
@@ -405,7 +405,7 @@ func (s *Server) handlePortalLoginPOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := s.store.GetUserByEmail(r.Context(), email)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !auth.CheckPassword(user.PasswordHash, password)) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !creds.CheckPassword(user.PasswordHash, password)) {
 		if user != nil {
 			s.incrementFailedAttempts(r, user)
 		}
@@ -526,7 +526,7 @@ func (s *Server) handlePortalChangePassword(w http.ResponseWriter, r *http.Reque
 		showForm(v.Message)
 		return
 	}
-	hash, err := auth.HashPassword(newPw)
+	hash, err := creds.HashPassword(newPw)
 	if err != nil {
 		showForm("An error occurred. Please try again.")
 		return
@@ -768,12 +768,12 @@ func (s *Server) ensurePortalCookie(w http.ResponseWriter, r *http.Request, user
 		_ = s.logAudit(r, ActionLogout, &prevUser.ID, nil,
 			logMeta("via", "user_switch", "by", user.Email))
 	}
-	rawAccess, err := auth.GenerateRawToken()
+	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		s.log.Warn("ensure portal cookie: generate access", "err", err)
 		return
 	}
-	rawRefresh, err := auth.GenerateRawToken()
+	rawRefresh, err := creds.GenerateRawToken()
 	if err != nil {
 		s.log.Warn("ensure portal cookie: generate refresh", "err", err)
 		return
@@ -787,8 +787,8 @@ func (s *Server) ensurePortalCookie(w http.ResponseWriter, r *http.Request, user
 		ID:               uuid.New(),
 		UserID:           user.ID,
 		ClientID:         portalClientUUID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           scopes,
 		AccessExpiresAt:  now.Add(portalCookieTTL),
 		RefreshExpiresAt: now.Add(portalCookieTTL),
@@ -810,11 +810,11 @@ func (s *Server) ensurePortalCookie(w http.ResponseWriter, r *http.Request, user
 }
 
 func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, user *model.User) error {
-	rawAccess, err := auth.GenerateRawToken()
+	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		return err
 	}
-	rawRefresh, err := auth.GenerateRawToken()
+	rawRefresh, err := creds.GenerateRawToken()
 	if err != nil {
 		return err
 	}
@@ -827,8 +827,8 @@ func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, use
 		ID:               uuid.New(),
 		UserID:           user.ID,
 		ClientID:         portalClientUUID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           scopes,
 		// Portal sessions never use the refresh credential — the raw value is
 		// not handed to the browser — but the column is NOT NULL, so set it
@@ -935,7 +935,7 @@ func (s *Server) handlePortalAccountPassword(w http.ResponseWriter, r *http.Requ
 	currentPw := r.FormValue("current_password")
 	newPw := r.FormValue("new_password")
 
-	if !auth.CheckPassword(pc.User.PasswordHash, currentPw) {
+	if !creds.CheckPassword(pc.User.PasswordHash, currentPw) {
 		showErr("Current password is incorrect.")
 		return
 	}
@@ -943,7 +943,7 @@ func (s *Server) handlePortalAccountPassword(w http.ResponseWriter, r *http.Requ
 		showErr(v.Message)
 		return
 	}
-	hash, err := auth.HashPassword(newPw)
+	hash, err := creds.HashPassword(newPw)
 	if err != nil {
 		showErr("An error occurred. Please try again.")
 		return
@@ -1234,7 +1234,7 @@ func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request
 		showErr(v.Message)
 		return
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := creds.HashPassword(password)
 	if err != nil {
 		showErr("An error occurred.")
 		return
@@ -1351,12 +1351,12 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 	editURL := "/portal/admin/users/" + id.String() + "/edit"
 	redirect := func(qs string) { http.Redirect(w, r, editURL+"?"+qs, http.StatusFound) }
 
-	tempPw, err := auth.GenerateRawToken()
+	tempPw, err := creds.GenerateRawToken()
 	if err != nil {
 		redirect("error=" + url.QueryEscape("An error occurred generating the temp password."))
 		return
 	}
-	hash, err := auth.HashPassword(tempPw)
+	hash, err := creds.HashPassword(tempPw)
 	if err != nil {
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
@@ -1431,12 +1431,12 @@ func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r 
 	}
 
 	// (1) Temp password + must-rotate.
-	tempPw, err := auth.GenerateRawToken()
+	tempPw, err := creds.GenerateRawToken()
 	if err != nil {
 		redirect("error=" + url.QueryEscape("An error occurred generating the temp password."))
 		return
 	}
-	hash, err := auth.HashPassword(tempPw)
+	hash, err := creds.HashPassword(tempPw)
 	if err != nil {
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
@@ -1755,7 +1755,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		showErr("Launch URL is required when the client is shown in the portal.")
 		return
 	}
-	rawClientID, err := auth.GenerateRawToken()
+	rawClientID, err := creds.GenerateRawToken()
 	if err != nil {
 		showErr("An error occurred.")
 		return
@@ -1763,12 +1763,12 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 	clientID := rawClientID[:24]
 	var secretHash, rawSecret string
 	if !public {
-		rawSecret, err = auth.GenerateRawToken()
+		rawSecret, err = creds.GenerateRawToken()
 		if err != nil {
 			showErr("An error occurred.")
 			return
 		}
-		secretHash = auth.HashToken(rawSecret)
+		secretHash = creds.HashToken(rawSecret)
 	}
 	client, err := s.store.CreateClient(r.Context(), clientID, secretHash, name, redirectURIs, scopes, public, backchannelLogoutURI)
 	if err != nil {
@@ -1930,12 +1930,12 @@ func (s *Server) handlePortalAdminClientRotate(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=public+clients+have+no+secret", http.StatusFound)
 		return
 	}
-	rawSecret, err := auth.GenerateRawToken()
+	rawSecret, err := creds.GenerateRawToken()
 	if err != nil {
 		http.Redirect(w, r, "/portal/admin/clients?error=generation+failed", http.StatusFound)
 		return
 	}
-	if err := s.store.UpdateClientSecret(r.Context(), id, auth.HashToken(rawSecret)); err != nil {
+	if err := s.store.UpdateClientSecret(r.Context(), id, creds.HashToken(rawSecret)); err != nil {
 		http.Redirect(w, r, "/portal/admin/clients?error=update+failed", http.StatusFound)
 		return
 	}

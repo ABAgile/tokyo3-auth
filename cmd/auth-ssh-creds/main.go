@@ -19,19 +19,21 @@
 //	      --principals alice,deployer \
 //	      --ttl 1h
 //
-// The on-disk cert + key live at $XDG_CONFIG_HOME/auth-ssh-creds/keys/
-// by default. Override with --key-out / --cert-out, or point ssh
-// directly at the defaults via:
+// The on-disk cert + key live at
+// $XDG_CONFIG_HOME/auth-sso/ssh-creds/keys/ by default. Override with
+// --key-out / --cert-out, or point ssh directly at the defaults via:
 //
-//	$ ssh -i ~/.config/auth-ssh-creds/keys/id_ed25519 user@host
+//	$ ssh -i ~/.config/auth-sso/ssh-creds/keys/id_ed25519 user@host
 //
 // Set --proxy-jump to also emit an ssh_config snippet on stdout that
 // routes the configured hosts through ssh-proxyd via ProxyJump.
 //
 // The OIDC code path (browser/device flow, token cache, refresh-token
-// rotation) lives in internal/oidcclient and is shared with
-// auth-aws-creds. The SSH-specific bits — keypair generation,
-// /api/v1/ssh/sign-user POST, on-disk cert layout — stay here.
+// rotation) lives in github.com/abagile/tokyo3-base/oidcclient and is
+// shared with auth-aws-creds and any future SSO helper — a single
+// `login` populates ~/.config/auth-sso/ for all of them. The
+// SSH-specific bits — keypair generation, /api/v1/ssh/sign-user POST,
+// on-disk cert layout — stay here.
 package main
 
 import (
@@ -52,11 +54,14 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/abagile/tokyo3-auth/internal/oidcclient"
+	"github.com/abagile/tokyo3-base/auth/oidcclient"
 )
 
 const (
-	appName = "auth-ssh-creds"
+	// appCacheSubdir names this helper's subdir under the shared SSO
+	// cache root (~/.config/auth-sso/ssh-creds/). Conventionally
+	// matches the binary name minus the "auth-" prefix.
+	appCacheSubdir = "ssh-creds"
 
 	// accessTokenSkew buffers the OAuth access token check the same way
 	// auth-aws-creds does — refresh proactively before tokens go stale
@@ -118,13 +123,13 @@ The "get" command sends the cached OIDC ID token to certd as a bearer
 credential. certd validates the token against auth's JWKS, applies its
 role table to the requested principals, and signs an SSH user cert.
 
-Files (under $XDG_CONFIG_HOME/auth-ssh-creds/, mode 0o700):
-  config.json             issuer + client_id (non-secret)
-  tokens.json             OAuth refresh + access + id token (0o600)
-  keys/id_ed25519         generated private key (0o600)
-  keys/id_ed25519.pub     public key (0o644)
-  keys/id_ed25519-cert.pub
-                          certd-signed user cert (0o644)`)
+Files (shared SSO cache; same root for all auth-* helpers):
+  ~/.config/auth-sso/config.json                       issuer + client_id (non-secret)
+  ~/.config/auth-sso/tokens.json                       OAuth refresh + access + id token (0o600)
+  ~/.config/auth-sso/ssh-creds/keys/id_ed25519         generated private key (0o600)
+  ~/.config/auth-sso/ssh-creds/keys/id_ed25519.pub     public key (0o644)
+  ~/.config/auth-sso/ssh-creds/keys/id_ed25519-cert.pub
+                                                       certd-signed user cert (0o644)`)
 }
 
 // ── login ────────────────────────────────────────────────────────────────────
@@ -143,7 +148,7 @@ func cmdLogin(args []string) int {
 		fmt.Fprintln(os.Stderr, "--issuer and --client-id are required for login")
 		return 2
 	}
-	if _, err := oidcclient.Login(context.Background(), appName,
+	if _, err := oidcclient.Login(context.Background(),
 		oidcclient.Config{Issuer: *issuer, ClientID: *clientID},
 		oidcclient.LoginOptions{Port: *port, Device: *device, Stderr: os.Stderr}); err != nil {
 		fmt.Fprintf(os.Stderr, "login: %v\n", err)
@@ -156,9 +161,11 @@ func cmdLogin(args []string) int {
 // ── logout ───────────────────────────────────────────────────────────────────
 
 func cmdLogout(_ []string) int {
-	// Also wipe the on-disk keypair + cert so a fresh `login` doesn't
-	// leave a stale signed cert sitting next to a new identity.
-	if err := oidcclient.Logout(appName, "keys"); err != nil {
+	// Logout wipes the shared tokens.json plus the per-helper subdir
+	// (~/.config/auth-sso/ssh-creds/) — clearing it removes the
+	// keypair + signed cert so a fresh login doesn't leave a stale
+	// cert next to a new identity.
+	if err := oidcclient.Logout(appCacheSubdir); err != nil {
 		fmt.Fprintf(os.Stderr, "logout: %v\n", err)
 		return 1
 	}
@@ -191,12 +198,12 @@ func cmdGet(args []string) int {
 		return 2
 	}
 
-	cfg, err := oidcclient.LoadConfig(appName)
+	cfg, err := oidcclient.LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v (run `auth-ssh-creds login` first)\n", err)
 		return 1
 	}
-	tokens, err := oidcclient.EnsureFreshTokens(context.Background(), appName, *cfg, accessTokenSkew)
+	tokens, err := oidcclient.EnsureFreshTokens(context.Background(), *cfg, accessTokenSkew)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -316,7 +323,7 @@ func signUserCert(certdURL, idToken string, req signUserRequest) (*signResponse,
 // provided.
 func resolveOutPaths(keyOut, certOut string) (string, string, error) {
 	if keyOut == "" {
-		dir, err := oidcclient.CacheDir(appName)
+		dir, err := oidcclient.AppCacheDir(appCacheSubdir)
 		if err != nil {
 			return "", "", err
 		}

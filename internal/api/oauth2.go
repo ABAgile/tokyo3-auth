@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	"github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 )
@@ -199,7 +199,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := s.store.GetUserByEmail(r.Context(), email)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !auth.CheckPassword(user.PasswordHash, password)) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !creds.CheckPassword(user.PasswordHash, password)) {
 		if user != nil {
 			s.incrementFailedAttempts(r, user)
 		}
@@ -314,7 +314,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	user *model.User, client *model.Client,
 	scopes []string, state, nonce, codeChallenge, redirectURI string,
 ) {
-	rawCode, err := auth.GenerateRawToken()
+	rawCode, err := creds.GenerateRawToken()
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -323,7 +323,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		ID:            uuid.New(),
 		UserID:        user.ID,
 		ClientID:      client.ID,
-		CodeHash:      auth.HashToken(rawCode),
+		CodeHash:      creds.HashToken(rawCode),
 		CodeChallenge: codeChallenge,
 		Nonce:         nonce,
 		Scopes:        scopes,
@@ -376,7 +376,7 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grant, err := s.store.GetGrantByCodeHash(r.Context(), auth.HashToken(code))
+	grant, err := s.store.GetGrantByCodeHash(r.Context(), creds.HashToken(code))
 	if errors.Is(err, store.ErrNotFound) || (err == nil && grant.UsedAt != nil) {
 		s.writeError(w, http.StatusBadRequest, "invalid_grant", "code not found or already used")
 		return
@@ -430,7 +430,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "invalid_client", err.Error())
 		return
 	}
-	sess, err := s.store.GetSessionByRefreshTokenHash(r.Context(), auth.HashToken(rawRefresh))
+	sess, err := s.store.GetSessionByRefreshTokenHash(r.Context(), creds.HashToken(rawRefresh))
 	if errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
 		return
@@ -462,19 +462,19 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newAccess, err := auth.GenerateRawToken()
+	newAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
 		return
 	}
-	newRefresh, err := auth.GenerateRawToken()
+	newRefresh, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
 		return
 	}
 	newAccessExp := capByAbsolute(now.Add(accessTokenTTL), sess.CreatedAt)
 	newRefreshExp := capByAbsolute(now.Add(refreshTokenTTL), sess.CreatedAt)
-	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, auth.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
+	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, creds.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
@@ -526,18 +526,18 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	rawAccess, err := auth.GenerateRawToken()
+	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
 		return
 	}
-	rawRefresh, _ := auth.GenerateRawToken() // internal placeholder, not exposed
+	rawRefresh, _ := creds.GenerateRawToken() // internal placeholder, not exposed
 	scopes := splitScopes(r.FormValue("scope"))
 	now := time.Now()
 	sess := &model.Session{
 		ID: uuid.New(), ClientID: client.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           scopes,
 		AccessExpiresAt:  now.Add(accessTokenTTL),
 		RefreshExpiresAt: now.Add(refreshTokenTTL),
@@ -590,7 +590,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	token := r.FormValue("token")
 	if token != "" {
-		hash := auth.HashToken(token)
+		hash := creds.HashToken(token)
 		if sess, err := s.store.GetSessionByAccessTokenHash(r.Context(), hash); err == nil {
 			if err := s.logAudit(r, ActionTokenRevoked, &sess.UserID, &sess.ClientID, nil); err != nil {
 				s.auditFail(w, err)
@@ -620,11 +620,11 @@ func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *mo
 // forward the approver's MFA freshness onto the bearer session so
 // step-up gates continue to see it as verified.
 func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, mfaVerifiedAt *time.Time, nonce string) (map[string]any, error) {
-	rawAccess, err := auth.GenerateRawToken()
+	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		return nil, err
 	}
-	rawRefresh, err := auth.GenerateRawToken()
+	rawRefresh, err := creds.GenerateRawToken()
 	if err != nil {
 		return nil, err
 	}
@@ -633,8 +633,8 @@ func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, c
 		ID:               uuid.New(),
 		UserID:           user.ID,
 		ClientID:         client.ID,
-		AccessTokenHash:  auth.HashToken(rawAccess),
-		RefreshTokenHash: auth.HashToken(rawRefresh),
+		AccessTokenHash:  creds.HashToken(rawAccess),
+		RefreshTokenHash: creds.HashToken(rawRefresh),
 		Scopes:           scopes,
 		AccessExpiresAt:  now.Add(accessTokenTTL),
 		RefreshExpiresAt: now.Add(refreshTokenTTL),
@@ -689,7 +689,7 @@ func (s *Server) authenticateClient(r *http.Request) (*model.Client, error) {
 		if clientSecret == "" {
 			return nil, fmt.Errorf("client_secret required")
 		}
-		if auth.HashToken(clientSecret) != client.ClientSecretHash {
+		if creds.HashToken(clientSecret) != client.ClientSecretHash {
 			return nil, fmt.Errorf("invalid client_secret")
 		}
 	}

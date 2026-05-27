@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abagile/tokyo3-auth/internal/auth"
 	iMFA "github.com/abagile/tokyo3-auth/internal/mfa"
 	"github.com/abagile/tokyo3-auth/internal/model"
+	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp"
@@ -58,7 +58,7 @@ func sessionFromCookie(t *testing.T, r *testRig, cookie *http.Cookie) *model.Ses
 	if err != nil {
 		t.Fatalf("open cookie: %v", err)
 	}
-	sess, err := r.store.GetSessionByAccessTokenHash(context.Background(), auth.HashToken(string(raw)))
+	sess, err := r.store.GetSessionByAccessTokenHash(context.Background(), creds.HashToken(string(raw)))
 	if err != nil {
 		t.Fatalf("session lookup: %v", err)
 	}
