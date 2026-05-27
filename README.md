@@ -67,6 +67,8 @@ docker compose exec auth authd audit query --limit 20
 
 Required env vars on `authd` to enable JetStream publish + read: `AUTH_NATS_URL`, plus `AUTH_NATS_CERT/KEY/CA` for mTLS. With `AUTH_NATS_URL` unset, audit publishing is a no-op (dev only) and the live tail page renders empty.
 
+The same NATS endpoint also receives **operational log shipping** — every structured log line authd emits is fanned out to subject `app_log.authd` (alongside stdout). Reuses the same `AUTH_NATS_*` env vars; ships nothing when `AUTH_NATS_URL` is unset. The shipper dials with `RetryOnFailedConnect(true)` so a broker that's down at boot doesn't fail process startup — entries drop on the floor (200-entry discard-on-full buffer) while disconnected and resume on reconnect.
+
 ### Outbound provisioning
 Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
 
