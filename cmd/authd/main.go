@@ -121,9 +121,7 @@ import (
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
 	"github.com/abagile/tokyo3-base/journal/jetstream"
-	bnats "github.com/abagile/tokyo3-base/nats"
 	btls "github.com/abagile/tokyo3-base/tls"
-	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 )
 
@@ -157,7 +155,12 @@ func serveCmd() *cobra.Command {
 }
 
 func runServe() error {
-	log, drainLog := newAppLogger()
+	log, _, drainLog := applog.AppLoggerWithNATS(applog.Config{App: appName}, applog.NATSConfig{
+		URL:      os.Getenv("AUTH_NATS_URL"),
+		CertFile: os.Getenv("AUTH_NATS_CERT"),
+		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
+		CAFile:   envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+	}, applog.WithStdout())
 	defer drainLog()
 
 	issuer := mustEnv("AUTH_ISSUER")
@@ -427,7 +430,12 @@ func runAdminSync(target string) error {
 	}
 	defer db.Close()
 
-	log, drainLog := newAppLogger()
+	log, _, drainLog := applog.AppLoggerWithNATS(applog.Config{App: appName}, applog.NATSConfig{
+		URL:      os.Getenv("AUTH_NATS_URL"),
+		CertFile: os.Getenv("AUTH_NATS_CERT"),
+		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
+		CAFile:   envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+	}, applog.WithStdout())
 	defer drainLog()
 	kp := bcrypto.NewLocalKeyProvider(masterKey)
 	ctx := context.Background()
@@ -925,68 +933,6 @@ func envFirst(keys ...string) string {
 		}
 	}
 	return ""
-}
-
-// openLogNATS dials a NATS connection used by applog's WithAsyncNats
-// writer to ship operational log lines on subject `app_log.authd`. Reuses
-// the AUTH_NATS_URL / CERT / KEY / CA env vars (CA falls back to
-// AUTH_WORKLOAD_CA, mirroring the audit sink). Returns (nil, nil) when
-// AUTH_NATS_URL is unset — log shipping is disabled and applog falls back
-// to stdout-only.
-//
-// RetryOnFailedConnect + unbounded MaxReconnects mean a broker that's
-// down at boot doesn't permanently disable log shipping for the
-// process lifetime — entries get dropped (AsyncWriter is
-// discard-on-full) while disconnected, and shipping auto-resumes
-// once NATS comes back. Connect timeout 1s (vs nats.go default 2s)
-// and DrainTimeout 500ms keep startup fast and bound shutdown when
-// the async writer still has pending entries.
-func openLogNATS() (*nats.Conn, error) {
-	url := os.Getenv("AUTH_NATS_URL")
-	if url == "" {
-		return nil, nil
-	}
-	nc, err := bnats.Dial(url,
-		os.Getenv("AUTH_NATS_CERT"),
-		os.Getenv("AUTH_NATS_KEY"),
-		envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-		nats.Timeout(1*time.Second),
-		nats.DrainTimeout(500*time.Millisecond),
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("log shipping: %w", err)
-	}
-	return nc, nil
-}
-
-// newAppLogger builds the structured logger for an authd subcommand. When
-// AUTH_NATS_URL is set, the logger also ships log lines async to NATS
-// subject `app_log.authd`. Returns the logger and a drain callback the
-// caller defers — no-op when log shipping is disabled.
-func newAppLogger() (*slog.Logger, func()) {
-	logNATS, logNATSErr := openLogNATS()
-	drain := func() {}
-	if logNATS != nil {
-		drain = func() { _ = logNATS.Drain() }
-	}
-	writerOpts := []applog.WriterOption{applog.WithStdout()}
-	if logNATS != nil {
-		writerOpts = append(writerOpts, applog.WithAsyncNats(logNATS))
-	}
-	log, _ := applog.AppLogger(appName, writerOpts...)
-	if logNATSErr != nil {
-		log.Warn("operational log shipping disabled", "err", logNATSErr)
-	} else if logNATS != nil {
-		// "configured" rather than "shipping" — RetryOnFailedConnect
-		// means the connection may still be establishing in the
-		// background; entries get dropped (AsyncWriter is
-		// discard-on-full) until it does.
-		log.Info("operational log shipping configured", "subject", "app_log."+appName)
-	}
-	return log, drain
 }
 
 // outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
