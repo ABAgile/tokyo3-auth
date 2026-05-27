@@ -17,16 +17,16 @@ import (
 // silently breaks role mapping.
 func TestGithubSlug(t *testing.T) {
 	cases := map[string]string{
-		"Platform Engineers":  "platform-engineers",
-		"Data — Analytics":    "data-analytics",
-		"SRE":                 "sre",
-		"  many   spaces  ":   "many-spaces",
-		"with.dots":           "with-dots",
-		"weird:chars/here":    "weird-chars-here",
-		"123-numeric-start":   "123-numeric-start",
-		"---all-hyphens---":   "all-hyphens",
-		"":                    "",
-		"嗨":                   "", // unicode-only collapses to empty
+		"Platform Engineers": "platform-engineers",
+		"Data — Analytics":   "data-analytics",
+		"SRE":                "sre",
+		"  many   spaces  ":  "many-spaces",
+		"with.dots":          "with-dots",
+		"weird:chars/here":   "weird-chars-here",
+		"123-numeric-start":  "123-numeric-start",
+		"---all-hyphens---":  "all-hyphens",
+		"":                   "",
+		"嗨":                  "", // unicode-only collapses to empty
 	}
 	for in, want := range cases {
 		if got := githubSlug(in); got != want {
@@ -64,12 +64,12 @@ func TestGithubID(t *testing.T) {
 // `organization:` field has to match verbatim.
 func TestSyntheticOrgLogin(t *testing.T) {
 	cases := map[string]string{
-		"https://id.example.com":       "id.example.com",
-		"https://id.example.com:8443":  "id.example.com",
-		"http://localhost":             "localhost",
+		"https://id.example.com":        "id.example.com",
+		"https://id.example.com:8443":   "id.example.com",
+		"http://localhost":              "localhost",
 		"https://auth.internal/foo/bar": "auth.internal",
-		"":                             "auth", // parse succeeds but Hostname() empty
-		"::not-a-url":                  "auth", // parse fails
+		"":                              "auth", // parse succeeds but Hostname() empty
+		"::not-a-url":                   "auth", // parse fails
 	}
 	for issuer, want := range cases {
 		s := &Server{issuer: issuer}
@@ -307,8 +307,8 @@ type recorder struct {
 
 func newRecorder() *recorder { return &recorder{code: http.StatusOK, headers: http.Header{}} }
 
-func (r *recorder) Header() http.Header  { return r.headers }
-func (r *recorder) WriteHeader(s int)    { r.code = s }
+func (r *recorder) Header() http.Header { return r.headers }
+func (r *recorder) WriteHeader(s int)   { r.code = s }
 func (r *recorder) Write(b []byte) (int, error) {
 	r.body = append(r.body, b...)
 	return len(b), nil

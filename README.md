@@ -103,16 +103,17 @@ Tagged releases push two images to GHCR:
 | Image | Contents | Typical use |
 | --- | --- | --- |
 | `ghcr.io/abagile/tokyo3-auth` | `authd` server | Run the IdP itself; `docker run` + the env vars in [Configuration](#configuration) |
-| `ghcr.io/abagile/tokyo3-auth-cli` | `auth-aws-creds` + `auth-ssh-creds` helpers | CI runners and dev containers that prefer a containerized binary over `go install` |
+| `ghcr.io/abagile/tokyo3-auth-cli` | `auth-aws-creds` helper | CI runners and dev containers that prefer a containerized binary over `go install` |
 
-The CLI image has no `ENTRYPOINT` — pick which binary to run:
+The CLI image has no `ENTRYPOINT` — invoke the binary explicitly so the image can grow more tools later without breaking existing invocations:
 
 ```bash
 docker run --rm ghcr.io/abagile/tokyo3-auth-cli auth-aws-creds login --issuer https://id.example.com --client-id tokyo3-cli
-docker run --rm ghcr.io/abagile/tokyo3-auth-cli auth-ssh-creds login --issuer https://id.example.com --client-id tokyo3-cli
 ```
 
 Both images are multi-arch (`linux/amd64`, `linux/arm64`). Tags follow semver (`{{version}}`, `{{major}}.{{minor}}`, `{{major}}`, `latest`) on git tag pushes; commit-SHA tags on every build for traceability.
+
+The SSH-cert counterpart, `auth-ssh-creds`, lives in the [tokyo3-ca](https://github.com/abagile/tokyo3-ca) repo because its wire shape tracks certd's `/api/v1/ssh/sign-user` endpoint (SSO is the prerequisite, not the contract it has to stay in sync with). Its CLI image is `ghcr.io/abagile/tokyo3-ca-cli`; both helpers read the same shared `~/.config/auth-sso/` SSO cache, so one `auth-aws-creds login` (or `auth-ssh-creds login`) populates the cache for both.
 
 ### Database setup
 
@@ -569,67 +570,39 @@ These omissions are deliberate — credentials are policy decisions, not provisi
 
 ## SSH access via `auth-ssh-creds`
 
-`auth-ssh-creds` is the SSH counterpart to `auth-aws-creds`: it uses auth's OIDC code/device flow to obtain an ID token, then sends that token to `certd` (the SSH cert authority) in exchange for a short-lived SSH user certificate. The helper writes the cert + private key into a local directory; you point `ssh` at them with `-i`, or `Include` the generated `ssh_config` snippet.
+`auth-ssh-creds` exchanges an SSO ID token (issued by auth) for a
+short-lived SSH user certificate via certd's `/api/v1/ssh/sign-user`
+endpoint, then writes the cert + private key next to each other so
+`ssh -i` picks them up directly.
 
-The OIDC plumbing (browser flow, PKCE, token cache, refresh-rotation) lives in [`github.com/abagile/tokyo3-base/oidcclient`](https://github.com/abagile/tokyo3-base) and is shared with `auth-aws-creds` (and any future SSO helper). The SSO cache itself is unified at `~/.config/auth-sso/`, so one `login` from either helper covers them both. Only the SSH-specific bits (keypair generation, `POST /api/v1/ssh/sign-user`, on-disk cert layout) live in [`cmd/auth-ssh-creds`](cmd/auth-ssh-creds).
-
-```bash
-go install github.com/abagile/tokyo3-auth/cmd/auth-ssh-creds@latest
-```
-
-**One-time setup** (re-use the same OAuth public client you registered for `auth-aws-creds`):
-
-```bash
-auth-ssh-creds login --issuer https://id.example.com --client-id tokyo3-cli
-# Opens browser, completes OIDC code flow on a loopback port, caches the
-# refresh + id tokens.
-```
-
-`--device` selects the RFC 8628 grant for headless hosts (same UX as `auth-aws-creds login --device`).
-
-**On-demand cert minting**:
+The binary **lives in the [tokyo3-ca](https://github.com/abagile/tokyo3-ca)
+repo**, not here, because the wire shape it tracks is certd's
+sign-user contract — when that contract evolves (TTL caps, principals
+validation, key types, key_id derivation), the helper that POSTs to
+it should land in the same review. SSO via auth is the prerequisite,
+not the API surface the helper has to stay in sync with.
 
 ```bash
-auth-ssh-creds get \
-    --certd https://certd.internal \
-    --principals alice,deployer \
-    --ttl 1h
-# auth-ssh-creds: cert written
-#   key:  ~/.config/auth-sso/ssh-creds/keys/id_ed25519
-#   cert: ~/.config/auth-sso/ssh-creds/keys/id_ed25519-cert.pub
-#   ttl:  59m59s (valid_before 2026-05-26T15:00:00Z)
-#   principals: alice,deployer
+go install github.com/abagile/tokyo3-ca/cmd/auth-ssh-creds@latest
 ```
 
-The first `get` generates an ed25519 keypair in `~/.config/auth-sso/ssh-creds/keys/`; subsequent calls reuse it and only refresh the signed certificate. `key_id` defaults to the `email` claim in the ID token (falling back to `sub`); override with `--key-id`. Pass `--groups eng,sre` when certd is configured with `Policy` to enforce role-table membership.
+The helper shares the SSO cache at `~/.config/auth-sso/` with
+`auth-aws-creds`, so a single `auth-aws-creds login` (or
+`auth-ssh-creds login`) populates the tokens for both. Re-use the same
+`tokyo3-cli` (or whatever you named it) public client registration —
+no separate auth-side setup needed beyond the federated audience your
+certd already validates.
 
-**Drop-in `ssh_config` snippet** — pass `--proxy-jump <ssh-proxyd-host:port>` and the helper prints a block you can append to `~/.ssh/config` (or to a file `Include`d from it):
+Full usage docs (flag reference, cache layout, ssh_config snippet
+emission via `--proxy-jump`, Docker image) live in the
+[tokyo3-ca README](https://github.com/abagile/tokyo3-ca#cli-access-via-auth-ssh-creds).
 
-```bash
-auth-ssh-creds get \
-    --certd https://certd.internal \
-    --principals alice \
-    --proxy-jump ssh-proxyd.internal:2222 \
-    > ~/.ssh/config.d/abagile
-```
-
-After that, `ssh db-1.prod.internal` routes through `ssh-proxyd` using the certd-issued user cert — no manual `-i` / `-J` flags.
-
-**How the bearer token reaches certd**: `auth-ssh-creds` sends `Authorization: Bearer <id_token>` to certd's `/api/v1/ssh/sign-user` endpoint. certd validates the token against auth's JWKS (`<issuer>/.well-known/jwks.json`) — no certd → auth callback needed; the client carries the token end-to-end. JWKS caching means a transient auth restart doesn't break cert issuance.
-
-**Cache layout** under `${XDG_CONFIG_HOME:-~/.config}/auth-ssh-creds/`:
-
-```
-config.json                 ← issuer + client_id (non-secret, 0600)
-tokens.json                 ← OAuth access + refresh + id tokens (0600)
-keys/id_ed25519             ← ed25519 private key (0600)
-keys/id_ed25519.pub         ← public key (0644)
-keys/id_ed25519-cert.pub    ← certd-signed user cert (0644)
-```
-
-`auth-ssh-creds logout` wipes both the token cache and `keys/` (so a fresh `login` doesn't leave a stale signed cert next to a new identity). `config.json` is preserved so you can re-`login` without re-typing flags.
-
-**Programmatic endpoint**: the helper talks to `POST /api/v1/ssh/sign-user` with JSON body `{public_key, key_id, principals, groups, ttl_seconds}`. See `ca/internal/server/api/sign_ssh.go` for the certd-side shape.
+**How the bearer token reaches certd**: `auth-ssh-creds` sends
+`Authorization: Bearer <id_token>` to certd's `/api/v1/ssh/sign-user`
+endpoint. certd validates the token against auth's JWKS
+(`<issuer>/.well-known/jwks.json`) — no certd → auth callback needed;
+the client carries the token end-to-end. JWKS caching means a
+transient auth restart doesn't break cert issuance.
 
 ## Outbound provisioning
 

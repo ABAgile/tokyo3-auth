@@ -1,20 +1,21 @@
 # Multi-stage build for the auth project.
 #
-# - Stage `builder` compiles all three binaries (authd + auth-aws-creds +
-#   auth-ssh-creds). Building them together amortises `go mod download`
-#   across a single cache layer; the binaries are independent Go `main`
-#   packages whose runtime dependency graphs intersect only on internal
-#   helpers and standard library (no DB or AWS SDK in either helper).
+# - Stage `builder` compiles both binaries (authd + auth-aws-creds). Building
+#   them together amortises `go mod download` across a single cache layer;
+#   the binaries are independent Go `main` packages whose runtime dependency
+#   graphs intersect only on internal helpers and standard library (no DB
+#   or AWS SDK in the helper).
 #
-# - Stage `cli` ships both helpers (auth-aws-creds + auth-ssh-creds) under
-#   /usr/local/bin/. No ENTRYPOINT — the user picks which binary to run
-#   (`docker run --rm <image> auth-aws-creds login …`). Useful for CI
-#   runners and dev containers that prefer a containerized helper over
-#   `go install`. Reachable via `docker build --target cli .`.
+# - Stage `cli` ships auth-aws-creds under /usr/local/bin/. No ENTRYPOINT —
+#   the user invokes the binary explicitly so this image can grow more CLI
+#   tools later without breaking existing invocations. Useful for CI runners
+#   and dev containers that prefer a containerized helper over `go install`.
+#   Reachable via `docker build --target cli .`. (The auth-ssh-creds helper
+#   lives in the tokyo3-ca repo; its CLI image is ghcr.io/abagile/tokyo3-ca-cli.)
 #
 # - Stage `server` (default — last stage in this file) ships only the authd
-#   server. The CLI helpers are developer tools — devs `go install` them on
-#   their laptops, no value in bundling them into the server runtime.
+#   server. The CLI helper is a developer tool — devs `go install` it on
+#   their laptops, no value in bundling it into the server runtime.
 #   Plain `docker build .` produces this image.
 #
 # All targets honour TARGETOS / TARGETARCH for cross-builds.
@@ -38,23 +39,18 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o /out/authd ./cmd/authd
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o /out/auth-aws-creds ./cmd/auth-aws-creds
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /out/auth-ssh-creds ./cmd/auth-ssh-creds
 
 # ── Stage 2: CLI image (build with --target cli) ──────────────────────────────
 FROM alpine:3.21 AS cli
 
-# ca-certificates so the helpers can verify TLS to the auth issuer.
+# ca-certificates so the helper can verify TLS to the auth issuer.
 RUN apk add --no-cache ca-certificates
 
 COPY --from=builder /out/auth-aws-creds /usr/local/bin/auth-aws-creds
-COPY --from=builder /out/auth-ssh-creds /usr/local/bin/auth-ssh-creds
 
-# No ENTRYPOINT — users explicitly invoke the binary they want, e.g.
+# No ENTRYPOINT — users invoke the binary explicitly so this image can
+# grow more CLI tools later without breaking existing invocations.
 #   docker run --rm <image> auth-aws-creds login --issuer ... --client-id ...
-#   docker run --rm <image> auth-ssh-creds login --issuer ... --client-id ...
-# Default to a shell so `docker run -it <image>` lands the user somewhere
-# useful for ad-hoc exploration.
 CMD ["/bin/sh"]
 
 # ── Stage 3: Server runtime image (default target) ────────────────────────────
