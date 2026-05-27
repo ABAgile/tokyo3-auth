@@ -307,5 +307,9 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	return mux
+	// Wrap the entire mux in panic recovery. Per-request panics turn
+	// into a structured log line + 500 response instead of dropping the
+	// connection with stderr noise (net/http's default). One handler
+	// faulting must never take the IdP offline.
+	return s.recoverMiddleware(mux)
 }

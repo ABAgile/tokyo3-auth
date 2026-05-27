@@ -100,6 +100,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -264,6 +265,21 @@ func runServe() error {
 		Addr:      addr,
 		Handler:   srv.Routes(),
 		TLSConfig: tlsCfg,
+		// Slowloris defense: cap how long a client can dribble out
+		// request headers / body before the server gives up the
+		// connection. WriteTimeout intentionally left at 0 — the SSE
+		// audit-tail handler streams indefinitely, and net/http applies
+		// WriteTimeout uniformly across the whole response. SSE handlers
+		// should use http.ResponseController.SetWriteDeadline per write
+		// if per-frame deadlines are needed.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// Route TLS handshake errors, broken-pipe writes, and similar
+		// http-internal noise into the structured logger so they show
+		// up alongside everything else (and ship through the same NATS
+		// log subject) instead of dumping naked lines to stderr.
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 		// BaseContext makes every request inherit from the SIGTERM-aware
 		// ctx so long-lived handlers (e.g. /portal/admin/audit/sse, which
 		// blocks in select{} on r.Context().Done() and the JetStream
@@ -275,18 +291,31 @@ func runServe() error {
 	}
 
 	if interval := provisionSyncInterval(log); interval > 0 {
-		go runPeriodicProvisionSync(ctx, db, provReg, interval, log)
+		go safeGoroutine(log, "provision-sync", func() {
+			runPeriodicProvisionSync(ctx, db, provReg, interval, log)
+		})
 	}
 	if interval := awsFedReapInterval(log); interval > 0 {
-		go runAWSFedReaper(ctx, provReg, interval, log)
+		go safeGoroutine(log, "awsfed-reaper", func() {
+			runAWSFedReaper(ctx, provReg, interval, log)
+		})
 	}
-	go runDeviceGrantReaper(ctx, db, time.Minute, log)
+	go safeGoroutine(log, "device-grant-reaper", func() {
+		runDeviceGrantReaper(ctx, db, time.Minute, log)
+	})
 
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
 	go func() {
+		// On unexpected listener exit (bind error, fatal TLS config
+		// problem, fd exhaustion) signal the main goroutine so the
+		// deferred cleanup in runServe — auditSink.Close, db.Close,
+		// signer disposal, log-shipping drain — actually runs. An
+		// earlier version called os.Exit(1) here, which short-circuited
+		// every defer and dropped audit events that were still waiting
+		// for a JetStream ack.
 		if err := httpSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			os.Exit(1)
+			log.Error("http server exited unexpectedly; initiating graceful shutdown", "err", err)
+			cancel()
 		}
 	}()
 
@@ -470,13 +499,57 @@ func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Du
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := db.DeleteExpiredDeviceGrants(ctx); err != nil {
-				log.Error("device grant reap", "err", err)
-			} else if n > 0 {
-				log.Debug("device grant reap", "deleted", n)
-			}
+			safeTick(log, "device-grant-reaper", func() {
+				if n, err := db.DeleteExpiredDeviceGrants(ctx); err != nil {
+					log.Error("device grant reap", "err", err)
+				} else if n > 0 {
+					log.Debug("device grant reap", "deleted", n)
+				}
+			})
 		}
 	}
+}
+
+// safeGoroutine is the standard wrapper for every long-lived background
+// goroutine in authd: it recovers from panics, logs a structured error
+// (with a stack trace) under a stable goroutine name, and returns —
+// keeping the IdP serving instead of letting one bad code path take
+// the whole process down. Use it for *new* goroutines you spawn with
+// `go ...`; for code that runs inside an existing reaper loop, use
+// safeTick so the loop keeps ticking.
+//
+// Background context: this IdP controls every production access path
+// (AWS console, SSH proxy sessions, vault, github-compat). A panic in
+// any goroutine — a downstream API returning an unexpected shape, a
+// nil pointer on a config edge case — used to crash the entire process.
+// Wrapping at the goroutine boundary is the cheapest blast-radius
+// reducer available.
+func safeGoroutine(log *slog.Logger, name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("goroutine panic recovered",
+				"goroutine", name,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+}
+
+// safeTick wraps one iteration of a reaper / sync loop in panic recovery
+// so the surrounding ticker continues firing. Different shape from
+// safeGoroutine: the caller already owns the goroutine and just wants
+// each tick to be self-contained.
+func safeTick(log *slog.Logger, name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("tick panic recovered — loop continues",
+				"loop", name,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+		}
+	}()
+	fn()
 }
 
 // provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the
@@ -514,24 +587,26 @@ func runPeriodicProvisionSync(ctx context.Context, db *postgres.DB, reg *provisi
 			log.Info("periodic provision sync stopped")
 			return
 		case <-ticker.C:
-			provs := reg.Snapshot()
-			if len(provs) == 0 {
-				log.Debug("periodic provision sync — no enabled integrations, skipping tick")
-				continue
-			}
-			start := time.Now()
-			for _, prov := range provs {
-				if ctx.Err() != nil {
+			safeTick(log, "provision-sync", func() {
+				provs := reg.Snapshot()
+				if len(provs) == 0 {
+					log.Debug("periodic provision sync — no enabled integrations, skipping tick")
 					return
 				}
-				userOK, userFail, groupOK, groupFail := syncOneTarget(ctx, db, prov, log)
-				log.Info("periodic provision sync — target done",
-					"target", prov.Name(),
-					"users_ok", userOK, "users_failed", userFail,
-					"groups_ok", groupOK, "groups_failed", groupFail)
-			}
-			log.Info("periodic provision sync — tick done",
-				"targets", len(provs), "elapsed", time.Since(start))
+				start := time.Now()
+				for _, prov := range provs {
+					if ctx.Err() != nil {
+						return
+					}
+					userOK, userFail, groupOK, groupFail := syncOneTarget(ctx, db, prov, log)
+					log.Info("periodic provision sync — target done",
+						"target", prov.Name(),
+						"users_ok", userOK, "users_failed", userFail,
+						"groups_ok", groupOK, "groups_failed", groupFail)
+				}
+				log.Info("periodic provision sync — tick done",
+					"targets", len(provs), "elapsed", time.Since(start))
+			})
 		}
 	}
 }
@@ -575,19 +650,21 @@ func runAWSFedReaper(ctx context.Context, reg *provision.Registry, interval time
 			log.Info("aws federation revocation reaper stopped")
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
-			for _, prov := range reg.Snapshot() {
-				if ctx.Err() != nil {
-					return
+			safeTick(log, "awsfed-reaper", func() {
+				now := time.Now().UTC()
+				for _, prov := range reg.Snapshot() {
+					if ctx.Err() != nil {
+						return
+					}
+					fed, ok := prov.(*awsfed.Provisioner)
+					if !ok {
+						continue
+					}
+					if err := fed.ReapExpired(ctx, now); err != nil {
+						log.Error("aws federation reap", "target", fed.Name(), "err", err)
+					}
 				}
-				fed, ok := prov.(*awsfed.Provisioner)
-				if !ok {
-					continue
-				}
-				if err := fed.ReapExpired(ctx, now); err != nil {
-					log.Error("aws federation reap", "target", fed.Name(), "err", err)
-				}
-			}
+			})
 		}
 	}
 }

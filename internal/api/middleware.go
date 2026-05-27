@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -11,6 +13,45 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/store"
 	creds "github.com/abagile/tokyo3-base/auth/creds"
 )
+
+// recoverMiddleware catches any panic from a handler, logs the panic with
+// the originating method/path + a full stack trace, and writes a 500 to
+// the client if the response headers haven't been flushed yet. Mounted
+// once around the whole mux from Routes() — every endpoint goes through
+// it. http.Server's built-in recovery also catches panics but just drops
+// the connection and writes the stack to stderr; that's invisible in
+// structured log shipping and leaves clients hanging.
+//
+// http.ErrAbortHandler is re-panicked: it's the documented sentinel for
+// "abort this request without logging" used by net/http internals.
+func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			s.log.Error("handler panic recovered",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote", r.RemoteAddr,
+				"panic", fmt.Sprintf("%v", rec),
+				"stack", string(debug.Stack()))
+			// Best-effort 500. If the handler has already written
+			// headers (e.g. mid-stream SSE) the WriteHeader call is
+			// a no-op net/http logs but doesn't crash on; the
+			// connection still terminates cleanly when the deferred
+			// recover unwinds.
+			defer func() { _ = recover() }()
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"server_error","error_description":"internal error"}`))
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
 
 type contextKey int
 

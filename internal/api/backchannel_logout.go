@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -82,7 +83,23 @@ func (s *Server) broadcastLogout(ctx context.Context, r *http.Request, userID uu
 // the originating handler returned) and the JetStream Append errors out
 // with "context canceled", visible in production as
 // `audit publish failed action=auth.logout.backchannel err=context canceled`.
+//
+// Panic recovery: every logout broadcast spawns one goroutine per RP and
+// returns control to the HTTP handler. A panic in here (malformed JWT
+// edge case, RP URL parser corner) would tear down the entire IdP since
+// the goroutine has no parent recover. The deferred recover wall isolates
+// the failure to this one push and writes a structured log line; the
+// originating logout already succeeded before the goroutine started.
 func (s *Server) pushLogoutToken(r *http.Request, clientDBID uuid.UUID, logoutURI, clientID, sub, sid string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.log.Error("backchannel logout: goroutine panic recovered",
+				"client_id", clientID,
+				"uri", logoutURI,
+				"panic", fmt.Sprintf("%v", rec),
+				"stack", string(debug.Stack()))
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), backchannelLogoutTimeout)
 	defer cancel()
 	r = r.WithContext(ctx)
@@ -135,7 +152,3 @@ func logoutScope(sid string) string {
 	}
 	return "session"
 }
-
-// formatBackchannelErr is reserved for future structured error logging if
-// we want richer audit metadata than the current logMeta key/value pairs.
-var _ = fmt.Sprintf

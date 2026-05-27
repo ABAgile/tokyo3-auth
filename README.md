@@ -76,6 +76,15 @@ Authoritative user/group mutations (admin API, portal admin actions, self-regist
 - TOTP secrets + JWT private keys: AES-256-GCM with DEK+KEK envelope. DEK per value, KEK from `AUTH_MASTER_KEY`.
 - Auth state cookies (login→MFA flow): AES-256-GCM with master key directly (short-lived, no rotation needed).
 
+### Process robustness
+The IdP is on the critical path for every production access surface — AWS console SSO, SSH-proxy sessions, vault, every GitHub-OAuth-compatible RP — so a single panic must not take down the process. Three concentric guards:
+
+- **HTTP recover middleware** wraps the whole mux. Per-request panics turn into a structured log line (method, path, remote, stack) and a `500 server_error` to the client. `http.ErrAbortHandler` is re-panicked so net/http's documented "abort without logging" sentinel still works.
+- **Background-goroutine recover** wraps every long-lived spawn — periodic provision sync, AWS-federation revocation reaper, device-grant reaper, and per-RP back-channel-logout pushes. Each reaper's per-tick body is wrapped separately so a single bad tick doesn't kill the loop.
+- **Graceful shutdown on listener failure** — if `ListenAndServeTLS` returns an unexpected error (bind conflict, fd exhaustion), the server goroutine signals `cancel()` and lets `runServe`'s defers run: auditSink flushes any in-flight JetStream acks, the DB pool closes, the operational-log NATS connection drains. Previously this path called `os.Exit(1)` and dropped pending audit events.
+
+Slowloris defense via `ReadHeaderTimeout=10s`, `ReadTimeout=60s`, `IdleTimeout=120s` on the HTTP server. `WriteTimeout` is intentionally `0` because the `/portal/admin/audit/sse` stream needs to hold a response open indefinitely; SSE-style handlers that want per-frame deadlines should use `http.ResponseController.SetWriteDeadline`. TLS handshake errors and broken-pipe writes route through `http.Server.ErrorLog` into the structured logger, not stderr.
+
 ## Requirements
 
 - Go 1.22+
