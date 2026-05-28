@@ -969,34 +969,15 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 //	AUTH_NATS_KEY    Publisher client key PEM. Required iff AUTH_NATS_CERT set.
 //	AUTH_NATS_CA     CA bundle for verifying the NATS server cert.
 func openAuditSink(log *slog.Logger) (audit.Sink, error) {
-	url := os.Getenv("AUTH_NATS_URL")
-	if url == "" {
-		log.Warn("AUTH_NATS_URL not set — audit sink is no-op; not for production")
-		return audit.NoopSink, nil
-	}
-	tlsCfg, err := btls.FromFiles(
-		os.Getenv("AUTH_NATS_CERT"),
-		os.Getenv("AUTH_NATS_KEY"),
-		envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("nats audit TLS: %w", err)
-	}
-	if tlsCfg != nil {
-		log.Info("audit sink: NATS JetStream with mTLS", "url", url)
-	} else {
-		log.Warn("audit sink: AUTH_NATS_CERT not set — connecting without mTLS (not for production)")
-	}
-	jSink, err := jetstream.NewSink(jetstream.SinkConfig{
-		URL:     url,
-		Subject: audit.Subject,
-		TLS:     tlsCfg,
-		Log:     log,
+	return jetstream.NewAuditSink[audit.Entry](jetstream.AuditSinkConfig{
+		URL:       os.Getenv("AUTH_NATS_URL"),
+		CertFile:  os.Getenv("AUTH_NATS_CERT"),
+		KeyFile:   os.Getenv("AUTH_NATS_KEY"),
+		CAFile:    envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		Subject:   audit.Subject,
+		EnvPrefix: "AUTH_NATS",
+		Log:       log,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return journal.NewJSONSink[audit.Entry](jSink), nil
 }
 
 // openAuditSource is the read-side counterpart of openAuditSink: returns a
@@ -1010,24 +991,14 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 // metadata, so cert ACLs apply uniformly: a publisher cert that also has
 // CONSUME rights on auth.audit.events also reads the audit page.
 func openAuditSource(log *slog.Logger) (journal.Source, error) {
-	url := os.Getenv("AUTH_NATS_URL")
-	if url == "" {
-		log.Warn("AUTH_NATS_URL not set — audit source is no-op; admin audit page will be empty")
-		return journal.NoopSource{}, nil
-	}
-	tlsCfg, err := btls.FromFiles(
-		os.Getenv("AUTH_NATS_CERT"),
-		os.Getenv("AUTH_NATS_KEY"),
-		envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("nats audit source TLS: %w", err)
-	}
-	return jetstream.NewSource(jetstream.SourceConfig{
-		URL:        url,
+	return jetstream.NewAuditSource(jetstream.AuditSourceConfig{
+		URL:        os.Getenv("AUTH_NATS_URL"),
+		CertFile:   os.Getenv("AUTH_NATS_CERT"),
+		KeyFile:    os.Getenv("AUTH_NATS_KEY"),
+		CAFile:     envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 		StreamName: audit.StreamName,
 		Subject:    audit.Subject,
-		TLS:        tlsCfg,
+		EnvPrefix:  "AUTH_NATS",
 		Log:        log,
 	})
 }
