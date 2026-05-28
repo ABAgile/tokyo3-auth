@@ -119,6 +119,7 @@ import (
 	"github.com/abagile/tokyo3-base/applog"
 	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
+	"github.com/abagile/tokyo3-base/envutil"
 	"github.com/abagile/tokyo3-base/journal"
 	"github.com/abagile/tokyo3-base/journal/jetstream"
 	btls "github.com/abagile/tokyo3-base/tls"
@@ -159,15 +160,15 @@ func runServe() error {
 		URL:      os.Getenv("AUTH_NATS_URL"),
 		CertFile: os.Getenv("AUTH_NATS_CERT"),
 		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
-		CAFile:   envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		CAFile:   envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	}, applog.WithStdout())
 	defer drainLog()
 
-	issuer := mustEnv("AUTH_ISSUER")
-	dbURL := mustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
-	masterKeyHex := mustEnv("AUTH_MASTER_KEY")
-	addr := envOr("AUTH_ADDR", ":8443")
+	issuer := envutil.MustEnv("AUTH_ISSUER")
+	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
+	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
+	masterKeyHex := envutil.MustEnv("AUTH_MASTER_KEY")
+	addr := envutil.Or("AUTH_ADDR", ":8443")
 
 	masterKey, err := bcrypto.ParseKEK(masterKeyHex)
 	if err != nil {
@@ -339,14 +340,14 @@ func migrateCmd() *cobra.Command {
 		Use:   "migrate",
 		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			dbURL := envFirst("AUTH_ADMIN_DATABASE_URL", "AUTH_DATABASE_URL")
+			dbURL := envutil.First("AUTH_ADMIN_DATABASE_URL", "AUTH_DATABASE_URL")
 			if dbURL == "" {
 				return fmt.Errorf("AUTH_ADMIN_DATABASE_URL or AUTH_DATABASE_URL must be set")
 			}
 			adminDBTLS, err := btls.FromFiles(
-				envFirst("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
-				envFirst("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
-				envFirst("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
+				envutil.First("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
+				envutil.First("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
+				envutil.First("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 			)
 			if err != nil {
 				return fmt.Errorf("admin db TLS: %w", err)
@@ -406,9 +407,9 @@ func adminSyncCmd() *cobra.Command {
 }
 
 func runAdminSync(target string) error {
-	dbURL := mustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
-	masterKey, err := bcrypto.ParseKEK(mustEnv("AUTH_MASTER_KEY"))
+	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
+	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
+	masterKey, err := bcrypto.ParseKEK(envutil.MustEnv("AUTH_MASTER_KEY"))
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -434,7 +435,7 @@ func runAdminSync(target string) error {
 		URL:      os.Getenv("AUTH_NATS_URL"),
 		CertFile: os.Getenv("AUTH_NATS_CERT"),
 		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
-		CAFile:   envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		CAFile:   envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	}, applog.WithStdout())
 	defer drainLog()
 	kp := bcrypto.NewLocalKeyProvider(masterKey)
@@ -861,8 +862,8 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 	if err := validateNewUserPassword(password, allowWeak); err != nil {
 		return err
 	}
-	dbURL := mustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envOr("AUTH_ADMIN_DATABASE_URL", dbURL)
+	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
+	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
 
 	adminDBTLS, dbTLS, err := dbTLSFromEnv()
 	if err != nil {
@@ -908,33 +909,6 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func mustEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		fmt.Fprintf(os.Stderr, "error: %s environment variable is required\n", key)
-		os.Exit(1)
-	}
-	return v
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// envFirst returns the value of the first non-empty env var among keys.
-// Used for chained fallbacks (e.g. AUTH_ADMIN_DB_CA → AUTH_DB_CA → AUTH_WORKLOAD_CA).
-func envFirst(keys ...string) string {
-	for _, k := range keys {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 // outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
 // authenticate auth as a client to downstream SCIM endpoints. A single shared
 // cert/key pair is presented for every mtls integration (auth has one IdP
@@ -950,7 +924,7 @@ func envFirst(keys ...string) string {
 func outboundTLSFromEnv() (*tls.Config, error) {
 	certFile := os.Getenv("AUTH_SCIM_MTLS_CERT")
 	keyFile := os.Getenv("AUTH_SCIM_MTLS_KEY")
-	caFile := envFirst("AUTH_SCIM_MTLS_CA", "AUTH_WORKLOAD_CA")
+	caFile := envutil.First("AUTH_SCIM_MTLS_CA", "AUTH_WORKLOAD_CA")
 	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil, nil
 	}
@@ -1003,7 +977,7 @@ func openAuditSink(log *slog.Logger) (audit.Sink, error) {
 	tlsCfg, err := btls.FromFiles(
 		os.Getenv("AUTH_NATS_CERT"),
 		os.Getenv("AUTH_NATS_KEY"),
-		envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("nats audit TLS: %w", err)
@@ -1044,7 +1018,7 @@ func openAuditSource(log *slog.Logger) (journal.Source, error) {
 	tlsCfg, err := btls.FromFiles(
 		os.Getenv("AUTH_NATS_CERT"),
 		os.Getenv("AUTH_NATS_KEY"),
-		envFirst("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("nats audit source TLS: %w", err)
@@ -1075,9 +1049,9 @@ func openAuditSource(log *slog.Logger) (journal.Source, error) {
 // credentials.
 func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	admin, err = btls.FromFiles(
-		envFirst("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
-		envFirst("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
-		envFirst("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
+		envutil.First("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
+		envutil.First("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
+		envutil.First("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("admin db TLS: %w", err)
@@ -1085,7 +1059,7 @@ func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	runtime, err = btls.FromFiles(
 		os.Getenv("AUTH_DB_CERT"),
 		os.Getenv("AUTH_DB_KEY"),
-		envFirst("AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
+		envutil.First("AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("db TLS: %w", err)
