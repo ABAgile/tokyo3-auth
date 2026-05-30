@@ -154,6 +154,10 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_ADDR` | No | `:8443` | HTTPS listen address (`host:port`; empty host = all interfaces) |
 | `AUTH_DATABASE_URL` | Yes | — | PostgreSQL DSN (app role, DML only) |
 | `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
+| `AUTH_DB_CERT` | If Postgres requires mTLS | — | Client cert PEM path for the runtime DB pool. Hot-reloaded (mtime polled every 30s by the `db-cert-reloader` goroutine); rotated files are picked up by the next pool dial via `GetClientCertificate`. `SetConnMaxLifetime` is 5m so pooled conns recycle naturally within that window. |
+| `AUTH_DB_KEY` | If `AUTH_DB_CERT` is set | — | Client key PEM. Hot-reloaded together with `AUTH_DB_CERT`. |
+| `AUTH_DB_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Hot-reloaded every 30s; trust pool snapshot is re-read per handshake via `VerifyConnection`. |
+| `AUTH_ADMIN_DB_CERT` / `AUTH_ADMIN_DB_KEY` / `AUTH_ADMIN_DB_CA` | If migrate uses a separate role with mTLS | falls back to `AUTH_DB_*` (CA also falls back to `AUTH_WORKLOAD_CA`) | mTLS material for the migrate (DDL) connection. **Not** hot-reloaded — the connection closes after migrations finish, so rotation isn't relevant on this path. |
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTH_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
@@ -164,6 +168,10 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
+| `AUTH_NATS_URL` | If JetStream audit publishing is required | — | NATS server URL for audit publish + read **and** operational log shipping. Empty disables audit publishing (no-op sink), the live tail page renders empty, and `app_log.authd` shipping silently no-ops. |
+| `AUTH_NATS_CERT` | If NATS requires mTLS | — | Client cert PEM path for the audit sink + source. Hot-reloaded (mtime polled every 30s by the `nats-cert-reloader` goroutine; single instance shared by sink and source); rotated files are picked up on the next NATS reconnect via `GetClientCertificate`. **Caveat**: the operational-log shipper (`applog.AppLoggerWithNATS`) still pins this at boot — its hot-reload requires an upstream change in `tokyo3-base/applog`. |
+| `AUTH_NATS_KEY` | If `AUTH_NATS_CERT` is set | — | Client key PEM. Hot-reloaded together with `AUTH_NATS_CERT` for the audit channels; same boot-pin caveat for the log shipper. |
+| `AUTH_NATS_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the NATS server cert. Hot-reloaded every 30s for the audit channels; trust pool snapshot is re-read per handshake via `VerifyConnection`. Log-shipper caveat applies. |
 | `AUTH_SCIM_MTLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
 | `AUTH_SCIM_MTLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_SCIM_MTLS_CERT` is set. |
 | `AUTH_SCIM_MTLS_CA` | No | falls back to `AUTH_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
@@ -171,6 +179,21 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
 | `AWS_REGION` | If an `aws_iam` or `aws_federation` integration is enabled | — | Signing region for the AWS SDK's IAM calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | If neither machine IAM role nor any other credential source is available | — | Standard AWS SDK env vars, **not read by auth**. The SDK's default credential chain (used by the `aws_iam` and `aws_federation` provisioners) picks these up if set. **Prefer a machine IAM role** — EC2 instance profile, ECS task role, EKS IRSA, or IAM Roles Anywhere — over static keys for production. The federation flow (`/portal/aws`, `/aws/credentials`) does NOT need any AWS credentials at all; only the IAM-creates-users provisioner and the federation revocation provisioner do. |
+
+### Cert rotation
+
+authd does not hold long-lived TLS material in memory across rotations on the channels that matter. cert-agentd (or any external rotator: cert-manager, SPIFFE, tbot, manual replace) can drop a fresh cert in place and the next handshake on each channel presents it — no SIGHUP, no restart.
+
+| Channel | Mechanism | Picked up on |
+|---|---|---|
+| Incoming HTTPS (`AUTH_API_CERT`) | `tls.Config.GetCertificate` via `btls.CertLoader` | Every TLS handshake (per-request) |
+| SCIM outbound mTLS (`AUTH_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `btls.CertLoader` | Every outbound SCIM request |
+| Postgres pool (`AUTH_DB_CERT/KEY/CA`) | `tls.Config.GetClientCertificate` + `VerifyConnection` via `tls/reloader`; mtime polled every 30s by `db-cert-reloader` | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
+| NATS audit sink + source (`AUTH_NATS_CERT/KEY/CA`) | Same as DB; one reloader shared between sink and source, polled by `nats-cert-reloader` | Every NATS reconnect (the lib auto-reconnects on disconnect) |
+
+**Note**: the operational-log shipper that fans authd's stdout to `app_log.authd` (`applog.AppLoggerWithNATS`, same `AUTH_NATS_*` env vars) still loads its TLS material once at boot. Closing this gap requires an upstream change in `tokyo3-base/applog` to accept a `*tls.Config` instead of raw file paths. Until then, a process restart is needed to roll the shipper onto a rotated cert. The audit sink + source (the channels that gate request-handling via fail-closed publish) are unaffected.
+
+What rotation does **not** do: it never disturbs an already-established TLS session. TLS authenticates at handshake time only; the X.509 cert is not consulted again on the wire. So in-flight requests, open NATS subscriptions, and active DB transactions survive a rotation untouched — only subsequent dials see the new material.
 
 ## Running
 
