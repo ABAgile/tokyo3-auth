@@ -57,11 +57,14 @@ CMD ["/bin/sh"]
 FROM alpine:3.21 AS server
 
 # ca-certificates is required for TLS connections to Postgres, NATS, and outbound SCIM.
-RUN apk add --no-cache ca-certificates
+# tini runs as PID 1 to reap orphaned children (e.g. the ssl_client that
+# busybox-wget healthchecks orphan) and forward signals for clean shutdown.
+# A bare Go PID 1 doesn't reap, so cgroup pids.current would climb forever.
+RUN apk add --no-cache ca-certificates tini
 
 COPY --from=builder /out/authd /usr/local/bin/authd
 
 EXPOSE 443
 
-ENTRYPOINT ["/usr/local/bin/authd"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/authd"]
 CMD ["serve"]
