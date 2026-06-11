@@ -202,6 +202,7 @@ services:
       AUTH_NATS_URL:            ${AUTH_NATS_URL:-nats://nats:4222}
       AUTH_ALLOW_REGISTRATION:  ${AUTH_ALLOW_REGISTRATION:-false}
       AUTH_WEBAUTHN_ORIGINS:    ${AUTH_WEBAUTHN_ORIGINS:-}
+      AUTH_WEBAUTHN_RPID:       ${AUTH_WEBAUTHN_RPID:-}
       # AWS OIDC federation (per-role tile + auth-aws-creds CLI). Set the
       # audience to the value registered on each account's IAM OIDC
       # provider. Empty disables the federation handler; setup runbook is

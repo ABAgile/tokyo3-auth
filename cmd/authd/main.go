@@ -232,7 +232,7 @@ func runServe() error {
 		return fmt.Errorf("jwt signer: %w", err)
 	}
 
-	// Derive WebAuthn RPID from issuer URL.
+	// Derive WebAuthn RPID from issuer URL (AUTH_WEBAUTHN_RPID overrides).
 	rpID, rpOrigins := webAuthnParams(issuer)
 	waHandler, err := mfa.NewWAHandler(rpID, "tokyo3-auth", rpOrigins, db)
 	if err != nil {
@@ -1202,6 +1202,9 @@ func webAuthnParams(issuer string) (rpID string, origins []string) {
 	}
 	// Strip port for RPID; origins include the full scheme+host.
 	host := u.Hostname()
+	if override := os.Getenv("AUTH_WEBAUTHN_RPID"); override != "" {
+		host = override
+	}
 	origin := u.Scheme + "://" + u.Host
 	extraOrigins := strings.Fields(os.Getenv("AUTH_WEBAUTHN_ORIGINS"))
 	origins = append([]string{origin}, extraOrigins...)
