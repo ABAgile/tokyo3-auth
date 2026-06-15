@@ -195,17 +195,7 @@ func runServe() error {
 		return fmt.Errorf("parse master key: %w", err)
 	}
 
-	// Hot-reloading cert+CA material for the Postgres pool. nil ⇒ no
-	// cert/key/CA configured; dbTLSFromEnv falls back to one-shot
-	// btls.FromFiles so the dev/no-mTLS paths keep working. (The NATS
-	// audit channels reload through tls/reloader inside base's
-	// cli.AuditSink/Source, so they need no Reloader here.)
-	dbReload, err := dbCertReloader(log)
-	if err != nil {
-		return fmt.Errorf("db cert reloader: %w", err)
-	}
-
-	adminDBTLS, dbTLS, err := dbTLSFromEnv(dbReload)
+	adminDBTLS, dbTLS, err := dbTLSFromEnv()
 	if err != nil {
 		return err
 	}
@@ -339,16 +329,6 @@ func runServe() error {
 		runDeviceGrantReaper(ctx, db, time.Minute, log)
 	})
 
-	// mtime-poll loop for the Postgres pool's workload cert + CA bundle.
-	// Cheap (one os.Stat per file per tick), and the only way new pool
-	// dials after a cert-agentd rotation present the fresh material — see
-	// dbCertReloader.
-	if dbReload != nil {
-		go safeGoroutine(log, "db-cert-reloader", func() {
-			_ = dbReload.RunPoll(ctx, reloader.DefaultPollInterval)
-		})
-	}
-
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
 	go func() {
 		// On unexpected listener exit (bind error, fatal TLS config
@@ -455,7 +435,7 @@ func runAdminSync(target string) error {
 		return fmt.Errorf("parse master key: %w", err)
 	}
 
-	adminDBTLS, dbTLS, err := dbTLSFromEnv(nil)
+	adminDBTLS, dbTLS, err := dbTLSFromEnv()
 	if err != nil {
 		return err
 	}
@@ -906,7 +886,7 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
 	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
 
-	adminDBTLS, dbTLS, err := dbTLSFromEnv(nil)
+	adminDBTLS, dbTLS, err := dbTLSFromEnv()
 	if err != nil {
 		return err
 	}
@@ -1016,11 +996,11 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 // A deployment that mints a separate DDL credential sets all three admin
 // vars; a single-role deployment leaves them empty and rides the runtime
 // credentials.
-// When rt is non-nil, the runtime config is sourced from its
-// hot-reloading TLSConfig instead of a one-shot btls.FromFiles snapshot.
-// admin always uses FromFiles — the migrate path is one-shot and the
+//
+// The runtime config hot-reloads (see dbRuntimeTLS); admin always uses a
+// one-shot FromFiles snapshot — the migrate path is short-lived and the
 // connection is closed before any rotation could matter.
-func dbTLSFromEnv(rt *reloader.Reloader) (admin, runtime *tls.Config, err error) {
+func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
 	admin, err = btls.FromFiles(
 		envutil.First("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
 		envutil.First("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
@@ -1029,40 +1009,28 @@ func dbTLSFromEnv(rt *reloader.Reloader) (admin, runtime *tls.Config, err error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("admin db TLS: %w", err)
 	}
-	if rt != nil {
-		return admin, rt.TLSConfig("db"), nil
-	}
-	runtime, err = btls.FromFiles(
-		os.Getenv("AUTH_DB_CERT"),
-		os.Getenv("AUTH_DB_KEY"),
-		envutil.First("AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
-	)
+	runtime, err = dbRuntimeTLS()
 	if err != nil {
 		return nil, nil, fmt.Errorf("db TLS: %w", err)
 	}
 	return admin, runtime, nil
 }
 
-// dbCertReloader builds a hot-reloading Reloader for the runtime DB mTLS
-// material — AUTH_DB_CERT/KEY plus AUTH_DB_CA (falling back to
-// AUTH_WORKLOAD_CA). Returns (nil, nil) when any of the three is unset;
-// the caller then drops back to the one-shot btls.FromFiles path. The
-// reloader's RunPoll loop is spawned by runServe alongside the other
-// reapers.
-func dbCertReloader(log *slog.Logger) (*reloader.Reloader, error) {
+// dbRuntimeTLS builds the runtime Postgres TLS config from AUTH_DB_CERT/KEY
+// and AUTH_DB_CA (→ AUTH_WORKLOAD_CA). A full cert+key pair gets
+// reloader.ClientConfig — leaf re-read per handshake, CA pool on mtime — so a
+// cert-agentd rotation of the workload cert lands on the next pool dial
+// (within SetConnMaxLifetime) without a restart and without a poll loop.
+// Anything short of a pair falls back to one-shot btls.FromFiles (CA-only
+// server-auth or plaintext, as the DSN's sslmode dictates).
+func dbRuntimeTLS() (*tls.Config, error) {
 	certFile := os.Getenv("AUTH_DB_CERT")
 	keyFile := os.Getenv("AUTH_DB_KEY")
 	caFile := envutil.First("AUTH_DB_CA", "AUTH_WORKLOAD_CA")
-	if certFile == "" || keyFile == "" || caFile == "" {
-		return nil, nil
+	if certFile != "" && keyFile != "" {
+		return reloader.ClientConfig(certFile, keyFile, caFile)
 	}
-	return reloader.New(reloader.Config{
-		CertPath: certFile,
-		KeyPath:  keyFile,
-		Pools:    map[string]string{"db": caFile},
-		PollCert: true,
-		Log:      log,
-	})
+	return btls.FromFiles(certFile, keyFile, caFile)
 }
 
 // buildServerTLS constructs the server tls.Config.

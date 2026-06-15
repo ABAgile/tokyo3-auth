@@ -154,9 +154,9 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_ADDR` | No | `:8443` | HTTPS listen address (`host:port`; empty host = all interfaces) |
 | `AUTH_DATABASE_URL` | Yes | — | PostgreSQL DSN (app role, DML only) |
 | `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
-| `AUTH_DB_CERT` | If Postgres requires mTLS | — | Client cert PEM path for the runtime DB pool. Hot-reloaded (mtime polled every 30s by the `db-cert-reloader` goroutine); rotated files are picked up by the next pool dial via `GetClientCertificate`. `SetConnMaxLifetime` is 5m so pooled conns recycle naturally within that window. |
-| `AUTH_DB_KEY` | If `AUTH_DB_CERT` is set | — | Client key PEM. Hot-reloaded together with `AUTH_DB_CERT`. |
-| `AUTH_DB_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Hot-reloaded every 30s; trust pool snapshot is re-read per handshake via `VerifyConnection`. |
+| `AUTH_DB_CERT` | If Postgres requires mTLS | — | Client cert PEM path for the runtime DB pool. The leaf is re-read on every TLS handshake (via `tls/reloader`), so a rotated file is picked up by the next pool dial — `SetConnMaxLifetime` is 5m so pooled conns recycle within that window. |
+| `AUTH_DB_KEY` | If `AUTH_DB_CERT` is set | — | Client key PEM, reloaded together with `AUTH_DB_CERT` on every handshake. |
+| `AUTH_DB_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
 | `AUTH_ADMIN_DB_CERT` / `AUTH_ADMIN_DB_KEY` / `AUTH_ADMIN_DB_CA` | If migrate uses a separate role with mTLS | falls back to `AUTH_DB_*` (CA also falls back to `AUTH_WORKLOAD_CA`) | mTLS material for the migrate (DDL) connection. **Not** hot-reloaded — the connection closes after migrations finish, so rotation isn't relevant on this path. |
 | `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
 | `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
@@ -191,7 +191,7 @@ authd does not hold long-lived TLS material in memory across rotations on the ch
 |---|---|---|
 | Incoming HTTPS (`AUTH_API_CERT`) | `tls.Config.GetCertificate` via `reloader.CertLoader` | Every TLS handshake (per-request) |
 | SCIM outbound mTLS (`AUTH_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `reloader.CertLoader` | Every outbound SCIM request |
-| Postgres pool (`AUTH_DB_CERT/KEY/CA`) | `tls.Config.GetClientCertificate` + `VerifyConnection` via `tls/reloader`; mtime polled every 30s by `db-cert-reloader` | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
+| Postgres pool (`AUTH_DB_CERT/KEY/CA`) | `reloader.ClientConfig`: `GetClientCertificate` re-reads the leaf per handshake, `VerifyConnection` re-reads the CA pool on mtime | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
 | NATS audit sink + source (`AUTH_NATS_CERT/KEY/CA`) | `reloader.ClientConfig` (via base `cli.AuditSink`/`AuditSource`): leaf re-read per handshake, CA pool re-read on mtime | Every NATS reconnect (the lib auto-reconnects on disconnect) |
 | Operational-log shipper (`AUTH_NATS_CERT/KEY/CA`) | Same `reloader.ClientConfig` path, via base `applog.AppLoggerWithNATS` | Every NATS reconnect |
 
