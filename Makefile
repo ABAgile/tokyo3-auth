@@ -34,7 +34,7 @@ GIT_TAG    := $(shell git describe --tags --exact-match 2>/dev/null || true)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 VERSION    := $(if $(GIT_TAG),$(GIT_TAG),dev-$(GIT_COMMIT))
 
-LDFLAGS := -s -w
+LDFLAGS := -s -w -X main.Version=$(VERSION)
 
 GO      := go
 GOFLAGS :=

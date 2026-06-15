@@ -169,13 +169,15 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
 | `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
 | `AUTH_NATS_URL` | If JetStream audit publishing is required | — | NATS server URL for audit publish + read **and** operational log shipping. Empty disables audit publishing (no-op sink), the live tail page renders empty, and `app_log.authd` shipping silently no-ops. |
-| `AUTH_NATS_CERT` | If NATS requires mTLS | — | Client cert PEM path for the audit sink + source. Hot-reloaded (mtime polled every 30s by the `nats-cert-reloader` goroutine; single instance shared by sink and source); rotated files are picked up on the next NATS reconnect via `GetClientCertificate`. **Caveat**: the operational-log shipper (`applog.AppLoggerWithNATS`) still pins this at boot — its hot-reload requires an upstream change in `tokyo3-base/applog`. |
-| `AUTH_NATS_KEY` | If `AUTH_NATS_CERT` is set | — | Client key PEM. Hot-reloaded together with `AUTH_NATS_CERT` for the audit channels; same boot-pin caveat for the log shipper. |
-| `AUTH_NATS_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the NATS server cert. Hot-reloaded every 30s for the audit channels; trust pool snapshot is re-read per handshake via `VerifyConnection`. Log-shipper caveat applies. |
+| `AUTH_NATS_CERT` | If NATS requires mTLS | falls back to `AUTH_WORKLOAD_CERT` | Client cert PEM path shared by the audit sink + source **and** the operational-log shipper. The leaf is re-read from disk on every TLS handshake (via `tls/reloader`), so a rotated file is picked up on the next NATS reconnect — no daemon restart. |
+| `AUTH_NATS_KEY` | If `AUTH_NATS_CERT` is set | falls back to `AUTH_WORKLOAD_KEY` | Client key PEM, reloaded together with `AUTH_NATS_CERT` on every handshake. |
+| `AUTH_NATS_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the NATS server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
 | `AUTH_SCIM_MTLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
 | `AUTH_SCIM_MTLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_SCIM_MTLS_CERT` is set. |
 | `AUTH_SCIM_MTLS_CA` | No | falls back to `AUTH_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
 | `AUTH_WORKLOAD_CA` | No | — | Single workload CA root used as the fallback for every per-channel CA env var (`AUTH_DB_CA`, `AUTH_ADMIN_DB_CA`, `AUTH_NATS_CA`, `AUTH_SCIM_MTLS_CA`). Set this alone in deployments that issue all internal certs from one CA; set per-channel vars to override individually. |
+| `AUTH_WORKLOAD_CERT` / `AUTH_WORKLOAD_KEY` | No | — | The daemon's workload mTLS identity. Currently the fallback for `AUTH_NATS_CERT` / `AUTH_NATS_KEY`, so a daemon that already carries a workload cert ships audit **and** operational logs over mTLS without a second cert set. Set the `AUTH_NATS_*` vars only to give NATS a distinct identity. |
+| `AUTH_DEBUG_ADDR` | No | — | Listen address (e.g. `127.0.0.1:6060`) for the opt-in diagnostics server: Go runtime profiles (`/debug/pprof/…`) plus a periodic `runtime stats` log line. Empty disables it entirely. **Unauthenticated — bind to loopback or a private interface, never expose publicly.** |
 | `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
 | `AUTH_WEBAUTHN_RPID` | No | Hostname of `AUTH_ISSUER` | WebAuthn Relying Party ID override. Set to a registrable parent domain (e.g. `example.com`) so credentials work across sibling subdomains; list each subdomain's full origin in `AUTH_WEBAUTHN_ORIGINS`. **Changing the RP ID invalidates all previously registered WebAuthn credentials** — users must re-register. |
 | `AWS_REGION` | If an `aws_iam` or `aws_federation` integration is enabled | — | Signing region for the AWS SDK's IAM calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
@@ -187,12 +189,13 @@ authd does not hold long-lived TLS material in memory across rotations on the ch
 
 | Channel | Mechanism | Picked up on |
 |---|---|---|
-| Incoming HTTPS (`AUTH_API_CERT`) | `tls.Config.GetCertificate` via `btls.CertLoader` | Every TLS handshake (per-request) |
-| SCIM outbound mTLS (`AUTH_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `btls.CertLoader` | Every outbound SCIM request |
+| Incoming HTTPS (`AUTH_API_CERT`) | `tls.Config.GetCertificate` via `reloader.CertLoader` | Every TLS handshake (per-request) |
+| SCIM outbound mTLS (`AUTH_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `reloader.CertLoader` | Every outbound SCIM request |
 | Postgres pool (`AUTH_DB_CERT/KEY/CA`) | `tls.Config.GetClientCertificate` + `VerifyConnection` via `tls/reloader`; mtime polled every 30s by `db-cert-reloader` | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
-| NATS audit sink + source (`AUTH_NATS_CERT/KEY/CA`) | Same as DB; one reloader shared between sink and source, polled by `nats-cert-reloader` | Every NATS reconnect (the lib auto-reconnects on disconnect) |
+| NATS audit sink + source (`AUTH_NATS_CERT/KEY/CA`) | `reloader.ClientConfig` (via base `cli.AuditSink`/`AuditSource`): leaf re-read per handshake, CA pool re-read on mtime | Every NATS reconnect (the lib auto-reconnects on disconnect) |
+| Operational-log shipper (`AUTH_NATS_CERT/KEY/CA`) | Same `reloader.ClientConfig` path, via base `applog.AppLoggerWithNATS` | Every NATS reconnect |
 
-**Note**: the operational-log shipper that fans authd's stdout to `app_log.authd` (`applog.AppLoggerWithNATS`, same `AUTH_NATS_*` env vars) still loads its TLS material once at boot. Closing this gap requires an upstream change in `tokyo3-base/applog` to accept a `*tls.Config` instead of raw file paths. Until then, a process restart is needed to roll the shipper onto a rotated cert. The audit sink + source (the channels that gate request-handling via fail-closed publish) are unaffected.
+**Note**: as of `tokyo3-base` v0.7.0 the operational-log shipper (`applog.AppLoggerWithNATS`, same `AUTH_NATS_*` material) hot-reloads through the same `tls/reloader` path as the audit channels — no boot-pin, no restart needed to roll it onto a rotated cert. (Earlier versions pinned the shipper's cert at boot; that gap is closed.)
 
 What rotation does **not** do: it never disturbs an already-established TLS session. TLS authenticates at handshake time only; the X.509 cert is not consulted again on the wire. So in-flight requests, open NATS subscriptions, and active DB transactions survive a rotation untouched — only subsequent dials see the new material.
 

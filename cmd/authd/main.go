@@ -99,10 +99,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"runtime/debug"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/api"
@@ -118,16 +116,21 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
 	"github.com/abagile/tokyo3-base/applog"
 	creds "github.com/abagile/tokyo3-base/auth/creds"
+	"github.com/abagile/tokyo3-base/cli"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/envutil"
-	"github.com/abagile/tokyo3-base/journal"
-	"github.com/abagile/tokyo3-base/journal/jetstream"
 	btls "github.com/abagile/tokyo3-base/tls"
 	"github.com/abagile/tokyo3-base/tls/reloader"
+	"github.com/abagile/tokyo3-base/version"
 	"github.com/spf13/cobra"
 )
 
 const appName = "authd"
+
+// Version is the build version, overwritten via -ldflags "-X main.Version=…"
+// in release builds; version.Resolve falls back to runtime/debug.BuildInfo
+// for `go install …@vX.Y.Z` and source-tree builds.
+var Version = "dev"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -140,8 +143,18 @@ func rootCmd() *cobra.Command {
 		Use:   "authd",
 		Short: "tokyo3-auth Identity Provider",
 	}
-	root.AddCommand(serveCmd(), migrateCmd(), keygenCmd(), adminCmd(), auditCmd())
+	root.AddCommand(serveCmd(), migrateCmd(), keygenCmd(), adminCmd(), auditCmd(), versionCmd())
 	return root
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the build version",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), version.Resolve(Version))
+		},
+	}
 }
 
 // ── serve ─────────────────────────────────────────────────────────────────────
@@ -157,13 +170,19 @@ func serveCmd() *cobra.Command {
 }
 
 func runServe() error {
-	log, _, drainLog := applog.AppLoggerWithNATS(applog.Config{App: appName}, applog.NATSConfig{
-		URL:      os.Getenv("AUTH_NATS_URL"),
-		CertFile: os.Getenv("AUTH_NATS_CERT"),
-		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
-		CAFile:   envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-	}, applog.WithStdout())
-	defer drainLog()
+	// cli.App.Setup wires the app logger (with NATS log shipping over the
+	// resolved workload identity), a SIGINT/SIGTERM-cancelled context, and
+	// the opt-in diagnostics server (AUTH_DEBUG_ADDR). rt.NATS carries the
+	// resolved NATS material (AUTH_NATS_* falling back to AUTH_WORKLOAD_*)
+	// that the audit sink + source draw from.
+	// Cancellable parent so the listener-exit goroutine below can trigger
+	// graceful shutdown (rt.Ctx is a child of parentCtx via NotifyContext).
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt := cli.App{Name: appName, EnvPrefix: "AUTH"}.Setup(parentCtx)
+	defer rt.Shutdown()
+	log, ctx := rt.Log, rt.Ctx
+	log.Info("authd starting", "version", version.Resolve(Version))
 
 	issuer := envutil.MustEnv("AUTH_ISSUER")
 	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
@@ -176,17 +195,14 @@ func runServe() error {
 		return fmt.Errorf("parse master key: %w", err)
 	}
 
-	// Hot-reloading cert+CA material for the long-lived runtime
-	// channels (Postgres pool, NATS audit sink + source). nil ⇒ no
-	// cert/key/CA configured for that channel; the callee falls back
-	// to one-shot btls.FromFiles so the dev/no-mTLS paths keep working.
+	// Hot-reloading cert+CA material for the Postgres pool. nil ⇒ no
+	// cert/key/CA configured; dbTLSFromEnv falls back to one-shot
+	// btls.FromFiles so the dev/no-mTLS paths keep working. (The NATS
+	// audit channels reload through tls/reloader inside base's
+	// cli.AuditSink/Source, so they need no Reloader here.)
 	dbReload, err := dbCertReloader(log)
 	if err != nil {
 		return fmt.Errorf("db cert reloader: %w", err)
-	}
-	natsReload, err := natsCertReloader(log)
-	if err != nil {
-		return fmt.Errorf("nats cert reloader: %w", err)
 	}
 
 	adminDBTLS, dbTLS, err := dbTLSFromEnv(dbReload)
@@ -197,12 +213,15 @@ func runServe() error {
 	if err != nil {
 		return fmt.Errorf("outbound TLS: %w", err)
 	}
-	auditSink, err := openAuditSink(log, natsReload)
+	// Audit publisher + reader share rt.NATS material; cli.AuditSink/Source
+	// hot-reload the workload cert per handshake and the CA pool on mtime
+	// (via tls/reloader), so cert-agentd rotations land without a restart.
+	auditSink, err := cli.AuditSink[audit.Entry](rt, audit.Subject)
 	if err != nil {
 		return fmt.Errorf("audit sink: %w", err)
 	}
 	defer auditSink.Close()
-	auditSource, err := openAuditSource(log, natsReload)
+	auditSource, err := cli.AuditSource(rt, audit.StreamName, audit.Subject)
 	if err != nil {
 		return fmt.Errorf("audit source: %w", err)
 	}
@@ -223,8 +242,6 @@ func runServe() error {
 	}
 	defer db.Close()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	kp := bcrypto.NewLocalKeyProvider(masterKey)
 
 	signer, err := internaljwt.LoadOrCreate(ctx, db, kp, issuer, internaljwt.Config{})
@@ -322,18 +339,13 @@ func runServe() error {
 		runDeviceGrantReaper(ctx, db, time.Minute, log)
 	})
 
-	// mtime-poll loops for the workload cert + CA bundle on each
-	// channel. Cheap (one os.Stat per file per tick), and the only
-	// way new dials after a cert-agentd rotation present the fresh
-	// material — see dbCertReloader / natsCertReloader.
+	// mtime-poll loop for the Postgres pool's workload cert + CA bundle.
+	// Cheap (one os.Stat per file per tick), and the only way new pool
+	// dials after a cert-agentd rotation present the fresh material — see
+	// dbCertReloader.
 	if dbReload != nil {
 		go safeGoroutine(log, "db-cert-reloader", func() {
 			_ = dbReload.RunPoll(ctx, reloader.DefaultPollInterval)
-		})
-	}
-	if natsReload != nil {
-		go safeGoroutine(log, "nats-cert-reloader", func() {
-			_ = natsReload.RunPoll(ctx, reloader.DefaultPollInterval)
 		})
 	}
 
@@ -968,8 +980,8 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
 			return nil, fmt.Errorf("load outbound client cert pair: %w", err)
 		}
-		loader := btls.NewCertLoader(certFile, keyFile)
-		// btls.CertLoader exposes GetCertificate (server-side); reuse the same
+		loader := reloader.NewCertLoader(certFile, keyFile)
+		// reloader.CertLoader exposes GetCertificate (server-side); reuse the same
 		// hot-reloaded cert for client-side presentation.
 		cfg.GetClientCertificate = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return loader.GetCertificate(nil)
@@ -987,79 +999,6 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 		cfg.RootCAs = pool
 	}
 	return cfg, nil
-}
-
-// openAuditSink builds the JetStream publisher Sink from AUTH_NATS_URL and
-// the AUTH_NATS_CERT/KEY/CA env vars. When AUTH_NATS_URL is empty, returns
-// audit.NoopSink — keeps the dev/no-NATS path working without a broker.
-//
-//	AUTH_NATS_URL    NATS server URL. Empty disables JetStream publishing.
-//	AUTH_NATS_CERT   Publisher client cert PEM path (mTLS).
-//	AUTH_NATS_KEY    Publisher client key PEM. Required iff AUTH_NATS_CERT set.
-//	AUTH_NATS_CA     CA bundle for verifying the NATS server cert.
-func openAuditSink(log *slog.Logger, rl *reloader.Reloader) (audit.Sink, error) {
-	if rl != nil {
-		url := os.Getenv("AUTH_NATS_URL")
-		if url == "" {
-			log.Warn("AUTH_NATS_URL not set — audit sink is no-op; not for production")
-			return journal.NewJSONSink[audit.Entry](journal.NoopSink{}), nil
-		}
-		log.Info("audit sink: NATS JetStream with mTLS (hot-reload)", "url", url)
-		jSink, err := jetstream.NewSink(jetstream.SinkConfig{
-			URL: url, Subject: audit.Subject,
-			TLS: rl.TLSConfig("nats"), Log: log,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return journal.NewJSONSink[audit.Entry](jSink), nil
-	}
-	return jetstream.NewAuditSink[audit.Entry](jetstream.AuditSinkConfig{
-		URL:       os.Getenv("AUTH_NATS_URL"),
-		CertFile:  os.Getenv("AUTH_NATS_CERT"),
-		KeyFile:   os.Getenv("AUTH_NATS_KEY"),
-		CAFile:    envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-		Subject:   audit.Subject,
-		EnvPrefix: "AUTH_NATS",
-		Log:       log,
-	})
-}
-
-// openAuditSource is the read-side counterpart of openAuditSink: returns a
-// journal.Source attached to the same NATS URL + stream + subject so the
-// portal admin /portal/admin/audit page can tail the audit log live. When
-// AUTH_NATS_URL is empty, returns NoopSource — the page will simply show
-// no events, mirroring the NoopSink path on the publish side.
-//
-// Reuses the AUTH_NATS_CERT/KEY/CA env vars; one mTLS identity for both
-// roles. The publisher and the reader share the same NATS connection
-// metadata, so cert ACLs apply uniformly: a publisher cert that also has
-// CONSUME rights on auth.audit.events also reads the audit page.
-func openAuditSource(log *slog.Logger, rl *reloader.Reloader) (journal.Source, error) {
-	if rl != nil {
-		url := os.Getenv("AUTH_NATS_URL")
-		if url == "" {
-			log.Warn("AUTH_NATS_URL not set — audit source is no-op; admin audit page will be empty")
-			return journal.NoopSource{}, nil
-		}
-		return jetstream.NewSource(jetstream.SourceConfig{
-			URL:        url,
-			StreamName: audit.StreamName,
-			Subject:    audit.Subject,
-			TLS:        rl.TLSConfig("nats"),
-			Log:        log,
-		})
-	}
-	return jetstream.NewAuditSource(jetstream.AuditSourceConfig{
-		URL:        os.Getenv("AUTH_NATS_URL"),
-		CertFile:   os.Getenv("AUTH_NATS_CERT"),
-		KeyFile:    os.Getenv("AUTH_NATS_KEY"),
-		CAFile:     envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
-		StreamName: audit.StreamName,
-		Subject:    audit.Subject,
-		EnvPrefix:  "AUTH_NATS",
-		Log:        log,
-	})
 }
 
 // dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*
@@ -1126,29 +1065,6 @@ func dbCertReloader(log *slog.Logger) (*reloader.Reloader, error) {
 	})
 }
 
-// natsCertReloader builds a hot-reloading Reloader for the NATS mTLS
-// material — AUTH_NATS_CERT/KEY plus AUTH_NATS_CA (falling back to
-// AUTH_WORKLOAD_CA). A single instance is shared by the audit sink and
-// source so we only pay one mtime-poll loop for both. Returns
-// (nil, nil) when any of the three is unset — callers then drop back to
-// the one-shot btls.FromFiles path inside jetstream.NewAuditSink /
-// NewAuditSource so the dev/no-mTLS path keeps working.
-func natsCertReloader(log *slog.Logger) (*reloader.Reloader, error) {
-	certFile := os.Getenv("AUTH_NATS_CERT")
-	keyFile := os.Getenv("AUTH_NATS_KEY")
-	caFile := envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA")
-	if certFile == "" || keyFile == "" || caFile == "" {
-		return nil, nil
-	}
-	return reloader.New(reloader.Config{
-		CertPath: certFile,
-		KeyPath:  keyFile,
-		Pools:    map[string]string{"nats": caFile},
-		PollCert: true,
-		Log:      log,
-	})
-}
-
 // buildServerTLS constructs the server tls.Config.
 // Cert source priority:
 //  1. AUTH_API_CERT + AUTH_API_KEY files (hot-reload via GetCertificate)
@@ -1167,7 +1083,7 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	cfg := &tls.Config{}
 	if certFile != "" {
 		log.Info("TLS: using certificate files (hot-reload enabled)", "cert", certFile)
-		loader := btls.NewCertLoader(certFile, keyFile)
+		loader := reloader.NewCertLoader(certFile, keyFile)
 		cfg.GetCertificate = loader.GetCertificate
 	} else {
 		log.Warn("TLS: no certificate configured, using self-signed (not for production)")
