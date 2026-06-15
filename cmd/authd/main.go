@@ -99,7 +99,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -119,6 +118,7 @@ import (
 	"github.com/abagile/tokyo3-base/cli"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/envutil"
+	"github.com/abagile/tokyo3-base/guard"
 	btls "github.com/abagile/tokyo3-base/tls"
 	"github.com/abagile/tokyo3-base/tls/reloader"
 	"github.com/abagile/tokyo3-base/version"
@@ -185,8 +185,9 @@ func runServe() error {
 	log.Info("authd starting", "version", version.Resolve(Version))
 
 	issuer := envutil.MustEnv("AUTH_ISSUER")
-	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
+	if rt.DB.URL == "" {
+		return fmt.Errorf("AUTH_DATABASE_URL is required")
+	}
 	masterKeyHex := envutil.MustEnv("AUTH_MASTER_KEY")
 	addr := envutil.Or("AUTH_ADDR", ":8443")
 
@@ -195,9 +196,13 @@ func runServe() error {
 		return fmt.Errorf("parse master key: %w", err)
 	}
 
-	adminDBTLS, dbTLS, err := dbTLSFromEnv()
+	adminDBTLS, err := dbAdminTLS(rt.AdminDB)
 	if err != nil {
-		return err
+		return fmt.Errorf("admin db TLS: %w", err)
+	}
+	dbTLS, err := dbRuntimeTLS(rt.DB)
+	if err != nil {
+		return fmt.Errorf("db TLS: %w", err)
 	}
 	outboundTLS, err := outboundTLSFromEnv()
 	if err != nil {
@@ -223,10 +228,10 @@ func runServe() error {
 	} else {
 		log.Info("running migrations")
 	}
-	if err := postgres.Migrate(adminDBURL, adminDBTLS); err != nil {
+	if err := postgres.Migrate(rt.AdminDB.URL, adminDBTLS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	db, err := postgres.OpenWithTLS(dbURL, dbTLS)
+	db, err := postgres.OpenWithTLS(rt.DB.URL, dbTLS)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -316,16 +321,16 @@ func runServe() error {
 	}
 
 	if interval := provisionSyncInterval(log); interval > 0 {
-		go safeGoroutine(log, "provision-sync", func() {
+		guard.Go(log, "provision-sync", func() {
 			runPeriodicProvisionSync(ctx, db, provReg, interval, log)
 		})
 	}
 	if interval := awsFedReapInterval(log); interval > 0 {
-		go safeGoroutine(log, "awsfed-reaper", func() {
+		guard.Go(log, "awsfed-reaper", func() {
 			runAWSFedReaper(ctx, provReg, interval, log)
 		})
 	}
-	go safeGoroutine(log, "device-grant-reaper", func() {
+	guard.Go(log, "device-grant-reaper", func() {
 		runDeviceGrantReaper(ctx, db, time.Minute, log)
 	})
 
@@ -361,19 +366,15 @@ func migrateCmd() *cobra.Command {
 		Use:   "migrate",
 		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			dbURL := envutil.First("AUTH_ADMIN_DATABASE_URL", "AUTH_DATABASE_URL")
-			if dbURL == "" {
+			adminMat := cli.App{EnvPrefix: "AUTH"}.AdminDB()
+			if adminMat.URL == "" {
 				return fmt.Errorf("AUTH_ADMIN_DATABASE_URL or AUTH_DATABASE_URL must be set")
 			}
-			adminDBTLS, err := btls.FromFiles(
-				envutil.First("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
-				envutil.First("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
-				envutil.First("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
-			)
+			adminDBTLS, err := dbAdminTLS(adminMat)
 			if err != nil {
 				return fmt.Errorf("admin db TLS: %w", err)
 			}
-			if err := postgres.Migrate(dbURL, adminDBTLS); err != nil {
+			if err := postgres.Migrate(adminMat.URL, adminDBTLS); err != nil {
 				return fmt.Errorf("migrate: %w", err)
 			}
 			fmt.Println("migrations applied successfully")
@@ -428,25 +429,32 @@ func adminSyncCmd() *cobra.Command {
 }
 
 func runAdminSync(target string) error {
-	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
+	app := cli.App{EnvPrefix: "AUTH"}
+	dbMat, adminMat := app.DB(), app.AdminDB()
+	if dbMat.URL == "" {
+		return fmt.Errorf("AUTH_DATABASE_URL is required")
+	}
 	masterKey, err := bcrypto.ParseKEK(envutil.MustEnv("AUTH_MASTER_KEY"))
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
 
-	adminDBTLS, dbTLS, err := dbTLSFromEnv()
+	adminDBTLS, err := dbAdminTLS(adminMat)
 	if err != nil {
-		return err
+		return fmt.Errorf("admin db TLS: %w", err)
+	}
+	dbTLS, err := dbRuntimeTLS(dbMat)
+	if err != nil {
+		return fmt.Errorf("db TLS: %w", err)
 	}
 	outboundTLS, err := outboundTLSFromEnv()
 	if err != nil {
 		return fmt.Errorf("outbound TLS: %w", err)
 	}
-	if err := postgres.Migrate(adminDBURL, adminDBTLS); err != nil {
+	if err := postgres.Migrate(adminMat.URL, adminDBTLS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	db, err := postgres.OpenWithTLS(dbURL, dbTLS)
+	db, err := postgres.OpenWithTLS(dbMat.URL, dbTLS)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -529,7 +537,7 @@ func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Du
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			safeTick(log, "device-grant-reaper", func() {
+			guard.Tick(log, "device-grant-reaper", func() {
 				if n, err := db.DeleteExpiredDeviceGrants(ctx); err != nil {
 					log.Error("device grant reap", "err", err)
 				} else if n > 0 {
@@ -538,48 +546,6 @@ func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Du
 			})
 		}
 	}
-}
-
-// safeGoroutine is the standard wrapper for every long-lived background
-// goroutine in authd: it recovers from panics, logs a structured error
-// (with a stack trace) under a stable goroutine name, and returns —
-// keeping the IdP serving instead of letting one bad code path take
-// the whole process down. Use it for *new* goroutines you spawn with
-// `go ...`; for code that runs inside an existing reaper loop, use
-// safeTick so the loop keeps ticking.
-//
-// Background context: this IdP controls every production access path
-// (AWS console, SSH proxy sessions, vault, github-compat). A panic in
-// any goroutine — a downstream API returning an unexpected shape, a
-// nil pointer on a config edge case — used to crash the entire process.
-// Wrapping at the goroutine boundary is the cheapest blast-radius
-// reducer available.
-func safeGoroutine(log *slog.Logger, name string, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("goroutine panic recovered",
-				"goroutine", name,
-				"panic", fmt.Sprintf("%v", r),
-				"stack", string(debug.Stack()))
-		}
-	}()
-	fn()
-}
-
-// safeTick wraps one iteration of a reaper / sync loop in panic recovery
-// so the surrounding ticker continues firing. Different shape from
-// safeGoroutine: the caller already owns the goroutine and just wants
-// each tick to be self-contained.
-func safeTick(log *slog.Logger, name string, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("tick panic recovered — loop continues",
-				"loop", name,
-				"panic", fmt.Sprintf("%v", r),
-				"stack", string(debug.Stack()))
-		}
-	}()
-	fn()
 }
 
 // provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the
@@ -617,7 +583,7 @@ func runPeriodicProvisionSync(ctx context.Context, db *postgres.DB, reg *provisi
 			log.Info("periodic provision sync stopped")
 			return
 		case <-ticker.C:
-			safeTick(log, "provision-sync", func() {
+			guard.Tick(log, "provision-sync", func() {
 				provs := reg.Snapshot()
 				if len(provs) == 0 {
 					log.Debug("periodic provision sync — no enabled integrations, skipping tick")
@@ -680,7 +646,7 @@ func runAWSFedReaper(ctx context.Context, reg *provision.Registry, interval time
 			log.Info("aws federation revocation reaper stopped")
 			return
 		case <-ticker.C:
-			safeTick(log, "awsfed-reaper", func() {
+			guard.Tick(log, "awsfed-reaper", func() {
 				now := time.Now().UTC()
 				for _, prov := range reg.Snapshot() {
 					if ctx.Err() != nil {
@@ -883,17 +849,24 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 	if err := validateNewUserPassword(password, allowWeak); err != nil {
 		return err
 	}
-	dbURL := envutil.MustEnv("AUTH_DATABASE_URL")
-	adminDBURL := envutil.Or("AUTH_ADMIN_DATABASE_URL", dbURL)
-
-	adminDBTLS, dbTLS, err := dbTLSFromEnv()
-	if err != nil {
-		return err
+	app := cli.App{EnvPrefix: "AUTH"}
+	dbMat, adminMat := app.DB(), app.AdminDB()
+	if dbMat.URL == "" {
+		return fmt.Errorf("AUTH_DATABASE_URL is required")
 	}
-	if err := postgres.Migrate(adminDBURL, adminDBTLS); err != nil {
+
+	adminDBTLS, err := dbAdminTLS(adminMat)
+	if err != nil {
+		return fmt.Errorf("admin db TLS: %w", err)
+	}
+	dbTLS, err := dbRuntimeTLS(dbMat)
+	if err != nil {
+		return fmt.Errorf("db TLS: %w", err)
+	}
+	if err := postgres.Migrate(adminMat.URL, adminDBTLS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-	db, err := postgres.OpenWithTLS(dbURL, dbTLS)
+	db, err := postgres.OpenWithTLS(dbMat.URL, dbTLS)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -981,56 +954,27 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 	return cfg, nil
 }
 
-// dbTLSFromEnv builds the (admin, runtime) DB TLS configs from the AUTH_*_DB_*
-// env vars. Either may be nil when the corresponding cert vars are unset, in
-// which case the connection falls back to plain TLS / non-TLS as the DSN's
-// sslmode dictates.
-//
-// Fallback chains keep simple deployments simple while still allowing strict
-// separation:
-//
-//	cert: AUTH_ADMIN_DB_CERT → AUTH_DB_CERT
-//	key:  AUTH_ADMIN_DB_KEY  → AUTH_DB_KEY
-//	CA:   AUTH_ADMIN_DB_CA   → AUTH_DB_CA → AUTH_WORKLOAD_CA
-//
-// A deployment that mints a separate DDL credential sets all three admin
-// vars; a single-role deployment leaves them empty and rides the runtime
-// credentials.
-//
-// The runtime config hot-reloads (see dbRuntimeTLS); admin always uses a
-// one-shot FromFiles snapshot — the migrate path is short-lived and the
-// connection is closed before any rotation could matter.
-func dbTLSFromEnv() (admin, runtime *tls.Config, err error) {
-	admin, err = btls.FromFiles(
-		envutil.First("AUTH_ADMIN_DB_CERT", "AUTH_DB_CERT"),
-		envutil.First("AUTH_ADMIN_DB_KEY", "AUTH_DB_KEY"),
-		envutil.First("AUTH_ADMIN_DB_CA", "AUTH_DB_CA", "AUTH_WORKLOAD_CA"),
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("admin db TLS: %w", err)
-	}
-	runtime, err = dbRuntimeTLS()
-	if err != nil {
-		return nil, nil, fmt.Errorf("db TLS: %w", err)
-	}
-	return admin, runtime, nil
+// dbAdminTLS builds the one-shot admin (migration) TLS config from resolved
+// AdminDB material (cert/key: AUTH_ADMIN_DB_* → AUTH_DB_*; CA additionally →
+// AUTH_WORKLOAD_CA — see cli.App.AdminDB). admin always uses FromFiles — the
+// migrate connection is short-lived and closed before any rotation matters.
+func dbAdminTLS(m cli.DB) (*tls.Config, error) {
+	return btls.FromFiles(m.CertFile, m.KeyFile, m.CAFile)
 }
 
-// dbRuntimeTLS builds the runtime Postgres TLS config from AUTH_DB_CERT/KEY
-// and AUTH_DB_CA (→ AUTH_WORKLOAD_CA). A full cert+key pair gets
-// reloader.ClientConfig — leaf re-read per handshake, CA pool on mtime — so a
-// cert-agentd rotation of the workload cert lands on the next pool dial
+// dbRuntimeTLS builds the runtime Postgres TLS config from resolved DB
+// material — cert/key from AUTH_DB_CERT/KEY (a DB-role credential, no
+// WORKLOAD fallback), CA from AUTH_DB_CA → AUTH_WORKLOAD_CA. A full cert+key
+// pair gets reloader.ClientConfig — leaf re-read per handshake, CA pool on
+// mtime — so a cert-agentd rotation lands on the next pool dial
 // (within SetConnMaxLifetime) without a restart and without a poll loop.
 // Anything short of a pair falls back to one-shot btls.FromFiles (CA-only
 // server-auth or plaintext, as the DSN's sslmode dictates).
-func dbRuntimeTLS() (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_DB_CERT")
-	keyFile := os.Getenv("AUTH_DB_KEY")
-	caFile := envutil.First("AUTH_DB_CA", "AUTH_WORKLOAD_CA")
-	if certFile != "" && keyFile != "" {
-		return reloader.ClientConfig(certFile, keyFile, caFile)
+func dbRuntimeTLS(m cli.DB) (*tls.Config, error) {
+	if m.CertFile != "" && m.KeyFile != "" {
+		return reloader.ClientConfig(m.CertFile, m.KeyFile, m.CAFile)
 	}
-	return btls.FromFiles(certFile, keyFile, caFile)
+	return btls.FromFiles(m.CertFile, m.KeyFile, m.CAFile)
 }
 
 // buildServerTLS constructs the server tls.Config.
