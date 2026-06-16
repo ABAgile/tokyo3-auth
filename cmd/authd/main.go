@@ -2,92 +2,124 @@
 //
 // Required env vars:
 //
-//	AUTHD_MASTER_KEY       64-char hex master key (run `authd keygen`).
-//	AUTHD_ISSUER           Public issuer URL — used in OIDC discovery and JWT iss claim.
-//	AUTHD_DATABASE_URL     Runtime Postgres DSN (DML-only role).
+//	AUTHD_MASTER_KEY               64-char hex master key (run `authd
+//	                               keygen`).
+//	AUTHD_ISSUER                   Public issuer URL — used in OIDC
+//	                               discovery and JWT iss claim.
+//	AUTHD_DATABASE_URL             Runtime Postgres DSN (DML-only role).
 //
 // Optional:
 //
-//	AUTHD_ADMIN_DATABASE_URL    Admin DSN used for schema migrations (DDL).
-//	                           Falls back to AUTHD_DATABASE_URL when unset
-//	                           (both `serve` and `migrate` subcommands).
-//	AUTHD_ADDR                  HTTPS listen address (default: :8443).
-//	AUTHD_ALLOW_REGISTRATION    Set to "true" to enable self-registration at /register.
-//	AUTHD_PROVISION_SYNC_INTERVAL  Period for the background full-sync goroutine
-//	                              that re-pushes every user/group to every enabled
-//	                              integration (defaults to 1h; set to 0 or a
-//	                              negative duration to disable). Belt-and-suspenders
-//	                              for the event-driven push path: catches drift from
-//	                              missed events, downstream restores, and split-brain
-//	                              after restarts. Each tick is idempotent on the
-//	                              downstream (PATCH-or-POST on users, full-list PUT
-//	                              on groups).
-//	AUTHD_AWSFED_REAP_INTERVAL  Period for the AWS federation revocation reaper
-//	                           (defaults to 6h; 0 or negative disables it). Trims
-//	                           aws_revoked_users entries past the role's
-//	                           MaxSessionDuration and re-pushes the trimmed
-//	                           inline policy. No-op when no aws_federation
-//	                           integration is enabled.
-//	AUTHD_AWS_AUDIENCE  The single `aud` claim value emitted on every JWT minted
-//	                   for AWS console / CLI federation. Registered once per
-//	                   AWS account as the IAM identity provider's audience.
-//	                   Empty disables AWS federation (the portal and the
-//	                   /aws/credentials endpoint return 503). Trust policies
-//	                   gate per-role assumption via aws:RequestTag/<key>
-//	                   conditions instead of per-role audiences. See the
-//	                   AWS OIDC Federation section in README for setup.
+//	AUTHD_ADMIN_DATABASE_URL       Admin DSN used for schema migrations
+//	                               (DDL). Falls back to AUTHD_DATABASE_URL
+//	                               when unset (both `serve` and `migrate`
+//	                               subcommands).
+//	AUTHD_ADDR                     HTTPS listen address (default: :8443).
+//	AUTHD_ALLOW_REGISTRATION       Set to "true" to enable self-registration
+//	                               at /register.
+//	AUTHD_PROVISION_SYNC_INTERVAL  Period for the background full-sync
+//	                               goroutine that re-pushes every user/group
+//	                               to every enabled integration (defaults to
+//	                               1h; set to 0 or a negative duration to
+//	                               disable). Belt-and-suspenders for the
+//	                               event-driven push path: catches drift
+//	                               from missed events, downstream restores,
+//	                               and split-brain after restarts. Each tick
+//	                               is idempotent on the downstream
+//	                               (PATCH-or-POST on users, full-list PUT on
+//	                               groups).
+//	AUTHD_AWSFED_REAP_INTERVAL     Period for the AWS federation revocation
+//	                               reaper (defaults to 6h; 0 or negative
+//	                               disables it). Trims aws_revoked_users
+//	                               entries past the role's
+//	                               MaxSessionDuration and re-pushes the
+//	                               trimmed inline policy. No-op when no
+//	                               aws_federation integration is enabled.
+//	AUTHD_AWS_AUDIENCE             The single `aud` claim value emitted on
+//	                               every JWT minted for AWS console / CLI
+//	                               federation. Registered once per AWS
+//	                               account as the IAM identity provider's
+//	                               audience. Empty disables AWS federation
+//	                               (the portal and the /aws/credentials
+//	                               endpoint return 503). Trust policies gate
+//	                               per-role assumption via
+//	                               aws:RequestTag/<key> conditions instead
+//	                               of per-role audiences. See the AWS OIDC
+//	                               Federation section in README for setup.
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
-//	AUTHD_API_CERT         Path to server TLS certificate PEM (hot-reloaded;
-//	                      the file's mtime is polled at most once per second
-//	                      across handshakes, so rotations land within ~1s).
-//	AUTHD_API_KEY          Path to server TLS private key PEM. Must be paired with AUTHD_API_CERT.
-//	                      If neither is set, an ephemeral self-signed cert is generated (dev only).
-//	AUTHD_API_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
+//	AUTHD_API_CERT                 Path to server TLS certificate PEM
+//	                               (hot-reloaded; the file's mtime is polled
+//	                               at most once per second across
+//	                               handshakes, so rotations land within
+//	                               ~1s).
+//	AUTHD_API_KEY                  Path to server TLS private key PEM. Must
+//	                               be paired with AUTHD_API_CERT. If neither
+//	                               is set, an ephemeral self-signed cert is
+//	                               generated (dev only).
+//	AUTHD_API_CLIENT_CA            Optional CA PEM for client cert
+//	                               verification (mTLS).
 //
 // Workload CA (single root for every internal mTLS channel — DB, NATS, SCIM):
 //
-//	AUTHD_WORKLOAD_CA  CA PEM that signs every internal workload cert auth talks
-//	                  to (Postgres, NATS, downstream SCIM endpoints). Used as
-//	                  the fallback for AUTHD_DB_CA / AUTHD_ADMIN_DB_CA /
-//	                  AUTHD_NATS_CA / AUTHD_SCIM_MTLS_CA when any of those is
-//	                  unset. Leave the per-channel CA vars empty in deployments
-//	                  that issue all internal certs from one workload CA; set
-//	                  the per-channel vars when stricter separation is needed.
+//	AUTHD_WORKLOAD_CA              CA PEM that signs every internal workload
+//	                               cert auth talks to (Postgres, NATS,
+//	                               downstream SCIM endpoints). Used as the
+//	                               fallback for AUTHD_DB_CA /
+//	                               AUTHD_ADMIN_DB_CA / AUTHD_NATS_CA /
+//	                               AUTHD_SCIM_MTLS_CA when any of those is
+//	                               unset. Leave the per-channel CA vars
+//	                               empty in deployments that issue all
+//	                               internal certs from one workload CA; set
+//	                               the per-channel vars when stricter
+//	                               separation is needed.
 //
 // Database mTLS (optional, used together with cert-auth Postgres):
 //
-//	AUTHD_DB_CERT          Client certificate PEM for the runtime auth→postgres connection.
-//	AUTHD_DB_KEY           Client key PEM (must be paired with AUTHD_DB_CERT).
-//	AUTHD_DB_CA            CA PEM for verifying the postgres server certificate.
-//	                      Falls back to AUTHD_WORKLOAD_CA when unset.
-//	AUTHD_ADMIN_DB_CERT    Client certificate PEM for the admin (migration)
-//	                      connection. Falls back to AUTHD_DB_CERT when unset
-//	                      (suitable for dev/single-role setups; production
-//	                      should issue a separate DDL credential).
-//	AUTHD_ADMIN_DB_KEY     Client key PEM. Falls back to AUTHD_DB_KEY.
-//	AUTHD_ADMIN_DB_CA      CA PEM. Falls back to AUTHD_DB_CA → AUTHD_WORKLOAD_CA.
+//	AUTHD_DB_CERT                  Client certificate PEM for the runtime
+//	                               auth→postgres connection.
+//	AUTHD_DB_KEY                   Client key PEM (must be paired with
+//	                               AUTHD_DB_CERT).
+//	AUTHD_DB_CA                    CA PEM for verifying the postgres server
+//	                               certificate. Falls back to
+//	                               AUTHD_WORKLOAD_CA when unset.
+//	AUTHD_ADMIN_DB_CERT            Client certificate PEM for the admin
+//	                               (migration) connection. Falls back to
+//	                               AUTHD_DB_CERT when unset (suitable for
+//	                               dev/single-role setups; production should
+//	                               issue a separate DDL credential).
+//	AUTHD_ADMIN_DB_KEY             Client key PEM. Falls back to
+//	                               AUTHD_DB_KEY.
+//	AUTHD_ADMIN_DB_CA              CA PEM. Falls back to AUTHD_DB_CA →
+//	                               AUTHD_WORKLOAD_CA.
 //
 // Outbound mTLS (used by app_integrations rows with auth_mode=mtls):
 //
-//	AUTHD_SCIM_MTLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
-//	                     downstreams. Hot-reloaded (mtime polled at most once
-//	                     per second across SCIM requests).
-//	AUTHD_SCIM_MTLS_KEY   Client key PEM. Required iff AUTHD_SCIM_MTLS_CERT is set.
-//	AUTHD_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
-//	                     Empty falls back to AUTHD_WORKLOAD_CA, then to the
-//	                     system root pool. A single cert/key pair is shared
-//	                     across every mTLS integration.
+//	AUTHD_SCIM_MTLS_CERT           Client cert PEM that auth presents to
+//	                               mTLS-mode SCIM downstreams. Hot-reloaded
+//	                               (mtime polled at most once per second
+//	                               across SCIM requests).
+//	AUTHD_SCIM_MTLS_KEY            Client key PEM. Required iff
+//	                               AUTHD_SCIM_MTLS_CERT is set.
+//	AUTHD_SCIM_MTLS_CA             Optional CA bundle for verifying
+//	                               downstream servers. Empty falls back to
+//	                               AUTHD_WORKLOAD_CA, then to the system
+//	                               root pool. A single cert/key pair is
+//	                               shared across every mTLS integration.
 //
 // Audit log shipping (publishes events to NATS JetStream stream "auth_audit"):
 //
-//	AUTHD_NATS_URL    NATS server URL (e.g. nats://nats:4222 or tls://nats:4222).
-//	                 Empty disables JetStream publishing (NoopSink).
-//	AUTHD_NATS_CERT   Publisher client certificate PEM path (mTLS).
-//	AUTHD_NATS_KEY    Publisher client key PEM path. Required iff AUTHD_NATS_CERT is set.
-//	AUTHD_NATS_CA     CA certificate PEM path for verifying the NATS server cert.
-//	                 Falls back to AUTHD_WORKLOAD_CA when unset.
+//	AUTHD_NATS_URL                 NATS server URL (e.g. nats://nats:4222 or
+//	                               tls://nats:4222). Empty disables
+//	                               JetStream publishing (NoopSink).
+//	AUTHD_NATS_CERT                Publisher client certificate PEM path
+//	                               (mTLS).
+//	AUTHD_NATS_KEY                 Publisher client key PEM path. Required
+//	                               iff AUTHD_NATS_CERT is set.
+//	AUTHD_NATS_CA                  CA certificate PEM path for verifying the
+//	                               NATS server cert. Falls back to
+//	                               AUTHD_WORKLOAD_CA when unset.
 package main
 
 import (
