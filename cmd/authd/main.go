@@ -132,6 +132,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/api"
@@ -151,6 +152,7 @@ import (
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/envutil"
 	"github.com/abagile/tokyo3-base/guard"
+	"github.com/abagile/tokyo3-base/run"
 	btls "github.com/abagile/tokyo3-base/tls"
 	"github.com/abagile/tokyo3-base/tls/reloader"
 	"github.com/abagile/tokyo3-base/version"
@@ -196,20 +198,21 @@ func serveCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Start the IdP HTTP server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runServe()
+			return runServe(cmd.Context())
 		},
 	}
 }
 
-func runServe() error {
+func runServe(ctx context.Context) error {
 	// cli.App.Setup wires the app logger (with NATS log shipping over the
 	// resolved workload identity), a SIGINT/SIGTERM-cancelled context, and
 	// the opt-in diagnostics server (AUTHD_DEBUG_ADDR). rt.NATS carries the
 	// resolved NATS material (AUTHD_NATS_* falling back to AUTHD_WORKLOAD_*)
 	// that the audit sink + source draw from.
-	// Cancellable parent so the listener-exit goroutine below can trigger
-	// graceful shutdown (rt.Ctx is a child of parentCtx via NotifyContext).
-	parentCtx, cancel := context.WithCancel(context.Background())
+	// Cancellable parent (rooted at the cobra command context) so the
+	// listener-exit goroutine below can trigger graceful shutdown
+	// (rt.Ctx is a child of parentCtx via NotifyContext).
+	parentCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rt := cli.App{Name: appName, EnvPrefix: "AUTHD"}.Setup(parentCtx)
 	defer rt.Shutdown()
@@ -352,41 +355,47 @@ func runServe() error {
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
+	// Track the background reapers in a WaitGroup so the graceful-shutdown
+	// path can join them before the deferred resource closes (db.Close,
+	// auditSink.Close) run. Each reuses db/provisioners; without the join a
+	// reaper still mid-tick when ctx cancels could touch a closed DB.
+	// guard.Guarded wraps each in panic recovery; workers.Go owns the
+	// goroutine so it can be joined.
+	var workers sync.WaitGroup
+
 	if interval := provisionSyncInterval(log); interval > 0 {
-		guard.Go(log, "provision-sync", func() {
+		workers.Go(guard.Guarded(log, "provision-sync", func() {
 			runPeriodicProvisionSync(ctx, db, provReg, interval, log)
-		})
+		}))
 	}
 	if interval := awsFedReapInterval(log); interval > 0 {
-		guard.Go(log, "awsfed-reaper", func() {
+		workers.Go(guard.Guarded(log, "awsfed-reaper", func() {
 			runAWSFedReaper(ctx, provReg, interval, log)
-		})
+		}))
 	}
-	guard.Go(log, "device-grant-reaper", func() {
+	workers.Go(guard.Guarded(log, "device-grant-reaper", func() {
 		runDeviceGrantReaper(ctx, db, time.Minute, log)
-	})
+	}))
 
 	log.Info("starting server", "addr", addr, "issuer", issuer, "tls", true)
-	go func() {
-		// On unexpected listener exit (bind error, fatal TLS config
-		// problem, fd exhaustion) signal the main goroutine so the
-		// deferred cleanup in runServe — auditSink.Close, db.Close,
-		// signer disposal, log-shipping drain — actually runs. An
-		// earlier version called os.Exit(1) here, which short-circuited
-		// every defer and dropped audit events that were still waiting
-		// for a JetStream ack.
-		if err := httpSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Error("http server exited unexpectedly; initiating graceful shutdown", "err", err)
-			cancel()
-		}
-	}()
-
-	<-ctx.Done()
+	serveErr := run.Group(ctx, run.HTTPServer(httpSrv, 10*time.Second, true))
 	log.Info("authd shutting down")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
+	// run.Group does not cancel ctx (rt.Ctx); cancel() now so the reapers and
+	// BaseContext requests wind down, then join the reapers before the deferred
+	// db/audit closes run. No-op on the signal path (rt.Ctx already cancelled).
+	cancel()
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+	case <-time.After(5 * time.Second):
+		log.Warn("background workers did not exit in time; closing resources anyway")
+	}
+	if serveErr != nil {
+		return fmt.Errorf("serve: %w", serveErr)
 	}
 	return nil
 }
@@ -992,44 +1001,12 @@ func dbRuntimeTLS(m cli.DB) (*tls.Config, error) {
 //
 // If AUTHD_API_CLIENT_CA is set, mTLS client verification is enabled.
 func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
-	certFile := os.Getenv("AUTHD_API_CERT")
-	keyFile := os.Getenv("AUTHD_API_KEY")
-	clientCAFile := os.Getenv("AUTHD_API_CLIENT_CA")
-
-	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTHD_API_CERT and AUTHD_API_KEY must both be set or both unset")
-	}
-
-	cfg := &tls.Config{}
-	if certFile != "" {
-		log.Info("TLS: using certificate files (hot-reload enabled)", "cert", certFile)
-		loader := reloader.NewCertLoader(certFile, keyFile)
-		cfg.GetCertificate = loader.GetCertificate
-	} else {
-		log.Warn("TLS: no certificate configured, using self-signed (not for production)")
-		cert, err := btls.SelfSignedCert()
-		if err != nil {
-			return nil, fmt.Errorf("generate self-signed cert: %w", err)
-		}
-		cfg.Certificates = []tls.Certificate{cert}
-	}
-
-	if clientCAFile != "" {
-		// Hot-reload the inbound client-CA bundle: base wires ClientAuth +
-		// ClientCAs + a per-handshake GetConfigForClient so a CA rotation
-		// (widen→narrow) lands without a restart, keeping the last good pool
-		// on a bad drop-in.
-		caLoader, err := reloader.NewClientCALoader(cfg, clientCAFile, tls.VerifyClientCertIfGiven)
-		if err != nil {
-			return nil, fmt.Errorf("AUTHD_API_CLIENT_CA: %w", err)
-		}
-		caLoader.OnError = func(err error) {
-			log.Warn("TLS: client CA hot-reload kept previous pool", "ca", clientCAFile, "err", err)
-		}
-		log.Info("TLS: mTLS client CA loaded (hot-reload)", "ca", clientCAFile)
-	}
-
-	return cfg, nil
+	return reloader.ServerTLS(reloader.ServerTLSConfig{
+		CertFile:     os.Getenv("AUTHD_API_CERT"),
+		KeyFile:      os.Getenv("AUTHD_API_KEY"),
+		ClientCAFile: os.Getenv("AUTHD_API_CLIENT_CA"),
+		Log:          log,
+	})
 }
 
 func webAuthnParams(issuer string) (rpID string, origins []string) {
