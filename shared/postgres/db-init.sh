@@ -3,17 +3,17 @@
 # Runs once on first postgres startup via docker-entrypoint-initdb.d/.
 #
 # Required env vars (set on the db container):
-#   AUTH_DB_USERNAME   app role username (default: auth_app)
-#   AUTH_DB_PASSWORD   app role password
+#   AUTHD_DB_USERNAME   app role username (default: auth_app)
+#   AUTHD_DB_PASSWORD   app role password
 set -euo pipefail
 
-: "${AUTH_DB_USERNAME:=auth_app}"
+: "${AUTHD_DB_USERNAME:=auth_app}"
 
 psql -v ON_ERROR_STOP=1 \
      --username "$POSTGRES_USER" \
      --dbname   "$POSTGRES_DB"   \
-     -v app_user="$AUTH_DB_USERNAME" \
-     -v app_pw="$AUTH_DB_PASSWORD" \
+     -v app_user="$AUTHD_DB_USERNAME" \
+     -v app_pw="$AUTHD_DB_PASSWORD" \
      --no-psqlrc <<'SQL'
 
 CREATE USER :"app_user" WITH PASSWORD :'app_pw';

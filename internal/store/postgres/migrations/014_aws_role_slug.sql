@@ -1,5 +1,5 @@
 -- Path B: collapse the per-role audience field into a single global
--- audience configured via AUTH_AWS_AUDIENCE. The federation flow now
+-- audience configured via AUTHD_AWS_AUDIENCE. The federation flow now
 -- emits one shared audience string regardless of which role is being
 -- assumed; per-role authorization moves to aws:RequestTag/<key>
 -- conditions in the role trust policies.
@@ -10,7 +10,7 @@
 -- The unique constraint carries forward unchanged.
 --
 -- Operators upgrading from the per-role audience model must:
---   1. set AUTH_AWS_AUDIENCE in the authd environment (typically one
+--   1. set AUTHD_AWS_AUDIENCE in the authd environment (typically one
 --      value per AWS account, e.g. "tokyo3-aws-prod")
 --   2. re-register that audience on each AWS account's OIDC provider
 --      (aws iam add-client-id-to-open-id-connect-provider)

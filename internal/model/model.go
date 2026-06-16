@@ -163,7 +163,7 @@ const (
 // always come from the AWS SDK's default chain.
 const (
 	AppIntegrationAuthBearer = "bearer" // RP-issued bearer token; stored encrypted on the row
-	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTH_SCIM_* env vars
+	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTHD_SCIM_* env vars
 )
 
 // AppIntegrationConfig is the non-secret JSON payload persisted alongside an
@@ -215,7 +215,7 @@ type AWSAccount struct {
 // AWSRole is one assumable IAM role. Slug is a URL/CLI-safe stable
 // identifier the user supplies in `auth-aws-creds get --role <slug>` and
 // `/aws/credentials?role=<slug>`. Audience is server-global (configured
-// via AUTH_AWS_AUDIENCE), not per-role — every minted JWT carries the
+// via AUTHD_AWS_AUDIENCE), not per-role — every minted JWT carries the
 // same `aud` claim, and per-role authorization happens via
 // aws:RequestTag/<key> conditions in trust policies.
 //

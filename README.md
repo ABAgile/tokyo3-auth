@@ -62,12 +62,12 @@ Operating the journal:
 make docker-up                              # postgres + nats + natsbox + auth all wired up
 docker compose exec natsbox nats stream info auth_audit
 docker compose exec natsbox nats sub 'auth.audit.events'
-docker compose exec auth authd audit query --limit 20
+docker compose exec authd authd audit query --limit 20
 ```
 
-Required env vars on `authd` to enable JetStream publish + read: `AUTH_NATS_URL`, plus `AUTH_NATS_CERT/KEY/CA` for mTLS. With `AUTH_NATS_URL` unset, audit publishing is a no-op (dev only) and the live tail page renders empty.
+Required env vars on `authd` to enable JetStream publish + read: `AUTHD_NATS_URL`, plus `AUTHD_NATS_CERT/KEY/CA` for mTLS. With `AUTHD_NATS_URL` unset, audit publishing is a no-op (dev only) and the live tail page renders empty.
 
-The same NATS endpoint also receives **operational log shipping** — every structured log line authd emits is fanned out to subject `app_log.authd` (alongside stdout). Reuses the same `AUTH_NATS_*` env vars; ships nothing when `AUTH_NATS_URL` is unset. The shipper dials with `RetryOnFailedConnect(true)` so a broker that's down at boot doesn't fail process startup — entries drop on the floor (200-entry discard-on-full buffer) while disconnected and resume on reconnect.
+The same NATS endpoint also receives **operational log shipping** — every structured log line authd emits is fanned out to subject `app_log.authd` (alongside stdout). Reuses the same `AUTHD_NATS_*` env vars; ships nothing when `AUTHD_NATS_URL` is unset. The shipper dials with `RetryOnFailedConnect(true)` so a broker that's down at boot doesn't fail process startup — entries drop on the floor (200-entry discard-on-full buffer) while disconnected and resume on reconnect.
 
 ### Outbound provisioning
 Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
@@ -75,7 +75,7 @@ Authoritative user/group mutations (admin API, portal admin actions, self-regist
 ### Crypto
 - Passwords: bcrypt cost 12.
 - Opaque tokens: 32-byte random hex, SHA-256 hash stored.
-- TOTP secrets + JWT private keys: AES-256-GCM with DEK+KEK envelope. DEK per value, KEK from `AUTH_MASTER_KEY`.
+- TOTP secrets + JWT private keys: AES-256-GCM with DEK+KEK envelope. DEK per value, KEK from `AUTHD_MASTER_KEY`.
 - Auth state cookies (login→MFA flow): AES-256-GCM with master key directly (short-lived, no rotation needed).
 
 ### Process robustness
@@ -133,13 +133,13 @@ The SSH-cert counterpart, `auth-ssh-creds`, lives in the [tokyo3-ca](https://git
 ./authd keygen
 
 # Run migrations
-AUTH_ADMIN_DATABASE_URL="postgres://admin:pass@localhost/authdb" ./authd migrate
+AUTHD_ADMIN_DATABASE_URL="postgres://admin:pass@localhost/authdb" ./authd migrate
 ```
 
 ### Bootstrap first admin user
 
 ```bash
-AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
+AUTHD_DATABASE_URL="postgres://app:pass@localhost/authdb" \
   ./authd admin user create \
     --email admin@example.com \
     --password "S3cur3P@ssw0rd!" \
@@ -150,36 +150,36 @@ AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `AUTH_ISSUER` | Yes | — | IdP base URL, e.g. `https://id.example.com` |
-| `AUTH_ADDR` | No | `:8443` | HTTPS listen address (`host:port`; empty host = all interfaces) |
-| `AUTH_DATABASE_URL` | Yes | — | PostgreSQL DSN (app role, DML only) |
-| `AUTH_ADMIN_DATABASE_URL` | No | `AUTH_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
-| `AUTH_DB_CERT` | If Postgres requires mTLS | — | Client cert PEM path for the runtime DB pool. The leaf is re-read on every TLS handshake (via `tls/reloader`), so a rotated file is picked up by the next pool dial — `SetConnMaxLifetime` is 5m so pooled conns recycle within that window. |
-| `AUTH_DB_KEY` | If `AUTH_DB_CERT` is set | — | Client key PEM, reloaded together with `AUTH_DB_CERT` on every handshake. |
-| `AUTH_DB_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
-| `AUTH_ADMIN_DB_CERT` / `AUTH_ADMIN_DB_KEY` / `AUTH_ADMIN_DB_CA` | If migrate uses a separate role with mTLS | falls back to `AUTH_DB_*` (CA also falls back to `AUTH_WORKLOAD_CA`) | mTLS material for the migrate (DDL) connection. **Not** hot-reloaded — the connection closes after migrations finish, so rotation isn't relevant on this path. |
-| `AUTH_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
-| `AUTH_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
-| `AUTH_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
-| `AUTH_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on `/portal/apps` won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
-| `AUTH_STEP_UP_MFA_TTL` | No | `5m` | Freshness window for the step-up MFA gate that protects AWS roles flagged `require_step_up_mfa`. A click on such a role re-prompts MFA when the session's last MFA challenge is older than this duration (or never happened). Accepts any `time.ParseDuration` value (`30s`, `10m`, `1h`); invalid or empty values fall back to `5m`. |
-| `AUTH_AWSFED_REAP_INTERVAL` | No | `6h` | Period for the AWS federation revocation reaper. Trims `aws_revoked_users` entries past each role's `MaxSessionDuration` and re-pushes the trimmed inline policy. No-op when no `aws_federation` integration is enabled. Set to `0` to disable. |
-| `AUTH_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
-| `AUTH_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
-| `AUTH_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
-| `AUTH_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
-| `AUTH_NATS_URL` | If JetStream audit publishing is required | — | NATS server URL for audit publish + read **and** operational log shipping. Empty disables audit publishing (no-op sink), the live tail page renders empty, and `app_log.authd` shipping silently no-ops. |
-| `AUTH_NATS_CERT` | If NATS requires mTLS | falls back to `AUTH_WORKLOAD_CERT` | Client cert PEM path shared by the audit sink + source **and** the operational-log shipper. The leaf is re-read from disk on every TLS handshake (via `tls/reloader`), so a rotated file is picked up on the next NATS reconnect — no daemon restart. |
-| `AUTH_NATS_KEY` | If `AUTH_NATS_CERT` is set | falls back to `AUTH_WORKLOAD_KEY` | Client key PEM, reloaded together with `AUTH_NATS_CERT` on every handshake. |
-| `AUTH_NATS_CA` | No | falls back to `AUTH_WORKLOAD_CA` | CA bundle PEM for verifying the NATS server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
-| `AUTH_SCIM_MTLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
-| `AUTH_SCIM_MTLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTH_SCIM_MTLS_CERT` is set. |
-| `AUTH_SCIM_MTLS_CA` | No | falls back to `AUTH_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
-| `AUTH_WORKLOAD_CA` | No | — | Single workload CA root used as the fallback for every per-channel CA env var (`AUTH_DB_CA`, `AUTH_ADMIN_DB_CA`, `AUTH_NATS_CA`, `AUTH_SCIM_MTLS_CA`). Set this alone in deployments that issue all internal certs from one CA; set per-channel vars to override individually. |
-| `AUTH_WORKLOAD_CERT` / `AUTH_WORKLOAD_KEY` | No | — | The daemon's workload mTLS identity. Currently the fallback for `AUTH_NATS_CERT` / `AUTH_NATS_KEY`, so a daemon that already carries a workload cert ships audit **and** operational logs over mTLS without a second cert set. Set the `AUTH_NATS_*` vars only to give NATS a distinct identity. |
-| `AUTH_DEBUG_ADDR` | No | — | Listen address (e.g. `127.0.0.1:6060`) for the opt-in diagnostics server: Go runtime profiles (`/debug/pprof/…`) plus a periodic `runtime stats` log line. Empty disables it entirely. **Unauthenticated — bind to loopback or a private interface, never expose publicly.** |
-| `AUTH_WEBAUTHN_ORIGINS` | No | Derived from `AUTH_ISSUER` | Space-separated additional WebAuthn origins |
-| `AUTH_WEBAUTHN_RPID` | No | Hostname of `AUTH_ISSUER` | WebAuthn Relying Party ID override. Set to a registrable parent domain (e.g. `example.com`) so credentials work across sibling subdomains; list each subdomain's full origin in `AUTH_WEBAUTHN_ORIGINS`. **Changing the RP ID invalidates all previously registered WebAuthn credentials** — users must re-register. |
+| `AUTHD_ISSUER` | Yes | — | IdP base URL, e.g. `https://id.example.com` |
+| `AUTHD_ADDR` | No | `:8443` | HTTPS listen address (`host:port`; empty host = all interfaces) |
+| `AUTHD_DATABASE_URL` | Yes | — | PostgreSQL DSN (app role, DML only) |
+| `AUTHD_ADMIN_DATABASE_URL` | No | `AUTHD_DATABASE_URL` | PostgreSQL DSN for migrations (DDL) |
+| `AUTHD_DB_CERT` | If Postgres requires mTLS | — | Client cert PEM path for the runtime DB pool. The leaf is re-read on every TLS handshake (via `tls/reloader`), so a rotated file is picked up by the next pool dial — `SetConnMaxLifetime` is 5m so pooled conns recycle within that window. |
+| `AUTHD_DB_KEY` | If `AUTHD_DB_CERT` is set | — | Client key PEM, reloaded together with `AUTHD_DB_CERT` on every handshake. |
+| `AUTHD_DB_CA` | No | falls back to `AUTHD_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
+| `AUTHD_ADMIN_DB_CERT` / `AUTHD_ADMIN_DB_KEY` / `AUTHD_ADMIN_DB_CA` | If migrate uses a separate role with mTLS | falls back to `AUTHD_DB_*` (CA also falls back to `AUTHD_WORKLOAD_CA`) | mTLS material for the migrate (DDL) connection. **Not** hot-reloaded — the connection closes after migrations finish, so rotation isn't relevant on this path. |
+| `AUTHD_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
+| `AUTHD_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
+| `AUTHD_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
+| `AUTHD_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on `/portal/apps` won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
+| `AUTHD_STEP_UP_MFA_TTL` | No | `5m` | Freshness window for the step-up MFA gate that protects AWS roles flagged `require_step_up_mfa`. A click on such a role re-prompts MFA when the session's last MFA challenge is older than this duration (or never happened). Accepts any `time.ParseDuration` value (`30s`, `10m`, `1h`); invalid or empty values fall back to `5m`. |
+| `AUTHD_AWSFED_REAP_INTERVAL` | No | `6h` | Period for the AWS federation revocation reaper. Trims `aws_revoked_users` entries past each role's `MaxSessionDuration` and re-pushes the trimmed inline policy. No-op when no `aws_federation` integration is enabled. Set to `0` to disable. |
+| `AUTHD_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
+| `AUTHD_VAULT_SCIM_URL` | No | — | Deprecated; auto-imported on first boot. |
+| `AUTHD_VAULT_SCIM_TOKEN` | No | — | Deprecated; auto-imported on first boot. |
+| `AUTHD_VAULT_SCIM_TIMEOUT` | No | `10s` | Deprecated; auto-imported on first boot. |
+| `AUTHD_NATS_URL` | If JetStream audit publishing is required | — | NATS server URL for audit publish + read **and** operational log shipping. Empty disables audit publishing (no-op sink), the live tail page renders empty, and `app_log.authd` shipping silently no-ops. |
+| `AUTHD_NATS_CERT` | If NATS requires mTLS | falls back to `AUTHD_WORKLOAD_CERT` | Client cert PEM path shared by the audit sink + source **and** the operational-log shipper. The leaf is re-read from disk on every TLS handshake (via `tls/reloader`), so a rotated file is picked up on the next NATS reconnect — no daemon restart. |
+| `AUTHD_NATS_KEY` | If `AUTHD_NATS_CERT` is set | falls back to `AUTHD_WORKLOAD_KEY` | Client key PEM, reloaded together with `AUTHD_NATS_CERT` on every handshake. |
+| `AUTHD_NATS_CA` | No | falls back to `AUTHD_WORKLOAD_CA` | CA bundle PEM for verifying the NATS server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
+| `AUTHD_SCIM_MTLS_CERT` | If any mTLS integration | — | Client cert PEM path for mTLS-mode integrations. Hot-reloaded (mtime polled at most once per second across SCIM requests). |
+| `AUTHD_SCIM_MTLS_KEY` | If any mTLS integration | — | Client key PEM. Required iff `AUTHD_SCIM_MTLS_CERT` is set. |
+| `AUTHD_SCIM_MTLS_CA` | No | falls back to `AUTHD_WORKLOAD_CA`, then system roots | CA bundle PEM for verifying downstream SCIM servers. |
+| `AUTHD_WORKLOAD_CA` | No | — | Single workload CA root used as the fallback for every per-channel CA env var (`AUTHD_DB_CA`, `AUTHD_ADMIN_DB_CA`, `AUTHD_NATS_CA`, `AUTHD_SCIM_MTLS_CA`). Set this alone in deployments that issue all internal certs from one CA; set per-channel vars to override individually. |
+| `AUTHD_WORKLOAD_CERT` / `AUTHD_WORKLOAD_KEY` | No | — | The daemon's workload mTLS identity. Currently the fallback for `AUTHD_NATS_CERT` / `AUTHD_NATS_KEY`, so a daemon that already carries a workload cert ships audit **and** operational logs over mTLS without a second cert set. Set the `AUTHD_NATS_*` vars only to give NATS a distinct identity. |
+| `AUTHD_DEBUG_ADDR` | No | — | Listen address (e.g. `127.0.0.1:6060`) for the opt-in diagnostics server: Go runtime profiles (`/debug/pprof/…`) plus a periodic `runtime stats` log line. Empty disables it entirely. **Unauthenticated — bind to loopback or a private interface, never expose publicly.** |
+| `AUTHD_WEBAUTHN_ORIGINS` | No | Derived from `AUTHD_ISSUER` | Space-separated additional WebAuthn origins |
+| `AUTHD_WEBAUTHN_RPID` | No | Hostname of `AUTHD_ISSUER` | WebAuthn Relying Party ID override. Set to a registrable parent domain (e.g. `example.com`) so credentials work across sibling subdomains; list each subdomain's full origin in `AUTHD_WEBAUTHN_ORIGINS`. **Changing the RP ID invalidates all previously registered WebAuthn credentials** — users must re-register. |
 | `AWS_REGION` | If an `aws_iam` or `aws_federation` integration is enabled | — | Signing region for the AWS SDK's IAM calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | If neither machine IAM role nor any other credential source is available | — | Standard AWS SDK env vars, **not read by auth**. The SDK's default credential chain (used by the `aws_iam` and `aws_federation` provisioners) picks these up if set. **Prefer a machine IAM role** — EC2 instance profile, ECS task role, EKS IRSA, or IAM Roles Anywhere — over static keys for production. The federation flow (`/portal/aws`, `/aws/credentials`) does NOT need any AWS credentials at all; only the IAM-creates-users provisioner and the federation revocation provisioner do. |
 
@@ -189,22 +189,22 @@ authd does not hold long-lived TLS material in memory across rotations on the ch
 
 | Channel | Mechanism | Picked up on |
 |---|---|---|
-| Incoming HTTPS (`AUTH_API_CERT`) | `tls.Config.GetCertificate` via `reloader.CertLoader` | Every TLS handshake (per-request) |
-| SCIM outbound mTLS (`AUTH_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `reloader.CertLoader` | Every outbound SCIM request |
-| Postgres pool (`AUTH_DB_CERT/KEY/CA`) | `reloader.ClientConfig`: `GetClientCertificate` re-reads the leaf per handshake, `VerifyConnection` re-reads the CA pool on mtime | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
-| NATS audit sink + source (`AUTH_NATS_CERT/KEY/CA`) | `reloader.ClientConfig` (via base `cli.AuditSink`/`AuditSource`): leaf re-read per handshake, CA pool re-read on mtime | Every NATS reconnect (the lib auto-reconnects on disconnect) |
-| Operational-log shipper (`AUTH_NATS_CERT/KEY/CA`) | Same `reloader.ClientConfig` path, via base `applog.AppLoggerWithNATS` | Every NATS reconnect |
+| Incoming HTTPS (`AUTHD_API_CERT`) | `tls.Config.GetCertificate` via `reloader.CertLoader` | Every TLS handshake (per-request) |
+| SCIM outbound mTLS (`AUTHD_SCIM_MTLS_CERT`) | `tls.Config.GetClientCertificate` via `reloader.CertLoader` | Every outbound SCIM request |
+| Postgres pool (`AUTHD_DB_CERT/KEY/CA`) | `reloader.ClientConfig`: `GetClientCertificate` re-reads the leaf per handshake, `VerifyConnection` re-reads the CA pool on mtime | Every new pool dial. `SetConnMaxLifetime` is 5m so existing pooled conns recycle within that window |
+| NATS audit sink + source (`AUTHD_NATS_CERT/KEY/CA`) | `reloader.ClientConfig` (via base `cli.AuditSink`/`AuditSource`): leaf re-read per handshake, CA pool re-read on mtime | Every NATS reconnect (the lib auto-reconnects on disconnect) |
+| Operational-log shipper (`AUTHD_NATS_CERT/KEY/CA`) | Same `reloader.ClientConfig` path, via base `applog.AppLoggerWithNATS` | Every NATS reconnect |
 
-**Note**: as of `tokyo3-base` v0.7.0 the operational-log shipper (`applog.AppLoggerWithNATS`, same `AUTH_NATS_*` material) hot-reloads through the same `tls/reloader` path as the audit channels — no boot-pin, no restart needed to roll it onto a rotated cert. (Earlier versions pinned the shipper's cert at boot; that gap is closed.)
+**Note**: as of `tokyo3-base` v0.7.0 the operational-log shipper (`applog.AppLoggerWithNATS`, same `AUTHD_NATS_*` material) hot-reloads through the same `tls/reloader` path as the audit channels — no boot-pin, no restart needed to roll it onto a rotated cert. (Earlier versions pinned the shipper's cert at boot; that gap is closed.)
 
 What rotation does **not** do: it never disturbs an already-established TLS session. TLS authenticates at handshake time only; the X.509 cert is not consulted again on the wire. So in-flight requests, open NATS subscriptions, and active DB transactions survive a rotation untouched — only subsequent dials see the new material.
 
 ## Running
 
 ```bash
-AUTH_ISSUER=https://id.example.com \
-AUTH_DATABASE_URL="postgres://app:pass@localhost/authdb" \
-AUTH_MASTER_KEY="$(./authd keygen)" \
+AUTHD_ISSUER=https://id.example.com \
+AUTHD_DATABASE_URL="postgres://app:pass@localhost/authdb" \
+AUTHD_MASTER_KEY="$(./authd keygen)" \
 ./authd serve
 ```
 
@@ -233,7 +233,7 @@ AUTH_MASTER_KEY="$(./authd keygen)" \
 | `GET` | `/authorize/mfa/webauthn` | WebAuthn MFA page during OAuth2 flow |
 | `POST` | `/authorize/mfa/webauthn/begin` | Begin WebAuthn assertion (SSO MFA step) |
 | `POST` | `/authorize/mfa/webauthn/finish` | Complete WebAuthn assertion, issue code |
-| `GET/POST` | `/register` | Self-registration form (requires `AUTH_ALLOW_REGISTRATION=true`) |
+| `GET/POST` | `/register` | Self-registration form (requires `AUTHD_ALLOW_REGISTRATION=true`) |
 | `POST` | `/token` | Token exchange (authorization_code, refresh_token, client_credentials) |
 | `GET` | `/userinfo` | UserInfo endpoint (Bearer token required) |
 | `POST` | `/revoke` | Token revocation (RFC 7009) |
@@ -426,7 +426,7 @@ Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`;
 
 1. **Set the federation audience** in auth's environment. One value per IdP — typically scoped per AWS account so a JWT minted for one account can't be replayed against another:
    ```
-   AUTH_AWS_AUDIENCE=tokyo3-aws-prod
+   AUTHD_AWS_AUDIENCE=tokyo3-aws-prod
    ```
    Restart authd for the change to take effect. With this unset, the `/portal/aws` tile page and `/aws/credentials` endpoint return clear "federation_disabled" errors instead of silently dropping requests.
 
@@ -462,7 +462,7 @@ Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`;
    - Add each role: ARN, slug (URL/CLI-safe identifier — e.g. `platform-prod`), display name, optional step-up MFA flag, session TTL.
    - Add SCIM-group → role assignments mapping group membership to assumable roles.
 
-5. **Users log in** at `/portal/apps`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTH_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
+5. **Users log in** at `/portal/apps`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTHD_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
 
 ### Revocation (optional but recommended)
 
@@ -493,7 +493,7 @@ Without revocation, STS sessions for a deactivated user keep working until natur
    ```
    AWS evaluates this on every API call — sessions tagged with the deactivated user's `sub` get `AccessDenied` on their next request (~30s policy propagation).
 
-4. A daily reaper (`AUTH_AWSFED_REAP_INTERVAL`, default 6h) trims revocation entries past the role's `MaxSessionDuration` — by then every session blocked by the Deny has expired naturally. Keeps the inline policy from growing forever.
+4. A daily reaper (`AUTHD_AWSFED_REAP_INTERVAL`, default 6h) trims revocation entries past the role's `MaxSessionDuration` — by then every session blocked by the Deny has expired naturally. Keeps the inline policy from growing forever.
 
 ### CloudTrail correlation
 
@@ -680,9 +680,9 @@ The response includes the raw token once — store it.
 
 **2. Set the env vars on the authd process**:
 ```
-AUTH_SCIM_MTLS_CERT=/run/secrets/auth-outbound.crt
-AUTH_SCIM_MTLS_KEY=/run/secrets/auth-outbound.key
-AUTH_SCIM_MTLS_CA=/run/secrets/downstream-ca.crt   # optional; falls back to system roots
+AUTHD_SCIM_MTLS_CERT=/run/secrets/auth-outbound.crt
+AUTHD_SCIM_MTLS_KEY=/run/secrets/auth-outbound.key
+AUTHD_SCIM_MTLS_CA=/run/secrets/downstream-ca.crt   # optional; falls back to system roots
 ```
 The cert file is hot-reloaded — pair this with tbot/cert-manager/SPIFFE for automatic rotation.
 
@@ -697,7 +697,7 @@ authd admin sync --target=all       # every enabled integration
 ```
 Iterates auth's `users` and `scim_groups` tables and pushes them. Idempotent — vault's SCIM POST returns the existing record on duplicate email.
 
-**Legacy env vars**: `AUTH_VAULT_SCIM_ENABLED`/`URL`/`TOKEN`/`TIMEOUT` are deprecated. On the first boot after upgrading, if `app_integrations` is empty and `AUTH_VAULT_SCIM_ENABLED=true`, authd auto-imports the env vars into a row named `vault` and logs a deprecation warning. Subsequent boots ignore the env vars entirely — manage the row via the portal.
+**Legacy env vars**: `AUTHD_VAULT_SCIM_ENABLED`/`URL`/`TOKEN`/`TIMEOUT` are deprecated. On the first boot after upgrading, if `app_integrations` is empty and `AUTHD_VAULT_SCIM_ENABLED=true`, authd auto-imports the env vars into a row named `vault` and logs a deprecation warning. Subsequent boots ignore the env vars entirely — manage the row via the portal.
 
 **Self-heal**: external_ids is a best-effort cache. On a 404 from PUT/PATCH/DELETE the client invalidates the cache, re-resolves via `filter=externalId eq` (vault's Phase 2 filter subset), then either retries or falls through to POST (vault's POST is idempotent on email).
 
@@ -780,9 +780,9 @@ docker run -d --name authdb -p 5432:5432 \
 ### Running locally
 
 ```bash
-export AUTH_ISSUER=http://localhost:8080
-export AUTH_DATABASE_URL="postgres://postgres:secret@localhost/authdb?sslmode=disable"
-export AUTH_MASTER_KEY="$(go run ./cmd/authd keygen)"
+export AUTHD_ISSUER=http://localhost:8080
+export AUTHD_DATABASE_URL="postgres://postgres:secret@localhost/authdb?sslmode=disable"
+export AUTHD_MASTER_KEY="$(go run ./cmd/authd keygen)"
 go run ./cmd/authd serve
 ```
 

@@ -13,7 +13,7 @@
 #    steps 2–4 below.
 #
 # 2. Register Teleport as an OAuth client in auth (one-time):
-#      curl -k -H "Authorization: Bearer $AUTH_ADMIN_TOKEN" \
+#      curl -k -H "Authorization: Bearer $AUTHD_ADMIN_TOKEN" \
 #           -H "Content-Type: application/json" \
 #           https://auth.localhost/admin/clients \
 #           -d '{
@@ -45,13 +45,13 @@
 # 6. Browse https://teleport.localhost → "Login with tokyo3-auth".
 #
 # ── Required env vars (set in shell or .env file) ─────────────────────────────
-#   AUTH_MASTER_KEY          64-char hex key (authd keygen)
-#   AUTH_ADMIN_DB_PASSWORD   auth DB admin password (DDL owner, runs migrations)
-#   AUTH_DB_PASSWORD         auth DB app password   (DML-only)
+#   AUTHD_MASTER_KEY          64-char hex key (authd keygen)
+#   AUTHD_ADMIN_DB_PASSWORD   auth DB admin password (DDL owner, runs migrations)
+#   AUTHD_DB_PASSWORD         auth DB app password   (DML-only)
 #
 # Optional (usernames default to auth_admin / auth_app):
-#   AUTH_ADMIN_DB_USERNAME   auth DB admin username (default: auth_admin)
-#   AUTH_DB_USERNAME         auth DB app username   (default: auth_app)
+#   AUTHD_ADMIN_DB_USERNAME   auth DB admin username (default: auth_admin)
+#   AUTHD_DB_USERNAME         auth DB app username   (default: auth_app)
 #
 # Note: DB credentials and usernames above are only applied on first startup
 # when the data volume is empty (postgres initdb). Changing them after the
@@ -60,13 +60,13 @@
 #
 # ── Architecture ──────────────────────────────────────────────────────────────
 #   Browser ─https─> host:443 ─> Traefik
-#                                  ├─ Host: auth.localhost     ─> auth:443
+#                                  ├─ Host: auth.localhost     ─> authd:443
 #                                  ├─ Host: teleport.localhost ─> teleport:3080
 #                                  └─ Host: github.com | api.github.com
 #                                       └─ rewrite Host: auth.localhost ─> auth
 #
 #   Teleport ─https─> github.com:443 (extra_hosts → host-gateway) ─> Traefik
-#                       └─ rewrite middleware ─> auth:443
+#                       └─ rewrite middleware ─> authd:443
 #
 # Single mkcert-issued cert with auth.localhost, teleport.localhost, github.com,
 # api.github.com as SANs covers every virtual host.
@@ -77,21 +77,22 @@ services:
   db:
     image: postgres:17-alpine
     entrypoint: ["sh", "/shared/postgres/pg-entrypoint.sh"]
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+    # No host port: reachable only on the compose network as db:5432
+    # (the db-server cert carries `db` as a SAN). Everything that talks to
+    # Postgres — authd in-container and `make run` on the network — uses that.
     environment:
       PG_INIT_SCRIPT:    /shared/postgres/db-init.sh
-      POSTGRES_USER:     ${AUTH_ADMIN_DB_USERNAME:-auth_admin}
-      POSTGRES_PASSWORD: ${AUTH_ADMIN_DB_PASSWORD:?AUTH_ADMIN_DB_PASSWORD is required}
+      POSTGRES_USER:     ${AUTHD_ADMIN_DB_USERNAME:-auth_admin}
+      POSTGRES_PASSWORD: ${AUTHD_ADMIN_DB_PASSWORD:?AUTHD_ADMIN_DB_PASSWORD is required}
       POSTGRES_DB:       authdb
-      AUTH_DB_USERNAME:  ${AUTH_DB_USERNAME:-auth_app}
-      AUTH_DB_PASSWORD:  ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}
+      AUTHD_DB_USERNAME:  ${AUTHD_DB_USERNAME:-auth_app}
+      AUTHD_DB_PASSWORD:  ${AUTHD_DB_PASSWORD:?AUTHD_DB_PASSWORD is required}
     volumes:
       - shared_data:/shared:ro
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTH_ADMIN_DB_USERNAME:-auth_admin} -d authdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${AUTHD_ADMIN_DB_USERNAME:-auth_admin} -d authdb"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -101,8 +102,8 @@ services:
   nats:
     image: nats:2-alpine
     command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
-    ports:
-      - "${NATS_PORT:-4222}:4222"
+    # No host port: reachable only on the compose network as nats:4222
+    # (the nats-server cert carries `nats` as a SAN).
     volumes:
       - nats_data:/data
     restart: unless-stopped
@@ -161,7 +162,7 @@ services:
   # mTLS for DB/NATS on top; it does not need to redeclare the API cert.
   # No host port mapping: all browser traffic goes through Traefik, and
   # in-cluster traffic uses the `auth.localhost` network alias below.
-  auth:
+  authd:
     build: .
     image: abagile/tokyo3-auth:${VERSION:-latest}
     restart: unless-stopped
@@ -182,32 +183,32 @@ services:
           - auth.localhost
     # Every var here is `${NAME:-default}` so .env can override; the defaults
     # match the in-container layout (db:5432, nats:4222, /shared/certs/…).
-    # Heads-up: DSNs and AUTH_ADDR target the docker network — if you set
+    # Heads-up: DSNs and AUTHD_ADDR target the docker network — if you set
     # them in .env they must remain container-friendly, NOT the host-side
     # values that `make run` constructs at process launch.
     environment:
-      AUTH_MASTER_KEY:          ${AUTH_MASTER_KEY:?AUTH_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm auth keygen')}
-      AUTH_ADDR:                ${AUTH_ADDR:-:443}
-      AUTH_ISSUER:              ${AUTH_ISSUER:-https://auth.localhost}
+      AUTHD_MASTER_KEY:          ${AUTHD_MASTER_KEY:?AUTHD_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm authd keygen')}
+      AUTHD_ADDR:                ${AUTHD_ADDR:-:443}
+      AUTHD_ISSUER:              ${AUTHD_ISSUER:-https://auth.localhost}
       # mkcert-issued server cert. Generated + staged by `make _sync-shared`,
       # which `docker-up` invokes.
-      AUTH_API_CERT:            ${AUTH_API_CERT:-/shared/certs/authd-server.crt}
-      AUTH_API_KEY:             ${AUTH_API_KEY:-/shared/certs/authd-server.key}
+      AUTHD_API_CERT:            ${AUTHD_API_CERT:-/shared/certs/authd-server.crt}
+      AUTHD_API_KEY:             ${AUTHD_API_KEY:-/shared/certs/authd-server.key}
       # Admin DSN: schema migration only (DDL privileges).
-      AUTH_ADMIN_DATABASE_URL:  ${AUTH_ADMIN_DATABASE_URL:-postgres://${AUTH_ADMIN_DB_USERNAME:-auth_admin}:${AUTH_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
+      AUTHD_ADMIN_DATABASE_URL:  ${AUTHD_ADMIN_DATABASE_URL:-postgres://${AUTHD_ADMIN_DB_USERNAME:-auth_admin}:${AUTHD_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
       # Runtime DSN: DML-only after schema is in place.
-      AUTH_DATABASE_URL:        ${AUTH_DATABASE_URL:-postgres://${AUTH_DB_USERNAME:-auth_app}:${AUTH_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
+      AUTHD_DATABASE_URL:        ${AUTHD_DATABASE_URL:-postgres://${AUTHD_DB_USERNAME:-auth_app}:${AUTHD_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
       # Audit sink + source (live tail page + `authd audit query` CLI):
       # publish to and read from the auth_audit JetStream stream.
-      AUTH_NATS_URL:            ${AUTH_NATS_URL:-nats://nats:4222}
-      AUTH_ALLOW_REGISTRATION:  ${AUTH_ALLOW_REGISTRATION:-false}
-      AUTH_WEBAUTHN_ORIGINS:    ${AUTH_WEBAUTHN_ORIGINS:-}
-      AUTH_WEBAUTHN_RPID:       ${AUTH_WEBAUTHN_RPID:-}
+      AUTHD_NATS_URL:            ${AUTHD_NATS_URL:-nats://nats:4222}
+      AUTHD_ALLOW_REGISTRATION:  ${AUTHD_ALLOW_REGISTRATION:-false}
+      AUTHD_WEBAUTHN_ORIGINS:    ${AUTHD_WEBAUTHN_ORIGINS:-}
+      AUTHD_WEBAUTHN_RPID:       ${AUTHD_WEBAUTHN_RPID:-}
       # AWS OIDC federation (per-role tile + auth-aws-creds CLI). Set the
       # audience to the value registered on each account's IAM OIDC
       # provider. Empty disables the federation handler; setup runbook is
       # in README's "AWS OIDC Federation" section.
-      AUTH_AWS_AUDIENCE:        ${AUTH_AWS_AUDIENCE:-}
+      AUTHD_AWS_AUDIENCE:        ${AUTHD_AWS_AUDIENCE:-}
       # Standard AWS SDK credential env vars — consumed by the SDK's
       # default credential chain inside the IAM provisioner and the
       # federation revocation provisioner. Empty values let the chain
@@ -237,7 +238,7 @@ services:
       - "${TRAEFIK_HTTPS_PORT:-443}:443"
       - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     depends_on:
-      auth:
+      authd:
         condition: service_healthy
     command:
       - "--api.dashboard=true"
@@ -265,7 +266,7 @@ services:
   teleport:
     image: ${TELEPORT_IMAGE:-public.ecr.aws/gravitational/teleport-distroless:18.8.0}
     depends_on:
-      auth:
+      authd:
         condition: service_healthy
     # Teleport CE hard-codes github.com / api.github.com in its github
     # connector (endpoint_url / api_endpoint_url are Enterprise-only). Map

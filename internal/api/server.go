@@ -27,12 +27,12 @@ type Server struct {
 	kp          bcrypto.KeyProvider
 	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
 	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
-	audit       audit.Sink          // JetStream publisher; NoopSink when AUTH_NATS_URL is unset
-	auditSrc    journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTH_NATS_URL is unset
+	audit       audit.Sink          // JetStream publisher; NoopSink when AUTHD_NATS_URL is unset
+	auditSrc    journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTHD_NATS_URL is unset
 	issuer      string
 	// awsAudience is the single value emitted as the `aud` claim on every
 	// federation JWT minted for AWS console / CLI assumption. Sourced from
-	// the AUTH_AWS_AUDIENCE env var at startup; empty disables federation
+	// the AUTHD_AWS_AUDIENCE env var at startup; empty disables federation
 	// (handlers fail with a clear server-misconfigured message). One audience
 	// per IdP (typically also per AWS account for cross-account replay
 	// safety); per-role authorisation moves to aws:RequestTag/<key>
@@ -42,7 +42,7 @@ type Server struct {
 	// protects AWS roles flagged require_step_up_mfa. A click on such a
 	// role's tile re-prompts MFA when the session's mfa_verified_at is
 	// older than this duration (or missing). Configured by
-	// AUTH_STEP_UP_MFA_TTL; defaults to 5m when unset.
+	// AUTHD_STEP_UP_MFA_TTL; defaults to 5m when unset.
 	stepUpMFATTL time.Duration
 	masterKey    []byte
 	log          *slog.Logger

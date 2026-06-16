@@ -34,9 +34,9 @@ Step 1 registers vault for OIDC SSO. Step 2 wires the SCIM provisioning channel 
 ### 1. Register vault as an OAuth2 client in auth
 
 ```sh
-curl -X POST -H "Authorization: Bearer $AUTH_ADMIN_TOKEN" \
+curl -X POST -H "Authorization: Bearer $AUTHD_ADMIN_TOKEN" \
      -H "Content-Type: application/json" \
-     "$AUTH_URL/admin/clients" \
+     "$AUTHD_URL/admin/clients" \
      -d '{
        "name": "vault",
        "redirect_uris": ["https://vault.example.com/api/v1/auth/oidc/callback"],
@@ -81,9 +81,9 @@ Add a Vault SCIM integration at `/portal/admin/integrations/new`:
 Configure vault to require client certs on `/scim/v2/*` and allow-list auth's CA + the SAN/CN that identifies authd. Then point auth at its outbound cert/key/CA via env vars (one shared identity for every mTLS integration; no per-row secrets):
 
 ```sh
-AUTH_SCIM_MTLS_CERT=/run/secrets/auth-outbound.crt
-AUTH_SCIM_MTLS_KEY=/run/secrets/auth-outbound.key
-AUTH_SCIM_MTLS_CA=/run/secrets/downstream-ca.crt    # optional; empty = system roots
+AUTHD_SCIM_MTLS_CERT=/run/secrets/auth-outbound.crt
+AUTHD_SCIM_MTLS_KEY=/run/secrets/auth-outbound.key
+AUTHD_SCIM_MTLS_CA=/run/secrets/downstream-ca.crt    # optional; empty = system roots
 ```
 
 Restart auth. The cert file is hot-reloaded (mtime polled at most once per second across SCIM requests), so pair this with tbot, cert-manager, or SPIFFE for automatic rotation without restarts.
@@ -153,7 +153,7 @@ If the target speaks SCIM 2.0 over bearer auth or mTLS (Okta-as-target, Azure-as
 - Provider: `scim`
 - Name: any unique identifier (used as the `external_ids` cache key — don't rename a live integration)
 - Base URL: the target's SCIM root
-- Authentication: `Bearer token` (paste the value the target issued) **or** `mTLS (client cert)` (uses the shared `AUTH_SCIM_*` env vars; the target must allow-list auth's CA + SAN/CN)
+- Authentication: `Bearer token` (paste the value the target issued) **or** `mTLS (client cert)` (uses the shared `AUTHD_SCIM_*` env vars; the target must allow-list auth's CA + SAN/CN)
 
 Backfill existing users with `authd admin sync --target=<name>`. The integration is then live for all subsequent mutations.
 
@@ -235,7 +235,7 @@ Every JWT minted by auth's federation handler carries a `https://aws.amazon.com/
 
 AWS reads this claim during `AssumeRoleWithWebIdentity` and surfaces each tag at two stages:
 
-- **At trust-policy evaluation time** (before the session exists) the tag values are available as `aws:RequestTag/<key>`. Role trust policies condition on `aws:RequestTag/team` to decide who can assume each role — this is the per-role discriminator now that audience is a single shared value (sourced from `AUTH_AWS_AUDIENCE`).
+- **At trust-policy evaluation time** (before the session exists) the tag values are available as `aws:RequestTag/<key>`. Role trust policies condition on `aws:RequestTag/team` to decide who can assume each role — this is the per-role discriminator now that audience is a single shared value (sourced from `AUTHD_AWS_AUDIENCE`).
 - **For every subsequent API call** under the resulting STS session the same values surface as `aws:PrincipalTag/<key>`. Resource policies, permission policies, SCPs, and the awsfed revocation Deny all key on this form.
 
 **Prerequisite**: each federation role's trust policy must include `sts:TagSession` in the Action list:
@@ -349,7 +349,7 @@ Two architectural decisions land in this area; both are worth being deliberate a
 
 **Role granularity.** Build per-persona roles (`PlatformAdmin`, `BackendDev`, `DataAnalyst`) and lean on ABAC for per-user scoping inside them. Per-user roles (one per human) don't scale past a couple hundred users. Each role gets a unique trust-policy condition on `aws:RequestTag/team` (or another tag key) — that condition is what distinguishes "who can assume this role" rather than a per-role audience.
 
-**Audience model.** The federation handler emits a single audience value on every JWT, sourced from the `AUTH_AWS_AUDIENCE` env var (typically one value per AWS account — `tokyo3-aws-prod`, `tokyo3-aws-staging`, `tokyo3-aws-dev`). This value is registered once on each account's IAM OIDC provider and shared across every role in that account. Per-role gating moves entirely into `aws:RequestTag/<key>` conditions in trust policies — no role-specific audience values to keep in sync. Audience values are not secrets; they appear in CloudTrail under `webIdFederationData.attributes.aud`.
+**Audience model.** The federation handler emits a single audience value on every JWT, sourced from the `AUTHD_AWS_AUDIENCE` env var (typically one value per AWS account — `tokyo3-aws-prod`, `tokyo3-aws-staging`, `tokyo3-aws-dev`). This value is registered once on each account's IAM OIDC provider and shared across every role in that account. Per-role gating moves entirely into `aws:RequestTag/<key>` conditions in trust policies — no role-specific audience values to keep in sync. Audience values are not secrets; they appear in CloudTrail under `webIdFederationData.attributes.aud`.
 
 **Role slug.** The `slug` field on each role (`platform-prod`, `backend-dev`) is the URL/CLI-safe identifier users supply in their `~/.aws/config` (`credential_process = auth-aws-creds get --role <slug>`) and the `role` form field on `POST /aws/credentials`. Auth validates slugs against `[a-z0-9][a-z0-9_-]{0,62}` at admin form time. The display name (`Platform: prod`) is the human-friendly label rendered on the user tile page.
 
@@ -357,7 +357,7 @@ Two architectural decisions land in this area; both are worth being deliberate a
 
 Every federation event lands in auth's JetStream audit stream:
 
-- `aws.console.assumed` on success, with `role_arn`, `role_slug`, `audience` (server-global from `AUTH_AWS_AUDIENCE`), `role_session_name`, `step_up`, `mfa_authenticated` in metadata
+- `aws.console.assumed` on success, with `role_arn`, `role_slug`, `audience` (server-global from `AUTHD_AWS_AUDIENCE`), `role_session_name`, `step_up`, `mfa_authenticated` in metadata
 - `aws.console.assume.failed` with `reason` (`not_assigned`, `step_up_required`, `sts_error`, `signin_token_error`)
 - `aws.federation.revoked` when the provisioner adds a user to a role's revocation list
 - `aws.federation.revoke.reaped` when the reaper prunes expired entries
@@ -406,7 +406,7 @@ Adding a new app
 
 - **Credential rotation.**
   - *Bearer mode:* tokens are long-lived. Rotate via the downstream's token endpoint, then click **Replace token** on the integration's edit page. The new token is encrypted with the master KEK and the registry hot-reloads on save.
-  - *mTLS mode:* the cert/key pointed at by `AUTH_SCIM_MTLS_CERT/KEY` is hot-reloaded automatically — replace the file on disk (tbot, cert-manager, SPIFFE) and the next SCIM request picks it up. No process restart, no portal save.
+  - *mTLS mode:* the cert/key pointed at by `AUTHD_SCIM_MTLS_CERT/KEY` is hot-reloaded automatically — replace the file on disk (tbot, cert-manager, SPIFFE) and the next SCIM request picks it up. No process restart, no portal save.
 - **Failure mode.** Provisioner errors are logged and audited but never block the originating request. A failed downstream sync is recoverable via `authd admin sync --target=<name>`.
 - **404 self-heal.** The SCIM client treats `external_ids` as a cache, not authority. On `404` from `PUT/PATCH/DELETE` it invalidates the cache and re-resolves via `filter=externalId eq`, then either retries or falls through to `POST` (idempotent on email).
 - **Order of operations on first deploy.** Provision before SSO. If a user logs in via OIDC before they've been SCIM-provisioned, the downstream JIT-creates them with no `externalId` — which still works via email fallback, but later updates take an extra round trip until the cache is populated. Run `authd admin sync` first.

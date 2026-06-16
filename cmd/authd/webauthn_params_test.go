@@ -6,7 +6,7 @@ import (
 )
 
 // TestWebAuthnParams covers RPID derivation from the issuer plus the
-// AUTH_WEBAUTHN_RPID override. The override is what lets credentials be
+// AUTHD_WEBAUTHN_RPID override. The override is what lets credentials be
 // scoped to a parent domain (e.g. example.com) so they survive moves
 // between sibling subdomains; the regression we're guarding against is
 // the override being dropped or applied to origins instead of the RPID.
@@ -49,8 +49,8 @@ func TestWebAuthnParams(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("AUTH_WEBAUTHN_RPID", tc.rpidEnv)
-			t.Setenv("AUTH_WEBAUTHN_ORIGINS", tc.originsEnv)
+			t.Setenv("AUTHD_WEBAUTHN_RPID", tc.rpidEnv)
+			t.Setenv("AUTHD_WEBAUTHN_ORIGINS", tc.originsEnv)
 			rpID, origins := webAuthnParams(tc.issuer)
 			if rpID != tc.wantRPID {
 				t.Errorf("rpID = %q, want %q", rpID, tc.wantRPID)

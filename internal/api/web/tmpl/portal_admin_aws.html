@@ -16,13 +16,13 @@ record the ARN below.
 
 {{if .Audience}}
 <div class="alert alert-info" style="max-width:760px">
-Federation audience (server-global, from <code>AUTH_AWS_AUDIENCE</code>): <code>{{.Audience}}</code>.
+Federation audience (server-global, from <code>AUTHD_AWS_AUDIENCE</code>): <code>{{.Audience}}</code>.
 Every minted JWT carries this <code>aud</code> claim; per-role authorisation
 moves to <code>aws:RequestTag/team</code> conditions in each role's trust policy.
 </div>
 {{else}}
 <div class="alert alert-error" style="max-width:760px">
-<strong>AWS federation is disabled.</strong> Set <code>AUTH_AWS_AUDIENCE</code>
+<strong>AWS federation is disabled.</strong> Set <code>AUTHD_AWS_AUDIENCE</code>
 in the authd environment to enable the <code>/portal/aws</code> tile page
 and the <code>/aws/credentials</code> CLI endpoint. Without it, the catalogue
 below can still be edited but no role can be assumed.

@@ -2,7 +2,7 @@
 -- challenge, not just whether one happened at any point. Step-up flows
 -- (AWS console assume for roles with require_step_up_mfa) reject the
 -- request when this timestamp is missing or older than the configured
--- TTL (AUTH_STEP_UP_MFA_TTL). The pre-existing mfa_verified bool
+-- TTL (AUTHD_STEP_UP_MFA_TTL). The pre-existing mfa_verified bool
 -- remains the cheap "ever?" indicator for audit and policy code paths.
 --
 -- Backfill: existing rows that have mfa_verified=true get

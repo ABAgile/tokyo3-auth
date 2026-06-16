@@ -18,7 +18,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Load .env from the repo root if present — mirrors docker compose behaviour so
-# AUTH_ADMIN_DB_USERNAME / AUTH_DB_USERNAME stay in sync with the DSNs.
+# AUTHD_ADMIN_DB_USERNAME / AUTHD_DB_USERNAME stay in sync with the DSNs.
 REPO_ROOT="$(cd "$DIR/../.." && pwd)"
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a
@@ -26,8 +26,8 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   source "$REPO_ROOT/.env"
   set +a
 fi
-ADMIN_USERNAME="${AUTH_ADMIN_DB_USERNAME:-auth_admin}"
-APP_USERNAME="${AUTH_DB_USERNAME:-auth_app}"
+ADMIN_USERNAME="${AUTHD_ADMIN_DB_USERNAME:-auth_admin}"
+APP_USERNAME="${AUTHD_DB_USERNAME:-auth_app}"
 
 step() { printf '  %-34s' "$1..."; }
 ok()   { echo "ok"; }
@@ -73,7 +73,7 @@ mkc_client() {
 # 127.0.0.1 on modern systems — no /etc/hosts entries needed. The docker
 # service hostname (and a network alias for `db.localhost`) covers in-network
 # access. localhost / 127.0.0.1 SANs on authd-server let
-# AUTH_ISSUER=https://localhost:8443 (the run-mtls default) validate without
+# AUTHD_ISSUER=https://localhost:8443 (the run-mtls default) validate without
 # a cert mismatch.
 mkc_server "authd-server"  authd  auth.localhost  teleport.localhost  github.com  api.github.com  localhost  127.0.0.1
 mkc_server "db-server"     db     db.localhost    localhost  127.0.0.1
@@ -88,7 +88,7 @@ mkc_client "authd-admin-db-client" "$ADMIN_USERNAME" authd
 mkc_client "authd-app-db-client"   "$APP_USERNAME"   authd
 
 # ── Client cert — outbound SCIM provisioning ─────────────────────────────────
-# Used by AUTH_SCIM_MTLS_CERT/KEY when an app_integrations row is in mTLS
+# Used by AUTHD_SCIM_MTLS_CERT/KEY when an app_integrations row is in mTLS
 # mode. CN=authd is the stable identity downstreams allow-list as "the IdP";
 # SANs are advisory (servers don't validate client-cert hostnames). Same root
 # CA as everything else, so a downstream that already trusts the mkcert CA for

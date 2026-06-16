@@ -276,7 +276,7 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 		req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
 	case model.AppIntegrationAuthMTLS:
 		if s.outboundTLS == nil {
-			return 0, "", errors.New("mtls auth_mode but AUTH_SCIM_MTLS_CERT/KEY are unset")
+			return 0, "", errors.New("mtls auth_mode but AUTHD_SCIM_MTLS_CERT/KEY are unset")
 		}
 		client.Transport = &http.Transport{TLSClientConfig: s.outboundTLS}
 	default:
@@ -418,7 +418,7 @@ func (f integrationFormInput) validate(needToken bool) string {
 			}
 		case model.AppIntegrationAuthMTLS:
 			if strings.TrimSpace(f.tokenPlain) != "" {
-				return "Token must be empty when auth mode is mTLS — auth presents its client cert from AUTH_SCIM_* env vars."
+				return "Token must be empty when auth mode is mTLS — auth presents its client cert from AUTHD_SCIM_* env vars."
 			}
 		default:
 			return "Unsupported auth mode."

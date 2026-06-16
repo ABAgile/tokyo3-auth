@@ -2,7 +2,7 @@
 # Loaded by the traefik service via --providers.file.filename.
 #
 # Routing summary:
-#   - auth.localhost                    -> auth:443 (HTTPS upstream)
+#   - auth.localhost                    -> authd:443 (HTTPS upstream)
 #   - teleport.localhost                -> teleport:3080 (HTTPS upstream),
 #                                          with response Location: header
 #                                          rewritten from github.com to
@@ -10,7 +10,7 @@
 #                                          redirect middleware) so the
 #                                          browser never reaches the real
 #                                          github.com.
-#   - github.com / api.github.com       -> auth:443, with Host header
+#   - github.com / api.github.com       -> authd:443, with Host header
 #                                          rewritten to auth.localhost so
 #                                          auth handlers see a consistent
 #                                          identity. These names only land
@@ -20,15 +20,15 @@
 #
 # TLS terminates at Traefik using the mkcert-issued authd-server cert; the
 # cert's SAN list covers all four hostnames. Upstream connections use
-# insecureSkipVerify because the docker service-name SNI (`auth`, `teleport`)
+# insecureSkipVerify because the docker service-name SNI (`authd`, `teleport`)
 # doesn't match the cert — adequate for a dev rig.
 
 http:
   routers:
-    auth:
+    authd:
       rule: "Host(`auth.localhost`)"
       entryPoints: [websecure]
-      service: auth
+      service: authd
       tls: {}
 
     teleport:
@@ -51,15 +51,15 @@ http:
     github-hijack:
       rule: "Host(`github.com`) || Host(`api.github.com`)"
       entryPoints: [websecure]
-      service: auth
+      service: authd
       middlewares: [rewrite-host]
       tls: {}
 
   services:
-    auth:
+    authd:
       loadBalancer:
         servers:
-          - url: "https://auth:443"
+          - url: "https://authd:443"
         serversTransport: skipverify
         passHostHeader: true
 

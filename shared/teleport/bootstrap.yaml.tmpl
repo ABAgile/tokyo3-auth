@@ -24,18 +24,18 @@ spec:
   # api.github.com. The docker-compose.teleport.yml extra_hosts entries route
   # those names to host.docker.internal, so we point auth at the standard
   # github URLs and let the host DNS hijack do the redirection.
-  #endpoint_url: @@AUTH_ISSUER@@
-  #api_endpoint_url: @@AUTH_ISSUER@@/api/v3
+  #endpoint_url: @@AUTHD_ISSUER@@
+  #api_endpoint_url: @@AUTHD_ISSUER@@/api/v3
   display: tokyo3-auth
   # `dev` role grants `logins: [ubuntu, root]`; the connector mapping just
   # routes a github team to that role.
   # `organization` must match what /api/v3/user/orgs returns, which auth
-  # derives from the AUTH_ISSUER hostname (syntheticOrgLogin in github.go).
+  # derives from the AUTHD_ISSUER hostname (syntheticOrgLogin in github.go).
   # `members` is a synthetic team auth's /user/teams always includes for any
   # authenticated user — see handleGitHubUserTeams in internal/api/github.go.
   # Swap to a real SCIMGroup display-name (lower-cased, hyphenated) once you
   # have one in auth and want per-group role mapping.
   teams_to_roles:
-    - organization: @@AUTH_HOST@@
+    - organization: @@AUTHD_HOST@@
       team: members
       roles: [ dev, editor ]

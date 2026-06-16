@@ -203,7 +203,7 @@ func TestAWSCredentials_DeactivatedUserIs403(t *testing.T) {
 
 // TestAWSCredentials_FederationDisabledReturns503 asserts that the
 // endpoint refuses with a clear server-misconfiguration error when
-// AUTH_AWS_AUDIENCE is unset. Operators see this immediately rather
+// AUTHD_AWS_AUDIENCE is unset. Operators see this immediately rather
 // than chasing an opaque AWS-side "InvalidIdentityToken" rejection.
 func TestAWSCredentials_FederationDisabledReturns503(t *testing.T) {
 	r := newTestRig(t)

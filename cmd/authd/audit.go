@@ -26,7 +26,7 @@ func auditCmd() *cobra.Command {
 }
 
 // auditQueryCmd implements `authd audit query [--limit N]`. Connects to NATS
-// via AUTH_NATS_URL + AUTH_NATS_CERT/KEY/CA, replays the most recent --limit
+// via AUTHD_NATS_URL + AUTHD_NATS_CERT/KEY/CA, replays the most recent --limit
 // records as one JSON object per line on stdout, then exits when either the
 // limit is reached or the backfill stalls for the idle-timeout window.
 //
@@ -50,14 +50,14 @@ func auditQueryCmd() *cobra.Command {
 }
 
 func runAuditQuery(ctx context.Context, limit int) error {
-	url := os.Getenv("AUTH_NATS_URL")
+	url := os.Getenv("AUTHD_NATS_URL")
 	if url == "" {
-		return fmt.Errorf("AUTH_NATS_URL is not set — cannot query audit journal")
+		return fmt.Errorf("AUTHD_NATS_URL is not set — cannot query audit journal")
 	}
 	tlsCfg, err := btls.FromFiles(
-		os.Getenv("AUTH_NATS_CERT"),
-		os.Getenv("AUTH_NATS_KEY"),
-		os.Getenv("AUTH_NATS_CA"),
+		os.Getenv("AUTHD_NATS_CERT"),
+		os.Getenv("AUTHD_NATS_KEY"),
+		os.Getenv("AUTHD_NATS_CA"),
 	)
 	if err != nil {
 		return fmt.Errorf("nats audit TLS: %w", err)

@@ -4,7 +4,7 @@
 ##   make build             Build authd + auth-aws-creds binaries to ./bin/
 ##   make run               Start authd with dev defaults (Postgres + NATS via compose)
 ##   make run-mtls          Start authd with mTLS (cert auth, no password in DSN)
-##   make keygen            Generate an AUTH_MASTER_KEY
+##   make keygen            Generate an AUTHD_MASTER_KEY
 ##   make check             Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
 ##   make docker-build      Build the server Docker image (authd only)
 ##   make docker-build-cli  Build a thin Docker image containing the auth-aws-creds CLI helper
@@ -39,12 +39,10 @@ LDFLAGS := -s -w -X main.Version=$(VERSION)
 GO      := go
 GOFLAGS :=
 
-IMAGE_NAME    ?= abagile/tokyo3-auth
-IMAGE_TAG     ?= $(VERSION)
-AUTH_PORT     ?= 8443
-AUTH_ADDR     ?= :$(AUTH_PORT)
-POSTGRES_PORT ?= 35432
-NATS_PORT     ?= 34222
+IMAGE_NAME ?= abagile/tokyo3-auth
+IMAGE_TAG  ?= $(VERSION)
+AUTHD_PORT ?= 8443
+AUTHD_ADDR ?= :$(AUTHD_PORT)
 
 # Name of the external named volume populated via tar pipe (no bind mounts).
 # Declared `external: true` in docker-compose.yml so compose neither creates
@@ -95,23 +93,21 @@ build-darwin: $(BIN_DIR)
 
 # Generate .env with dev defaults on first run. Used by run / run-mtls and the
 # compose stack. Notable omissions:
-#   - AUTH_ADDR is NOT seeded: compose's container needs :443 (Traefik
-#     upstream) while `make run` / `run-mtls` listen on :$(AUTH_PORT) on the
+#   - AUTHD_ADDR is NOT seeded: compose's container needs :443 (Traefik
+#     upstream) while `make run` / `run-mtls` listen on :$(AUTHD_PORT) on the
 #     dev-container host. Set inline in the run targets, not here.
-#   - AUTH_ADMIN_DATABASE_URL / AUTH_DATABASE_URL / AUTH_NATS_URL are likewise
-#     NOT seeded — compose builds the container-internal DSN (db:5432 /
-#     nats:4222) from the password vars; `make run` / `run-mtls` construct
-#     the host-side DSN (db.localhost:POSTGRES_PORT) inline.
+#   - AUTHD_ADMIN_DATABASE_URL / AUTHD_DATABASE_URL / AUTHD_NATS_URL are likewise
+#     NOT seeded — both compose and `make run` / `run-mtls` reach the
+#     container-internal endpoints (db:5432 / nats:4222) over the compose
+#     network; the DSNs are built from the password vars inline.
 _gen-env: build
 	@if [ ! -f .env ]; then \
 	    KEY=$$($(AUTHD_BIN) keygen); \
-	    echo "AUTH_MASTER_KEY=$$KEY"                                                                                                                              > .env; \
-	    echo "AUTH_ISSUER=https://auth.localhost"                                                                                                                >> .env; \
-	    echo "POSTGRES_PORT=$(POSTGRES_PORT)"                                                                                                                    >> .env; \
-	    echo "AUTH_ADMIN_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
-	    echo "AUTH_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
-	    echo "NATS_PORT=$(NATS_PORT)"                                                                                                                            >> .env; \
-	    echo "AUTH_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
+	    echo "AUTHD_MASTER_KEY=$$KEY"                                                                                                                              > .env; \
+	    echo "AUTHD_ISSUER=https://auth.localhost"                                                                                                                >> .env; \
+	    echo "AUTHD_ADMIN_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
+	    echo "AUTHD_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
+	    echo "AUTHD_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
 	    echo ""                                                                                                                                                  >> .env; \
 	    echo "# ── Teleport github connector ─────────────────────────────────────────"                                                                          >> .env; \
 	    echo "# Fill CLIENT_ID/SECRET after registering an OAuth client; see the"                                                                                >> .env; \
@@ -136,21 +132,21 @@ _gen-env: build
 # docker-up bootstrap step is skipped.
 _sync-shared: _gen-env
 	@if [ ! -f shared/certs/authd-server.crt ]; then bash shared/certs/gen.sh; fi
-	@AUTH_ISSUER=$$(grep ^AUTH_ISSUER= .env | cut -d= -f2-); \
+	@AUTHD_ISSUER=$$(grep ^AUTHD_ISSUER= .env | cut -d= -f2-); \
 	 TELEPORT_PUBLIC_ADDR=$$(grep ^TELEPORT_PUBLIC_ADDR= .env | cut -d= -f2-); \
 	 TELEPORT_GITHUB_CLIENT_ID=$$(grep ^TELEPORT_GITHUB_CLIENT_ID= .env | cut -d= -f2-); \
 	 TELEPORT_GITHUB_CLIENT_SECRET=$$(grep ^TELEPORT_GITHUB_CLIENT_SECRET= .env | cut -d= -f2-); \
-	 : "$${AUTH_ISSUER:=https://auth.localhost}"; \
+	 : "$${AUTHD_ISSUER:=https://auth.localhost}"; \
 	 : "$${TELEPORT_PUBLIC_ADDR:=teleport.localhost}"; \
-	 AUTH_HOST=$$(echo "$$AUTH_ISSUER" | sed -E 's|^https?://([^:/]+).*|\1|'); \
+	 AUTHD_HOST=$$(echo "$$AUTHD_ISSUER" | sed -E 's|^https?://([^:/]+).*|\1|'); \
 	 for t in shared/teleport/*.yaml.tmpl shared/traefik/*.yml.tmpl; do \
 	   out=$${t%.tmpl}; \
 	   if [ "$$(basename $$t)" = "bootstrap.yaml.tmpl" ] && { [ -z "$$TELEPORT_GITHUB_CLIENT_ID" ] || [ -z "$$TELEPORT_GITHUB_CLIENT_SECRET" ]; }; then \
 	     rm -f "$$out"; \
 	     continue; \
 	   fi; \
-	   sed -e "s|@@AUTH_ISSUER@@|$$AUTH_ISSUER|g" \
-	       -e "s|@@AUTH_HOST@@|$$AUTH_HOST|g" \
+	   sed -e "s|@@AUTHD_ISSUER@@|$$AUTHD_ISSUER|g" \
+	       -e "s|@@AUTHD_HOST@@|$$AUTHD_HOST|g" \
 	       -e "s|@@TELEPORT_PUBLIC_ADDR@@|$$TELEPORT_PUBLIC_ADDR|g" \
 	       -e "s|@@TELEPORT_GITHUB_CLIENT_ID@@|$$TELEPORT_GITHUB_CLIENT_ID|g" \
 	       -e "s|@@TELEPORT_GITHUB_CLIENT_SECRET@@|$$TELEPORT_GITHUB_CLIENT_SECRET|g" \
@@ -165,24 +161,25 @@ _sync-shared: _gen-env
 # ── Dev ───────────────────────────────────────────────────────────────────────
 
 ## run: Build and start authd with dev defaults (auto-generates .env on first run)
-## DSNs, AUTH_NATS_URL, and the API cert/key paths are NOT read from .env —
-## they're set inline to target host-side filesystem paths and port mappings
-## (db.localhost / nats.localhost / shared/certs/...), so .env stays usable
-## as the single source of truth for `docker-up` too (where the container
-## sees /shared/certs/... and db:5432).
+## DSNs, AUTHD_NATS_URL, and the API cert/key paths are NOT read from .env —
+## they're set inline to target the compose network and host-side cert paths
+## (db:5432 / nats:4222 / shared/certs/...), so .env stays usable as the single
+## source of truth for `docker-up` too. db and nats are NOT published to the
+## host, so this target must run on the compose network (the db/nats certs
+## carry the bare service names as SANs).
 ##
-## Without AUTH_API_CERT/KEY here, authd would mint an ephemeral self-signed
+## Without AUTHD_API_CERT/KEY here, authd would mint an ephemeral self-signed
 ## cert at startup instead of using the mkcert-issued one — browsers would
-## then show a cert warning when hitting https://localhost:${AUTH_PORT}.
+## then show a cert warning when hitting https://localhost:${AUTHD_PORT}.
 run: _sync-shared
 	@docker compose up -d db nats natsbox --wait 2>/dev/null || true
 	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_ADDR=$(AUTH_ADDR) \
-	    AUTH_API_CERT=shared/certs/authd-server.crt \
-	    AUTH_API_KEY=shared/certs/authd-server.key \
-	    AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}:$${AUTH_ADMIN_DB_PASSWORD}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable \
-	    AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}:$${AUTH_DB_PASSWORD}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=disable \
-	    AUTH_NATS_URL=nats://nats.localhost:$(NATS_PORT) \
+	    AUTHD_ADDR=$(AUTHD_ADDR) \
+	    AUTHD_API_CERT=shared/certs/authd-server.crt \
+	    AUTHD_API_KEY=shared/certs/authd-server.key \
+	    AUTHD_ADMIN_DATABASE_URL=postgres://$${AUTHD_ADMIN_DB_USERNAME:-auth_admin}:$${AUTHD_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable \
+	    AUTHD_DATABASE_URL=postgres://$${AUTHD_DB_USERNAME:-auth_app}:$${AUTHD_DB_PASSWORD}@db:5432/authdb?sslmode=disable \
+	    AUTHD_NATS_URL=nats://nats:4222 \
 	    $(AUTHD_BIN) serve
 
 ## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
@@ -190,21 +187,21 @@ run-mtls: _sync-shared
 	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d db nats natsbox --wait 2>/dev/null || true
 	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
 	    export $$(grep -v '^#' .env | xargs) && \
-	    AUTH_ADDR=$(AUTH_ADDR) \
-	    AUTH_API_CERT=shared/certs/authd-server.crt \
-	    AUTH_API_KEY=shared/certs/authd-server.key \
-	    AUTH_WORKLOAD_CA=$$CA_PEM \
-	    AUTH_ADMIN_DB_CERT=shared/certs/authd-admin-db-client.crt \
-	    AUTH_ADMIN_DB_KEY=shared/certs/authd-admin-db-client.key \
-	    AUTH_ADMIN_DATABASE_URL=postgres://$${AUTH_ADMIN_DB_USERNAME:-auth_admin}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
-	    AUTH_DB_CERT=shared/certs/authd-app-db-client.crt \
-	    AUTH_DB_KEY=shared/certs/authd-app-db-client.key \
-	    AUTH_DATABASE_URL=postgres://$${AUTH_DB_USERNAME:-auth_app}@db.localhost:$(POSTGRES_PORT)/authdb?sslmode=verify-full \
-	    AUTH_SCIM_MTLS_CERT=shared/certs/authd-scim-client.crt \
-	    AUTH_SCIM_MTLS_KEY=shared/certs/authd-scim-client.key \
-	    AUTH_NATS_CERT=shared/certs/authd-nats-client.crt \
-	    AUTH_NATS_KEY=shared/certs/authd-nats-client.key \
-	    AUTH_NATS_URL=tls://nats.localhost:$(NATS_PORT) \
+	    AUTHD_ADDR=$(AUTHD_ADDR) \
+	    AUTHD_API_CERT=shared/certs/authd-server.crt \
+	    AUTHD_API_KEY=shared/certs/authd-server.key \
+	    AUTHD_WORKLOAD_CA=$$CA_PEM \
+	    AUTHD_ADMIN_DB_CERT=shared/certs/authd-admin-db-client.crt \
+	    AUTHD_ADMIN_DB_KEY=shared/certs/authd-admin-db-client.key \
+	    AUTHD_ADMIN_DATABASE_URL=postgres://$${AUTHD_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full \
+	    AUTHD_DB_CERT=shared/certs/authd-app-db-client.crt \
+	    AUTHD_DB_KEY=shared/certs/authd-app-db-client.key \
+	    AUTHD_DATABASE_URL=postgres://$${AUTHD_DB_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full \
+	    AUTHD_SCIM_MTLS_CERT=shared/certs/authd-scim-client.crt \
+	    AUTHD_SCIM_MTLS_KEY=shared/certs/authd-scim-client.key \
+	    AUTHD_NATS_CERT=shared/certs/authd-nats-client.crt \
+	    AUTHD_NATS_KEY=shared/certs/authd-nats-client.key \
+	    AUTHD_NATS_URL=tls://nats:4222 \
 	    $(AUTHD_BIN) serve
 
 ## keygen: Print a fresh random master key
@@ -340,9 +337,9 @@ docker-down:
 docker-down-all:
 	docker compose -f docker-compose.yml -f docker-compose.mtls.yml down --remove-orphans -v
 
-## docker-logs: Tail auth logs
+## docker-logs: Tail authd logs
 docker-logs:
-	docker compose logs -f auth
+	docker compose logs -f authd
 
 # ── Install ───────────────────────────────────────────────────────────────────
 

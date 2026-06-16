@@ -21,11 +21,11 @@ import (
 )
 
 // errFederationUnconfigured is returned by assumeRoleForUser when
-// AUTH_AWS_AUDIENCE is empty. Surfaces as a 503 in the API handler and as
+// AUTHD_AWS_AUDIENCE is empty. Surfaces as a 503 in the API handler and as
 // a portal error banner in the browser handler — both more useful than
 // letting AWS reject the JWT with an opaque "InvalidIdentityToken: Token
 // has no audience" message.
-var errFederationUnconfigured = errors.New("AUTH_AWS_AUDIENCE is not set; aws federation is disabled")
+var errFederationUnconfigured = errors.New("AUTHD_AWS_AUDIENCE is not set; aws federation is disabled")
 
 // AWS console federation endpoints. Both are well-known and stable. We
 // post unauthenticated requests against them — the user's id_token is the
@@ -178,7 +178,7 @@ func (s *Server) handlePortalAWSRefresh(w http.ResponseWriter, r *http.Request) 
 // credential_process JSON. Returning the raw STS output keeps the helper
 // free of presentation concerns.
 //
-// The audience claim comes from s.awsAudience (the AUTH_AWS_AUDIENCE env
+// The audience claim comes from s.awsAudience (the AUTHD_AWS_AUDIENCE env
 // var), not from the role row — per-role authorisation is delegated to
 // aws:RequestTag/<key> conditions in the role's trust policy. Returns
 // errFederationUnconfigured when the audience is empty so callers can

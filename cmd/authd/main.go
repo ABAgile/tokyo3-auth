@@ -2,18 +2,18 @@
 //
 // Required env vars:
 //
-//	AUTH_MASTER_KEY       64-char hex master key (run `authd keygen`).
-//	AUTH_ISSUER           Public issuer URL — used in OIDC discovery and JWT iss claim.
-//	AUTH_DATABASE_URL     Runtime Postgres DSN (DML-only role).
+//	AUTHD_MASTER_KEY       64-char hex master key (run `authd keygen`).
+//	AUTHD_ISSUER           Public issuer URL — used in OIDC discovery and JWT iss claim.
+//	AUTHD_DATABASE_URL     Runtime Postgres DSN (DML-only role).
 //
 // Optional:
 //
-//	AUTH_ADMIN_DATABASE_URL    Admin DSN used for schema migrations (DDL).
-//	                           Falls back to AUTH_DATABASE_URL when unset
+//	AUTHD_ADMIN_DATABASE_URL    Admin DSN used for schema migrations (DDL).
+//	                           Falls back to AUTHD_DATABASE_URL when unset
 //	                           (both `serve` and `migrate` subcommands).
-//	AUTH_ADDR                  HTTPS listen address (default: :8443).
-//	AUTH_ALLOW_REGISTRATION    Set to "true" to enable self-registration at /register.
-//	AUTH_PROVISION_SYNC_INTERVAL  Period for the background full-sync goroutine
+//	AUTHD_ADDR                  HTTPS listen address (default: :8443).
+//	AUTHD_ALLOW_REGISTRATION    Set to "true" to enable self-registration at /register.
+//	AUTHD_PROVISION_SYNC_INTERVAL  Period for the background full-sync goroutine
 //	                              that re-pushes every user/group to every enabled
 //	                              integration (defaults to 1h; set to 0 or a
 //	                              negative duration to disable). Belt-and-suspenders
@@ -22,13 +22,13 @@
 //	                              after restarts. Each tick is idempotent on the
 //	                              downstream (PATCH-or-POST on users, full-list PUT
 //	                              on groups).
-//	AUTH_AWSFED_REAP_INTERVAL  Period for the AWS federation revocation reaper
+//	AUTHD_AWSFED_REAP_INTERVAL  Period for the AWS federation revocation reaper
 //	                           (defaults to 6h; 0 or negative disables it). Trims
 //	                           aws_revoked_users entries past the role's
 //	                           MaxSessionDuration and re-pushes the trimmed
 //	                           inline policy. No-op when no aws_federation
 //	                           integration is enabled.
-//	AUTH_AWS_AUDIENCE  The single `aud` claim value emitted on every JWT minted
+//	AUTHD_AWS_AUDIENCE  The single `aud` claim value emitted on every JWT minted
 //	                   for AWS console / CLI federation. Registered once per
 //	                   AWS account as the IAM identity provider's audience.
 //	                   Empty disables AWS federation (the portal and the
@@ -39,55 +39,55 @@
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
-//	AUTH_API_CERT         Path to server TLS certificate PEM (hot-reloaded;
+//	AUTHD_API_CERT         Path to server TLS certificate PEM (hot-reloaded;
 //	                      the file's mtime is polled at most once per second
 //	                      across handshakes, so rotations land within ~1s).
-//	AUTH_API_KEY          Path to server TLS private key PEM. Must be paired with AUTH_API_CERT.
+//	AUTHD_API_KEY          Path to server TLS private key PEM. Must be paired with AUTHD_API_CERT.
 //	                      If neither is set, an ephemeral self-signed cert is generated (dev only).
-//	AUTH_API_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
+//	AUTHD_API_CLIENT_CA    Optional CA PEM for client cert verification (mTLS).
 //
 // Workload CA (single root for every internal mTLS channel — DB, NATS, SCIM):
 //
-//	AUTH_WORKLOAD_CA  CA PEM that signs every internal workload cert auth talks
+//	AUTHD_WORKLOAD_CA  CA PEM that signs every internal workload cert auth talks
 //	                  to (Postgres, NATS, downstream SCIM endpoints). Used as
-//	                  the fallback for AUTH_DB_CA / AUTH_ADMIN_DB_CA /
-//	                  AUTH_NATS_CA / AUTH_SCIM_MTLS_CA when any of those is
+//	                  the fallback for AUTHD_DB_CA / AUTHD_ADMIN_DB_CA /
+//	                  AUTHD_NATS_CA / AUTHD_SCIM_MTLS_CA when any of those is
 //	                  unset. Leave the per-channel CA vars empty in deployments
 //	                  that issue all internal certs from one workload CA; set
 //	                  the per-channel vars when stricter separation is needed.
 //
 // Database mTLS (optional, used together with cert-auth Postgres):
 //
-//	AUTH_DB_CERT          Client certificate PEM for the runtime auth→postgres connection.
-//	AUTH_DB_KEY           Client key PEM (must be paired with AUTH_DB_CERT).
-//	AUTH_DB_CA            CA PEM for verifying the postgres server certificate.
-//	                      Falls back to AUTH_WORKLOAD_CA when unset.
-//	AUTH_ADMIN_DB_CERT    Client certificate PEM for the admin (migration)
-//	                      connection. Falls back to AUTH_DB_CERT when unset
+//	AUTHD_DB_CERT          Client certificate PEM for the runtime auth→postgres connection.
+//	AUTHD_DB_KEY           Client key PEM (must be paired with AUTHD_DB_CERT).
+//	AUTHD_DB_CA            CA PEM for verifying the postgres server certificate.
+//	                      Falls back to AUTHD_WORKLOAD_CA when unset.
+//	AUTHD_ADMIN_DB_CERT    Client certificate PEM for the admin (migration)
+//	                      connection. Falls back to AUTHD_DB_CERT when unset
 //	                      (suitable for dev/single-role setups; production
 //	                      should issue a separate DDL credential).
-//	AUTH_ADMIN_DB_KEY     Client key PEM. Falls back to AUTH_DB_KEY.
-//	AUTH_ADMIN_DB_CA      CA PEM. Falls back to AUTH_DB_CA → AUTH_WORKLOAD_CA.
+//	AUTHD_ADMIN_DB_KEY     Client key PEM. Falls back to AUTHD_DB_KEY.
+//	AUTHD_ADMIN_DB_CA      CA PEM. Falls back to AUTHD_DB_CA → AUTHD_WORKLOAD_CA.
 //
 // Outbound mTLS (used by app_integrations rows with auth_mode=mtls):
 //
-//	AUTH_SCIM_MTLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
+//	AUTHD_SCIM_MTLS_CERT  Client cert PEM that auth presents to mTLS-mode SCIM
 //	                     downstreams. Hot-reloaded (mtime polled at most once
 //	                     per second across SCIM requests).
-//	AUTH_SCIM_MTLS_KEY   Client key PEM. Required iff AUTH_SCIM_MTLS_CERT is set.
-//	AUTH_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
-//	                     Empty falls back to AUTH_WORKLOAD_CA, then to the
+//	AUTHD_SCIM_MTLS_KEY   Client key PEM. Required iff AUTHD_SCIM_MTLS_CERT is set.
+//	AUTHD_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
+//	                     Empty falls back to AUTHD_WORKLOAD_CA, then to the
 //	                     system root pool. A single cert/key pair is shared
 //	                     across every mTLS integration.
 //
 // Audit log shipping (publishes events to NATS JetStream stream "auth_audit"):
 //
-//	AUTH_NATS_URL    NATS server URL (e.g. nats://nats:4222 or tls://nats:4222).
+//	AUTHD_NATS_URL    NATS server URL (e.g. nats://nats:4222 or tls://nats:4222).
 //	                 Empty disables JetStream publishing (NoopSink).
-//	AUTH_NATS_CERT   Publisher client certificate PEM path (mTLS).
-//	AUTH_NATS_KEY    Publisher client key PEM path. Required iff AUTH_NATS_CERT is set.
-//	AUTH_NATS_CA     CA certificate PEM path for verifying the NATS server cert.
-//	                 Falls back to AUTH_WORKLOAD_CA when unset.
+//	AUTHD_NATS_CERT   Publisher client certificate PEM path (mTLS).
+//	AUTHD_NATS_KEY    Publisher client key PEM path. Required iff AUTHD_NATS_CERT is set.
+//	AUTHD_NATS_CA     CA certificate PEM path for verifying the NATS server cert.
+//	                 Falls back to AUTHD_WORKLOAD_CA when unset.
 package main
 
 import (
@@ -172,24 +172,24 @@ func serveCmd() *cobra.Command {
 func runServe() error {
 	// cli.App.Setup wires the app logger (with NATS log shipping over the
 	// resolved workload identity), a SIGINT/SIGTERM-cancelled context, and
-	// the opt-in diagnostics server (AUTH_DEBUG_ADDR). rt.NATS carries the
-	// resolved NATS material (AUTH_NATS_* falling back to AUTH_WORKLOAD_*)
+	// the opt-in diagnostics server (AUTHD_DEBUG_ADDR). rt.NATS carries the
+	// resolved NATS material (AUTHD_NATS_* falling back to AUTHD_WORKLOAD_*)
 	// that the audit sink + source draw from.
 	// Cancellable parent so the listener-exit goroutine below can trigger
 	// graceful shutdown (rt.Ctx is a child of parentCtx via NotifyContext).
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt := cli.App{Name: appName, EnvPrefix: "AUTH"}.Setup(parentCtx)
+	rt := cli.App{Name: appName, EnvPrefix: "AUTHD"}.Setup(parentCtx)
 	defer rt.Shutdown()
 	log, ctx := rt.Log, rt.Ctx
 	log.Info("authd starting", "version", version.Resolve(Version))
 
-	issuer := envutil.MustEnv("AUTH_ISSUER")
+	issuer := envutil.MustEnv("AUTHD_ISSUER")
 	if rt.DB.URL == "" {
-		return fmt.Errorf("AUTH_DATABASE_URL is required")
+		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
-	masterKeyHex := envutil.MustEnv("AUTH_MASTER_KEY")
-	addr := envutil.Or("AUTH_ADDR", ":8443")
+	masterKeyHex := envutil.MustEnv("AUTHD_MASTER_KEY")
+	addr := envutil.Or("AUTHD_ADDR", ":8443")
 
 	masterKey, err := bcrypto.ParseKEK(masterKeyHex)
 	if err != nil {
@@ -244,7 +244,7 @@ func runServe() error {
 		return fmt.Errorf("jwt signer: %w", err)
 	}
 
-	// Derive WebAuthn RPID from issuer URL (AUTH_WEBAUTHN_RPID overrides).
+	// Derive WebAuthn RPID from issuer URL (AUTHD_WEBAUTHN_RPID overrides).
 	rpID, rpOrigins := webAuthnParams(issuer)
 	waHandler, err := mfa.NewWAHandler(rpID, "tokyo3-auth", rpOrigins, db)
 	if err != nil {
@@ -276,11 +276,11 @@ func runServe() error {
 		Audit:             auditSink,
 		AuditSource:       auditSource,
 		Issuer:            issuer,
-		AWSAudience:       os.Getenv("AUTH_AWS_AUDIENCE"),
-		StepUpMFATTL:      parseDurationEnv("AUTH_STEP_UP_MFA_TTL"),
+		AWSAudience:       os.Getenv("AUTHD_AWS_AUDIENCE"),
+		StepUpMFATTL:      parseDurationEnv("AUTHD_STEP_UP_MFA_TTL"),
 		MasterKey:         masterKey,
 		Log:               log,
-		AllowRegistration: strings.EqualFold(os.Getenv("AUTH_ALLOW_REGISTRATION"), "true"),
+		AllowRegistration: strings.EqualFold(os.Getenv("AUTHD_ALLOW_REGISTRATION"), "true"),
 	})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
@@ -366,9 +366,9 @@ func migrateCmd() *cobra.Command {
 		Use:   "migrate",
 		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			adminMat := cli.App{EnvPrefix: "AUTH"}.AdminDB()
+			adminMat := cli.App{EnvPrefix: "AUTHD"}.AdminDB()
 			if adminMat.URL == "" {
-				return fmt.Errorf("AUTH_ADMIN_DATABASE_URL or AUTH_DATABASE_URL must be set")
+				return fmt.Errorf("AUTHD_ADMIN_DATABASE_URL or AUTHD_DATABASE_URL must be set")
 			}
 			adminDBTLS, err := dbAdminTLS(adminMat)
 			if err != nil {
@@ -429,12 +429,12 @@ func adminSyncCmd() *cobra.Command {
 }
 
 func runAdminSync(target string) error {
-	app := cli.App{EnvPrefix: "AUTH"}
+	app := cli.App{EnvPrefix: "AUTHD"}
 	dbMat, adminMat := app.DB(), app.AdminDB()
 	if dbMat.URL == "" {
-		return fmt.Errorf("AUTH_DATABASE_URL is required")
+		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
-	masterKey, err := bcrypto.ParseKEK(envutil.MustEnv("AUTH_MASTER_KEY"))
+	masterKey, err := bcrypto.ParseKEK(envutil.MustEnv("AUTHD_MASTER_KEY"))
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -461,10 +461,10 @@ func runAdminSync(target string) error {
 	defer db.Close()
 
 	log, _, drainLog := applog.AppLoggerWithNATS(applog.Config{App: appName}, applog.NATSConfig{
-		URL:      os.Getenv("AUTH_NATS_URL"),
-		CertFile: os.Getenv("AUTH_NATS_CERT"),
-		KeyFile:  os.Getenv("AUTH_NATS_KEY"),
-		CAFile:   envutil.First("AUTH_NATS_CA", "AUTH_WORKLOAD_CA"),
+		URL:      os.Getenv("AUTHD_NATS_URL"),
+		CertFile: os.Getenv("AUTHD_NATS_CERT"),
+		KeyFile:  os.Getenv("AUTHD_NATS_KEY"),
+		CAFile:   envutil.First("AUTHD_NATS_CA", "AUTHD_WORKLOAD_CA"),
 	}, applog.WithStdout())
 	defer drainLog()
 	kp := bcrypto.NewLocalKeyProvider(masterKey)
@@ -548,16 +548,16 @@ func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Du
 	}
 }
 
-// provisionSyncInterval returns the parsed AUTH_PROVISION_SYNC_INTERVAL or the
+// provisionSyncInterval returns the parsed AUTHD_PROVISION_SYNC_INTERVAL or the
 // default of 1 hour. A zero/negative value disables the background sync.
 func provisionSyncInterval(log *slog.Logger) time.Duration {
-	v := strings.TrimSpace(os.Getenv("AUTH_PROVISION_SYNC_INTERVAL"))
+	v := strings.TrimSpace(os.Getenv("AUTHD_PROVISION_SYNC_INTERVAL"))
 	if v == "" {
 		return time.Hour
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Warn("AUTH_PROVISION_SYNC_INTERVAL is not a valid duration; periodic sync disabled",
+		log.Warn("AUTHD_PROVISION_SYNC_INTERVAL is not a valid duration; periodic sync disabled",
 			"value", v, "err", err)
 		return 0
 	}
@@ -611,19 +611,19 @@ func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisio
 	return provision.SyncAll(ctx, db, prov, log)
 }
 
-// awsFedReapInterval returns the parsed AUTH_AWSFED_REAP_INTERVAL or the
+// awsFedReapInterval returns the parsed AUTHD_AWSFED_REAP_INTERVAL or the
 // default of 6 hours. A zero/negative value disables the reaper. The reaper
 // trims aws_revoked_users entries past the role's MaxSessionDurationSec —
 // 6h is conservative for a typical 1h role lifetime and bounds the inline
 // policy growth without thrashing AWS.
 func awsFedReapInterval(log *slog.Logger) time.Duration {
-	v := strings.TrimSpace(os.Getenv("AUTH_AWSFED_REAP_INTERVAL"))
+	v := strings.TrimSpace(os.Getenv("AUTHD_AWSFED_REAP_INTERVAL"))
 	if v == "" {
 		return 6 * time.Hour
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Warn("AUTH_AWSFED_REAP_INTERVAL is not a valid duration; reaper disabled",
+		log.Warn("AUTHD_AWSFED_REAP_INTERVAL is not a valid duration; reaper disabled",
 			"value", v, "err", err)
 		return 0
 	}
@@ -716,7 +716,7 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			cfg.Token = string(token)
 		case model.AppIntegrationAuthMTLS:
 			if outboundTLS == nil {
-				return nil, fmt.Errorf("scim integration %q uses mtls but AUTH_SCIM_MTLS_CERT/KEY are unset", i.Name)
+				return nil, fmt.Errorf("scim integration %q uses mtls but AUTHD_SCIM_MTLS_CERT/KEY are unset", i.Name)
 			}
 			cfg.TLSConfig = outboundTLS
 		default:
@@ -737,12 +737,12 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 	}
 }
 
-// autoImportLegacyVaultEnv seeds an integration row from AUTH_VAULT_SCIM_*
+// autoImportLegacyVaultEnv seeds an integration row from AUTHD_VAULT_SCIM_*
 // env vars on the very first boot after the 007 migration. Subsequent boots
 // (table non-empty) ignore the env vars entirely. This preserves rows in the
 // external_ids cache by reusing the legacy provider name "vault".
 func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, log *slog.Logger) error {
-	if !strings.EqualFold(os.Getenv("AUTH_VAULT_SCIM_ENABLED"), "true") {
+	if !strings.EqualFold(os.Getenv("AUTHD_VAULT_SCIM_ENABLED"), "true") {
 		return nil
 	}
 	existing, err := db.ListIntegrations(ctx)
@@ -752,17 +752,17 @@ func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp bcrypto.K
 	if len(existing) > 0 {
 		return nil // table already populated; env vars deprecated.
 	}
-	baseURL := os.Getenv("AUTH_VAULT_SCIM_URL")
-	token := os.Getenv("AUTH_VAULT_SCIM_TOKEN")
+	baseURL := os.Getenv("AUTHD_VAULT_SCIM_URL")
+	token := os.Getenv("AUTHD_VAULT_SCIM_TOKEN")
 	if baseURL == "" || token == "" {
-		log.Warn("AUTH_VAULT_SCIM_ENABLED=true but URL/token missing; skipping auto-import")
+		log.Warn("AUTHD_VAULT_SCIM_ENABLED=true but URL/token missing; skipping auto-import")
 		return nil
 	}
 	encToken, encDEK, err := bcrypto.EncryptEnvelope(ctx, kp, []byte(token))
 	if err != nil {
 		return fmt.Errorf("encrypt token: %w", err)
 	}
-	timeout, _ := time.ParseDuration(os.Getenv("AUTH_VAULT_SCIM_TIMEOUT"))
+	timeout, _ := time.ParseDuration(os.Getenv("AUTHD_VAULT_SCIM_TIMEOUT"))
 	row := &model.AppIntegration{
 		Name:     scimprov.ProviderName, // "vault" — keeps external_ids rows valid
 		Provider: model.AppIntegrationProviderSCIM,
@@ -778,7 +778,7 @@ func autoImportLegacyVaultEnv(ctx context.Context, db *postgres.DB, kp bcrypto.K
 	if err := db.CreateIntegration(ctx, row); err != nil {
 		return err
 	}
-	log.Warn("auto-imported AUTH_VAULT_SCIM_* into app_integrations; env vars are deprecated, manage via /portal/admin/integrations",
+	log.Warn("auto-imported AUTHD_VAULT_SCIM_* into app_integrations; env vars are deprecated, manage via /portal/admin/integrations",
 		"integration", row.Name)
 	return nil
 }
@@ -849,10 +849,10 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 	if err := validateNewUserPassword(password, allowWeak); err != nil {
 		return err
 	}
-	app := cli.App{EnvPrefix: "AUTH"}
+	app := cli.App{EnvPrefix: "AUTHD"}
 	dbMat, adminMat := app.DB(), app.AdminDB()
 	if dbMat.URL == "" {
-		return fmt.Errorf("AUTH_DATABASE_URL is required")
+		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
 
 	adminDBTLS, err := dbAdminTLS(adminMat)
@@ -909,21 +909,21 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 // identity). Returns nil when no env vars are set; mtls-mode integrations then
 // fail at registry-build time with a clear error.
 //
-//	AUTH_SCIM_MTLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
+//	AUTHD_SCIM_MTLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
 //	                     once per second across SCIM requests).
-//	AUTH_SCIM_MTLS_KEY   Client key PEM path. Required iff CERT is set.
-//	AUTH_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
-//	                     Falls back to AUTH_WORKLOAD_CA, then to the system
+//	AUTHD_SCIM_MTLS_KEY   Client key PEM path. Required iff CERT is set.
+//	AUTHD_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
+//	                     Falls back to AUTHD_WORKLOAD_CA, then to the system
 //	                     root pool.
 func outboundTLSFromEnv() (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_SCIM_MTLS_CERT")
-	keyFile := os.Getenv("AUTH_SCIM_MTLS_KEY")
-	caFile := envutil.First("AUTH_SCIM_MTLS_CA", "AUTH_WORKLOAD_CA")
+	certFile := os.Getenv("AUTHD_SCIM_MTLS_CERT")
+	keyFile := os.Getenv("AUTHD_SCIM_MTLS_KEY")
+	caFile := envutil.First("AUTHD_SCIM_MTLS_CA", "AUTHD_WORKLOAD_CA")
 	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil, nil
 	}
 	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTH_SCIM_MTLS_CERT and AUTH_SCIM_MTLS_KEY must both be set or both unset")
+		return nil, fmt.Errorf("AUTHD_SCIM_MTLS_CERT and AUTHD_SCIM_MTLS_KEY must both be set or both unset")
 	}
 	cfg := &tls.Config{}
 	if certFile != "" {
@@ -955,16 +955,16 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 }
 
 // dbAdminTLS builds the one-shot admin (migration) TLS config from resolved
-// AdminDB material (cert/key: AUTH_ADMIN_DB_* → AUTH_DB_*; CA additionally →
-// AUTH_WORKLOAD_CA — see cli.App.AdminDB). admin always uses FromFiles — the
+// AdminDB material (cert/key: AUTHD_ADMIN_DB_* → AUTHD_DB_*; CA additionally →
+// AUTHD_WORKLOAD_CA — see cli.App.AdminDB). admin always uses FromFiles — the
 // migrate connection is short-lived and closed before any rotation matters.
 func dbAdminTLS(m cli.DB) (*tls.Config, error) {
 	return btls.FromFiles(m.CertFile, m.KeyFile, m.CAFile)
 }
 
 // dbRuntimeTLS builds the runtime Postgres TLS config from resolved DB
-// material — cert/key from AUTH_DB_CERT/KEY (a DB-role credential, no
-// WORKLOAD fallback), CA from AUTH_DB_CA → AUTH_WORKLOAD_CA. A full cert+key
+// material — cert/key from AUTHD_DB_CERT/KEY (a DB-role credential, no
+// WORKLOAD fallback), CA from AUTHD_DB_CA → AUTHD_WORKLOAD_CA. A full cert+key
 // pair gets reloader.ClientConfig — leaf re-read per handshake, CA pool on
 // mtime — so a cert-agentd rotation lands on the next pool dial
 // (within SetConnMaxLifetime) without a restart and without a poll loop.
@@ -979,17 +979,17 @@ func dbRuntimeTLS(m cli.DB) (*tls.Config, error) {
 
 // buildServerTLS constructs the server tls.Config.
 // Cert source priority:
-//  1. AUTH_API_CERT + AUTH_API_KEY files (hot-reload via GetCertificate)
+//  1. AUTHD_API_CERT + AUTHD_API_KEY files (hot-reload via GetCertificate)
 //  2. Auto-generated self-signed cert (dev fallback, logs a warning)
 //
-// If AUTH_API_CLIENT_CA is set, mTLS client verification is enabled.
+// If AUTHD_API_CLIENT_CA is set, mTLS client verification is enabled.
 func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
-	certFile := os.Getenv("AUTH_API_CERT")
-	keyFile := os.Getenv("AUTH_API_KEY")
-	clientCAFile := os.Getenv("AUTH_API_CLIENT_CA")
+	certFile := os.Getenv("AUTHD_API_CERT")
+	keyFile := os.Getenv("AUTHD_API_KEY")
+	clientCAFile := os.Getenv("AUTHD_API_CLIENT_CA")
 
 	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTH_API_CERT and AUTH_API_KEY must both be set or both unset")
+		return nil, fmt.Errorf("AUTHD_API_CERT and AUTHD_API_KEY must both be set or both unset")
 	}
 
 	cfg := &tls.Config{}
@@ -1009,11 +1009,11 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	if clientCAFile != "" {
 		data, err := os.ReadFile(clientCAFile)
 		if err != nil {
-			return nil, fmt.Errorf("read AUTH_API_CLIENT_CA: %w", err)
+			return nil, fmt.Errorf("read AUTHD_API_CLIENT_CA: %w", err)
 		}
 		pool, err := btls.CertPoolFromPEM(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse AUTH_API_CLIENT_CA: %w", err)
+			return nil, fmt.Errorf("parse AUTHD_API_CLIENT_CA: %w", err)
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.VerifyClientCertIfGiven
@@ -1030,11 +1030,11 @@ func webAuthnParams(issuer string) (rpID string, origins []string) {
 	}
 	// Strip port for RPID; origins include the full scheme+host.
 	host := u.Hostname()
-	if override := os.Getenv("AUTH_WEBAUTHN_RPID"); override != "" {
+	if override := os.Getenv("AUTHD_WEBAUTHN_RPID"); override != "" {
 		host = override
 	}
 	origin := u.Scheme + "://" + u.Host
-	extraOrigins := strings.Fields(os.Getenv("AUTH_WEBAUTHN_ORIGINS"))
+	extraOrigins := strings.Fields(os.Getenv("AUTHD_WEBAUTHN_ORIGINS"))
 	origins = append([]string{origin}, extraOrigins...)
 	return host, origins
 }

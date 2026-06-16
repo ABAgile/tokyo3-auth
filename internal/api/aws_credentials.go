@@ -37,7 +37,7 @@ type awsCredentialsResponse struct {
 // — sessions without MFAVerified=true cannot assume MFA-gated roles via
 // this endpoint.
 //
-// The `aud` claim of every minted JWT comes from AUTH_AWS_AUDIENCE
+// The `aud` claim of every minted JWT comes from AUTHD_AWS_AUDIENCE
 // (server-global), not from the role row — per-role authorisation moves
 // to aws:RequestTag/<key> conditions in trust policies. Returns 503 when
 // the audience is unconfigured so operators see a clear server-side
@@ -50,7 +50,7 @@ type awsCredentialsResponse struct {
 func (s *Server) handleAWSCredentials(w http.ResponseWriter, r *http.Request) {
 	if s.awsAudience == "" {
 		s.writeError(w, http.StatusServiceUnavailable, "federation_disabled",
-			"AWS federation is not configured (AUTH_AWS_AUDIENCE is unset)")
+			"AWS federation is not configured (AUTHD_AWS_AUDIENCE is unset)")
 		return
 	}
 	sess := sessionFromCtx(r)

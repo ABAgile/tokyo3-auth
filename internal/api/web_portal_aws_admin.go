@@ -23,7 +23,7 @@ type awsAdminPageData struct {
 	Roles          []*roleRow
 	Groups         []*model.SCIMGroup
 	Assignments    []*model.AWSRoleAssignment
-	Audience       string // server-global, from AUTH_AWS_AUDIENCE
+	Audience       string // server-global, from AUTHD_AWS_AUDIENCE
 	Success, Error string
 }
 
