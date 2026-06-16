@@ -941,8 +941,13 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 // identity). Returns nil when no env vars are set; mtls-mode integrations then
 // fail at registry-build time with a clear error.
 //
-//	AUTHD_SCIM_MTLS_CERT  Client cert PEM path (hot-reloaded; mtime polled
-//	                     once per second across SCIM requests).
+// A full cert+key pair gets reloader.ClientConfig — the presented client cert
+// is re-read per handshake and the CA pool on mtime — so a cert-agentd
+// rotation lands without a restart. Anything short of a pair falls back to
+// one-shot btls.FromFiles (CA-only server-auth verification, or nil when
+// nothing is configured).
+//
+//	AUTHD_SCIM_MTLS_CERT  Client cert PEM path.
 //	AUTHD_SCIM_MTLS_KEY   Client key PEM path. Required iff CERT is set.
 //	AUTHD_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
 //	                     Falls back to AUTHD_WORKLOAD_CA, then to the system
@@ -951,39 +956,10 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 	certFile := os.Getenv("AUTHD_SCIM_MTLS_CERT")
 	keyFile := os.Getenv("AUTHD_SCIM_MTLS_KEY")
 	caFile := envutil.First("AUTHD_SCIM_MTLS_CA", "AUTHD_WORKLOAD_CA")
-	if certFile == "" && keyFile == "" && caFile == "" {
-		return nil, nil
+	if certFile != "" && keyFile != "" {
+		return reloader.ClientConfig(certFile, keyFile, caFile)
 	}
-	if (certFile == "") != (keyFile == "") {
-		return nil, fmt.Errorf("AUTHD_SCIM_MTLS_CERT and AUTHD_SCIM_MTLS_KEY must both be set or both unset")
-	}
-	cfg := &tls.Config{}
-	if certFile != "" {
-		// Cheap eager load — surfaces a misconfigured path at startup rather
-		// than at first SCIM request. The CertLoader still serves runtime
-		// requests with hot-reload semantics.
-		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
-			return nil, fmt.Errorf("load outbound client cert pair: %w", err)
-		}
-		loader := reloader.NewCertLoader(certFile, keyFile)
-		// reloader.CertLoader exposes GetCertificate (server-side); reuse the same
-		// hot-reloaded cert for client-side presentation.
-		cfg.GetClientCertificate = func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return loader.GetCertificate(nil)
-		}
-	}
-	if caFile != "" {
-		data, err := os.ReadFile(caFile)
-		if err != nil {
-			return nil, fmt.Errorf("read SCIM CA %q: %w", caFile, err)
-		}
-		pool, err := btls.CertPoolFromPEM(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse SCIM CA %q: %w", caFile, err)
-		}
-		cfg.RootCAs = pool
-	}
-	return cfg, nil
+	return btls.FromFiles(certFile, keyFile, caFile)
 }
 
 // dbAdminTLS builds the one-shot admin (migration) TLS config from resolved
@@ -1039,17 +1015,18 @@ func buildServerTLS(log *slog.Logger) (*tls.Config, error) {
 	}
 
 	if clientCAFile != "" {
-		data, err := os.ReadFile(clientCAFile)
+		// Hot-reload the inbound client-CA bundle: base wires ClientAuth +
+		// ClientCAs + a per-handshake GetConfigForClient so a CA rotation
+		// (widen→narrow) lands without a restart, keeping the last good pool
+		// on a bad drop-in.
+		caLoader, err := reloader.NewClientCALoader(cfg, clientCAFile, tls.VerifyClientCertIfGiven)
 		if err != nil {
-			return nil, fmt.Errorf("read AUTHD_API_CLIENT_CA: %w", err)
+			return nil, fmt.Errorf("AUTHD_API_CLIENT_CA: %w", err)
 		}
-		pool, err := btls.CertPoolFromPEM(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse AUTHD_API_CLIENT_CA: %w", err)
+		caLoader.OnError = func(err error) {
+			log.Warn("TLS: client CA hot-reload kept previous pool", "ca", clientCAFile, "err", err)
 		}
-		cfg.ClientCAs = pool
-		cfg.ClientAuth = tls.VerifyClientCertIfGiven
-		log.Info("TLS: mTLS client CA loaded", "ca", clientCAFile)
+		log.Info("TLS: mTLS client CA loaded (hot-reload)", "ca", clientCAFile)
 	}
 
 	return cfg, nil
