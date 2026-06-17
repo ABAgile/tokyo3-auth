@@ -552,17 +552,7 @@ func runAdminSync(target string) error {
 // time.Duration. Returns 0 when unset or unparseable so the caller can
 // fall back to its own default — keeps env-var validation centralised
 // without forcing callers to thread a logger or error path through.
-func parseDurationEnv(key string) time.Duration {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0
-	}
-	return d
-}
+func parseDurationEnv(key string) time.Duration { d, _ := envutil.Duration(key); return d }
 
 // runDeviceGrantReaper deletes expired device_grants rows on a fixed
 // tick. Cheap query, runs every minute by default; long-lived pending
@@ -965,10 +955,7 @@ func outboundTLSFromEnv() (*tls.Config, error) {
 	certFile := os.Getenv("AUTHD_SCIM_MTLS_CERT")
 	keyFile := os.Getenv("AUTHD_SCIM_MTLS_KEY")
 	caFile := envutil.First("AUTHD_SCIM_MTLS_CA", "AUTHD_WORKLOAD_CA")
-	if certFile != "" && keyFile != "" {
-		return reloader.ClientConfig(certFile, keyFile, caFile)
-	}
-	return btls.FromFiles(certFile, keyFile, caFile)
+	return reloader.ClientTLS(certFile, keyFile, caFile)
 }
 
 // dbAdminTLS builds the one-shot admin (migration) TLS config from resolved
@@ -988,10 +975,7 @@ func dbAdminTLS(m cli.DB) (*tls.Config, error) {
 // Anything short of a pair falls back to one-shot btls.FromFiles (CA-only
 // server-auth or plaintext, as the DSN's sslmode dictates).
 func dbRuntimeTLS(m cli.DB) (*tls.Config, error) {
-	if m.CertFile != "" && m.KeyFile != "" {
-		return reloader.ClientConfig(m.CertFile, m.KeyFile, m.CAFile)
-	}
-	return btls.FromFiles(m.CertFile, m.KeyFile, m.CAFile)
+	return reloader.ClientTLS(m.CertFile, m.KeyFile, m.CAFile)
 }
 
 // buildServerTLS constructs the server tls.Config.

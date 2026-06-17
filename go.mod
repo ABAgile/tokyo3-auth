@@ -3,7 +3,7 @@ module github.com/abagile/tokyo3-auth
 go 1.26.4
 
 require (
-	github.com/abagile/tokyo3-base v0.7.2
+	github.com/abagile/tokyo3-base v0.7.3
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/service/iam v1.53.8
