@@ -26,6 +26,11 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH=arm64
 
+# VERSION is injected into each binary's `var Version` via -ldflags.
+# Defaults to "dev" when callers leave it unset; version.Resolve then
+# falls back to runtime/debug.BuildInfo when VCS build info is available.
+ARG VERSION=dev
+
 WORKDIR /src
 
 # Download deps first (cached layer unless go.mod/go.sum change).
@@ -36,9 +41,9 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /out/authd ./cmd/authd
+    go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/authd ./cmd/authd
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /out/auth-aws-creds ./cmd/auth-aws-creds
+    go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/auth-aws-creds ./cmd/auth-aws-creds
 
 # ── Stage 2: CLI image (build with --target cli) ──────────────────────────────
 FROM alpine:3.21 AS cli
@@ -60,11 +65,11 @@ FROM alpine:3.21 AS server
 # tini runs as PID 1 to reap orphaned children (e.g. the ssl_client that
 # busybox-wget healthchecks orphan) and forward signals for clean shutdown.
 # A bare Go PID 1 doesn't reap, so cgroup pids.current would climb forever.
-RUN apk add --no-cache ca-certificates tini
+RUN apk add --no-cache ca-certificates tini tzdata
 
 COPY --from=builder /out/authd /usr/local/bin/authd
 
-EXPOSE 443
+EXPOSE 8443
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/authd"]
 CMD ["serve"]

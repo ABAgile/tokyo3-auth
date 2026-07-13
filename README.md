@@ -59,7 +59,9 @@ Both readers use `journal/jetstream.Source` from `tokyo3-base`; same primitive, 
 Operating the journal:
 
 ```
-make docker-up                              # postgres + nats + natsbox + auth all wired up
+make docker-up                              # standalone Docker stack
+# or, after `cd ../ca && make docker-up`, use the shared certd-rooted mesh:
+make docker-up-mesh                         # authd on tokyo3_backplane/tokyo3_idp
 docker compose exec natsbox nats stream info auth_audit
 docker compose exec natsbox nats sub 'auth.audit.events'
 docker compose exec authd authd audit query --limit 20
@@ -133,13 +135,13 @@ The SSH-cert counterpart, `auth-ssh-creds`, lives in the [tokyo3-ca](https://git
 ./authd keygen
 
 # Run migrations
-AUTHD_ADMIN_DATABASE_URL="postgres://admin:pass@localhost/authdb" ./authd migrate
+AUTHD_ADMIN_DATABASE_URL="postgres://admin:pass@localhost/authd" ./authd migrate
 ```
 
 ### Bootstrap first admin user
 
 ```bash
-AUTHD_DATABASE_URL="postgres://app:pass@localhost/authdb" \
+AUTHD_DATABASE_URL="postgres://app:pass@localhost/authd" \
   ./authd admin user create \
     --email admin@example.com \
     --password "S3cur3P@ssw0rd!" \
@@ -158,7 +160,7 @@ AUTHD_DATABASE_URL="postgres://app:pass@localhost/authdb" \
 | `AUTHD_DB_KEY` | If `AUTHD_DB_CERT` is set | — | Client key PEM, reloaded together with `AUTHD_DB_CERT` on every handshake. |
 | `AUTHD_DB_CA` | No | falls back to `AUTHD_WORKLOAD_CA` | CA bundle PEM for verifying the Postgres server cert. Trust pool is re-read on mtime change and verified per handshake via `VerifyConnection`. |
 | `AUTHD_ADMIN_DB_CERT` / `AUTHD_ADMIN_DB_KEY` / `AUTHD_ADMIN_DB_CA` | If migrate uses a separate role with mTLS | falls back to `AUTHD_DB_*` (CA also falls back to `AUTHD_WORKLOAD_CA`) | mTLS material for the migrate (DDL) connection. **Not** hot-reloaded — the connection closes after migrations finish, so rotation isn't relevant on this path. |
-| `AUTHD_MASTER_KEY` | Yes | — | 64-hex-char KEK for TOTP secrets + JWT key encryption |
+| `AUTHD_MASTER_KEY` | Yes | — | 64-hex-char KEK, or `file:<path>` to read one from disk, for TOTP secrets + JWT key encryption |
 | `AUTHD_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTHD_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
 | `AUTHD_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on `/portal/apps` won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
@@ -203,7 +205,7 @@ What rotation does **not** do: it never disturbs an already-established TLS sess
 
 ```bash
 AUTHD_ISSUER=https://id.example.com \
-AUTHD_DATABASE_URL="postgres://app:pass@localhost/authdb" \
+AUTHD_DATABASE_URL="postgres://app:pass@localhost/authd" \
 AUTHD_MASTER_KEY="$(./authd keygen)" \
 ./authd serve
 ```
@@ -214,7 +216,7 @@ AUTHD_MASTER_KEY="$(./authd keygen)" \
 |---------|-------------|
 | `authd serve` | Start the HTTP server |
 | `authd migrate` | Apply pending database migrations |
-| `authd keygen` | Generate a random 32-byte master key |
+| `authd keygen` | Generate a random 32-byte master key for `AUTHD_MASTER_KEY` or a key file |
 | `authd admin user create` | Create an admin user |
 | `authd admin sync --target=<name\|all>` | Backfill an integration (configured via `/portal/admin/integrations`) from auth's tables |
 | `authd audit query [--limit N]` | Print the most recent N audit events from the JetStream journal as JSON (default 100) |
@@ -770,20 +772,14 @@ await fetch(`/mfa/webauthn/register/finish?session_id=${session_id}&device_name=
 
 ## Development
 
-### Local PostgreSQL
-
-```bash
-docker run -d --name authdb -p 5432:5432 \
-  -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=authdb postgres:15
-```
-
 ### Running locally
 
+The development rig runs entirely in Docker:
+
 ```bash
-export AUTHD_ISSUER=http://localhost:8080
-export AUTHD_DATABASE_URL="postgres://postgres:secret@localhost/authdb?sslmode=disable"
-export AUTHD_MASTER_KEY="$(go run ./cmd/authd keygen)"
-go run ./cmd/authd serve
+make docker-up
+# or, after `cd ../ca && make docker-up`:
+make docker-up-mesh
 ```
 
 ### Code quality

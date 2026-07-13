@@ -1,8 +1,7 @@
-# Rendered to /shared/traefik/dynamic.yml by `make _gen-teleport-config`.
-# Loaded by the traefik service via --providers.file.filename.
+# Static Traefik dynamic configuration loaded via --providers.file.filename.
 #
 # Routing summary:
-#   - auth.localhost                    -> authd:443 (HTTPS upstream)
+#   - auth.localhost                    -> authd:8443 (HTTPS upstream)
 #   - teleport.localhost                -> teleport:3080 (HTTPS upstream),
 #                                          with response Location: header
 #                                          rewritten from github.com to
@@ -10,18 +9,29 @@
 #                                          redirect middleware) so the
 #                                          browser never reaches the real
 #                                          github.com.
-#   - github.com / api.github.com       -> authd:443, with Host header
+#   - github.com / api.github.com       -> authd:8443, with Host header
 #                                          rewritten to auth.localhost so
 #                                          auth handlers see a consistent
 #                                          identity. These names only land
 #                                          here on Teleport's *server-side*
 #                                          calls (hijacked via the teleport
 #                                          service's extra_hosts).
+#   - traefik.localhost                 -> Traefik dashboard/API.
 #
-# TLS terminates at Traefik using the mkcert-issued authd-server cert; the
-# cert's SAN list covers all four hostnames. Upstream connections use
+# TLS terminates at Traefik using the mkcert-issued edge cert; the cert's SAN
+# list covers all four hostnames. Upstream connections use
 # insecureSkipVerify because the docker service-name SNI (`authd`, `teleport`)
 # doesn't match the cert — adequate for a dev rig.
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /shared/certs/traefik.crt
+        keyFile: /shared/certs/traefik.key
+  certificates:
+    - certFile: /shared/certs/traefik.crt
+      keyFile: /shared/certs/traefik.key
 
 http:
   routers:
@@ -55,20 +65,24 @@ http:
       middlewares: [rewrite-host]
       tls: {}
 
+    traefik-dashboard:
+      rule: "Host(`traefik.localhost`)"
+      entryPoints: [websecure]
+      service: api@internal
+      tls: {}
+
   services:
     authd:
       loadBalancer:
         servers:
-          - url: "https://authd:443"
+          - url: "https://authd:8443"
         serversTransport: skipverify
-        passHostHeader: true
 
     teleport:
       loadBalancer:
         servers:
           - url: "https://teleport:3080"
         serversTransport: skipverify
-        passHostHeader: true
 
   middlewares:
     rewrite-host:
@@ -91,8 +105,3 @@ http:
   serversTransports:
     skipverify:
       insecureSkipVerify: true
-
-tls:
-  certificates:
-    - certFile: /shared/certs/authd-server.crt
-      keyFile: /shared/certs/authd-server.key

@@ -27,12 +27,12 @@ go.work.sum
 # env file
 .env
 
-# Generated outputs under shared/ — templates (.tmpl) and scripts are tracked.
+# Generated outputs under shared/ — samples and scripts are tracked.
 shared/certs/*.crt
 shared/certs/*.key
 shared/certs/*.srl
-shared/teleport/*.yaml
-shared/traefik/*.yml
+shared/teleport/*.yml
+shared/secrets/*
 
 # Editor/IDE
 # .idea/

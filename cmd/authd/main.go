@@ -3,7 +3,8 @@
 // Required env vars:
 //
 //	AUTHD_MASTER_KEY               64-char hex master key (run `authd
-//	                               keygen`).
+//	                               keygen`) or file:<path> to read it from a
+//	                               file.
 //	AUTHD_ISSUER                   Public issuer URL — used in OIDC
 //	                               discovery and JWT iss claim.
 //	AUTHD_DATABASE_URL             Runtime Postgres DSN (DML-only role).
@@ -223,10 +224,9 @@ func runServe(ctx context.Context) error {
 	if rt.DB.URL == "" {
 		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
-	masterKeyHex := envutil.MustEnv("AUTHD_MASTER_KEY")
 	addr := envutil.Or("AUTHD_ADDR", ":8443")
 
-	masterKey, err := bcrypto.ParseKEK(masterKeyHex)
+	masterKey, err := masterKeyFromEnv()
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -475,7 +475,7 @@ func runAdminSync(target string) error {
 	if dbMat.URL == "" {
 		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
-	masterKey, err := bcrypto.ParseKEK(envutil.MustEnv("AUTHD_MASTER_KEY"))
+	masterKey, err := masterKeyFromEnv()
 	if err != nil {
 		return fmt.Errorf("parse master key: %w", err)
 	}
@@ -933,6 +933,18 @@ func runAdminUserCreate(email, password, name string, isAdmin, allowWeak bool) e
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+func masterKeyFromEnv() ([]byte, error) {
+	ref := envutil.MustEnv("AUTHD_MASTER_KEY")
+	if path, ok := strings.CutPrefix(ref, "file:"); ok {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read AUTHD_MASTER_KEY file %s: %w", path, err)
+		}
+		ref = strings.TrimSpace(string(b))
+	}
+	return bcrypto.ParseKEK(ref)
+}
 
 // outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
 // authenticate auth as a client to downstream SCIM endpoints. A single shared

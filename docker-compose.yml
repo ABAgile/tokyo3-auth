@@ -1,98 +1,32 @@
-# docker-compose.yml — full dev rig: Postgres + NATS + authd + Traefik + Teleport
+# docker-compose.yml — standalone auth development stack.
 #
-# Default stack brings up everything:
-#     make docker-up
-#
-# Hardened mTLS variant (TLS on every inter-service hop):
-#     make docker-up-mtls    # layers docker-compose.mtls.yml on top
-#
-# ── First-time setup ──────────────────────────────────────────────────────────
-#
-# 1. `make docker-up` brings up the stack with the github connector unset.
-#    Teleport's login page shows "no sso provider configured" until you complete
-#    steps 2–4 below.
-#
-# 2. Register Teleport as an OAuth client in auth (one-time):
-#      curl -k -H "Authorization: Bearer $AUTHD_ADMIN_TOKEN" \
-#           -H "Content-Type: application/json" \
-#           https://auth.localhost/admin/clients \
-#           -d '{
-#             "name": "teleport",
-#             "redirect_uris": ["https://teleport.localhost/v1/webapi/github/callback"],
-#             "scopes": ["openid","email","profile","read:org"],
-#             "public": false
-#           }'
-#    Capture client_id and client_secret.
-#
-# 3. Append to .env (placeholders are pre-seeded by `make _gen-env`):
-#      TELEPORT_GITHUB_CLIENT_ID=<id>
-#      TELEPORT_GITHUB_CLIENT_SECRET=<secret>
-#
-# 4. /etc/hosts on the machine running your browser is NOT required for
-#    github.com / api.github.com — the traefik service runs the
-#    rewriteResponseHeaders plugin that rewrites Teleport's SSO Location
-#    header from https://github.com/... to https://auth.localhost/...
-#    before it reaches the browser. auth.localhost / teleport.localhost
-#    are resolved natively by browsers per RFC 6761. If you'd rather skip
-#    the plugin and route through /etc/hosts instead, add:
-#      127.0.0.1  github.com api.github.com
-#    and drop the rewrite-github-redirect middleware from the teleport
-#    router in shared/traefik/dynamic.yml.tmpl.
-#
-# 5. Re-run `make docker-up`. The bootstrap exec creates the github connector
-#    from shared/teleport/bootstrap.yaml.
-#
-# 6. Browse https://teleport.localhost → "Login with tokyo3-auth".
-#
-# ── Required env vars (set in shell or .env file) ─────────────────────────────
-#   AUTHD_MASTER_KEY          64-char hex key (authd keygen)
-#   AUTHD_ADMIN_DB_PASSWORD   auth DB admin password (DDL owner, runs migrations)
-#   AUTHD_DB_PASSWORD         auth DB app password   (DML-only)
-#
-# Optional (usernames default to auth_admin / auth_app):
-#   AUTHD_ADMIN_DB_USERNAME   auth DB admin username (default: auth_admin)
-#   AUTHD_DB_USERNAME         auth DB app username   (default: auth_app)
-#
-# Note: DB credentials and usernames above are only applied on first startup
-# when the data volume is empty (postgres initdb). Changing them after the
-# volume is built has no effect — use ALTER ROLE in psql to update an existing
-# database, then update .env to match.
-#
-# ── Architecture ──────────────────────────────────────────────────────────────
-#   Browser ─https─> host:443 ─> Traefik
-#                                  ├─ Host: auth.localhost     ─> authd:443
-#                                  ├─ Host: teleport.localhost ─> teleport:3080
-#                                  └─ Host: github.com | api.github.com
-#                                       └─ rewrite Host: auth.localhost ─> auth
-#
-#   Teleport ─https─> github.com:443 (extra_hosts → host-gateway) ─> Traefik
-#                       └─ rewrite middleware ─> authd:443
-#
-# Single mkcert-issued cert with auth.localhost, teleport.localhost, github.com,
-# api.github.com as SANs covers every virtual host.
+# Use `make docker-up` for the local Postgres/NATS stack, or
+# `make docker-up-mesh` after `cd ../ca && make docker-up` to run authd on the
+# CA-owned tokyo3_backplane/tokyo3_idp networks.
+
+name: ${COMPOSE_PROJECT_NAME:-tokyo3_auth}
+
+x-default-environment: &default-environment
+  TZ: ${TZ:-Asia/Taipei}
 
 services:
 
   # ── Auth database ─────────────────────────────────────────────────────────
-  db:
+  postgres:
     image: postgres:17-alpine
     entrypoint: ["sh", "/shared/postgres/pg-entrypoint.sh"]
-    # No host port: reachable only on the compose network as db:5432
-    # (the db-server cert carries `db` as a SAN). Everything that talks to
-    # Postgres — authd in-container and `make run` on the network — uses that.
     environment:
-      PG_INIT_SCRIPT:    /shared/postgres/db-init.sh
-      POSTGRES_USER:     ${AUTHD_ADMIN_DB_USERNAME:-auth_admin}
-      POSTGRES_PASSWORD: ${AUTHD_ADMIN_DB_PASSWORD:?AUTHD_ADMIN_DB_PASSWORD is required}
-      POSTGRES_DB:       authdb
-      AUTHD_DB_USERNAME:  ${AUTHD_DB_USERNAME:-auth_app}
-      AUTHD_DB_PASSWORD:  ${AUTHD_DB_PASSWORD:?AUTHD_DB_PASSWORD is required}
+      <<: *default-environment
+      PG_INIT_SCRIPT: /shared/postgres/db-init.sh
+      POSTGRES_USER:  authd_admin
+      POSTGRES_DB:    authd
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - shared_data:/shared:ro
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTHD_ADMIN_DB_USERNAME:-auth_admin} -d authdb"]
+      test: ["CMD-SHELL", "pg_isready -U authd_admin -d authd"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -102,8 +36,8 @@ services:
   nats:
     image: nats:2-alpine
     command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
-    # No host port: reachable only on the compose network as nats:4222
-    # (the nats-server cert carries `nats` as a SAN).
+    environment:
+      <<: *default-environment
     volumes:
       - nats_data:/data
     restart: unless-stopped
@@ -129,6 +63,7 @@ services:
       nats:
         condition: service_healthy
     environment:
+      <<: *default-environment
       NATS_URL: nats://nats:4222
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -154,53 +89,37 @@ services:
       start_period: 3s
     restart: unless-stopped
 
-  # ── API server ────────────────────────────────────────────────────────────
-  # Reached via Traefik at https://auth.localhost (host:443). The server cert
-  # is mkcert-issued (authd-server.crt/key, staged into shared_data by
-  # `make _sync-shared`) so browsers + Go clients that trust the mkcert root
-  # CA can verify it without a warning. The mtls overlay layers client-side
-  # mTLS for DB/NATS on top; it does not need to redeclare the API cert.
-  # No host port mapping: all browser traffic goes through Traefik, and
-  # in-cluster traffic uses the `auth.localhost` network alias below.
+  # ── authd server ────────────────────────────────────────────────────────────
+  # Reached via Traefik at https://auth.localhost (host:443).
+  # No host port mapping: all browser and issuer traffic goes through Traefik.
   authd:
-    build: .
-    image: abagile/tokyo3-auth:${VERSION:-latest}
+    build:
+      context: .
+      target: server
+      args:
+        VERSION: ${VERSION:-dev-docker}
     restart: unless-stopped
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       nats:
         condition: service_healthy
       natsbox:
         condition: service_healthy
     networks:
-      default:
-        # Network alias so anything in the docker network can resolve
-        # `auth.localhost` directly to the auth container — used by Traefik's
-        # upstream connection and by anything else that bypasses the
-        # front-proxy.
-        aliases:
-          - auth.localhost
-    # Every var here is `${NAME:-default}` so .env can override; the defaults
-    # match the in-container layout (db:5432, nats:4222, /shared/certs/…).
-    # Heads-up: DSNs and AUTHD_ADDR target the docker network — if you set
-    # them in .env they must remain container-friendly, NOT the host-side
-    # values that `make run` constructs at process launch.
+      default: {}
     environment:
-      AUTHD_MASTER_KEY:          ${AUTHD_MASTER_KEY:?AUTHD_MASTER_KEY is required (64 hex chars — run 'docker compose run --rm authd keygen')}
-      AUTHD_ADDR:                ${AUTHD_ADDR:-:443}
-      AUTHD_ISSUER:              ${AUTHD_ISSUER:-https://auth.localhost}
-      # mkcert-issued server cert. Generated + staged by `make _sync-shared`,
-      # which `docker-up` invokes.
-      AUTHD_API_CERT:            ${AUTHD_API_CERT:-/shared/certs/authd-server.crt}
-      AUTHD_API_KEY:             ${AUTHD_API_KEY:-/shared/certs/authd-server.key}
-      # Admin DSN: schema migration only (DDL privileges).
-      AUTHD_ADMIN_DATABASE_URL:  ${AUTHD_ADMIN_DATABASE_URL:-postgres://${AUTHD_ADMIN_DB_USERNAME:-auth_admin}:${AUTHD_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
-      # Runtime DSN: DML-only after schema is in place.
-      AUTHD_DATABASE_URL:        ${AUTHD_DATABASE_URL:-postgres://${AUTHD_DB_USERNAME:-auth_app}:${AUTHD_DB_PASSWORD}@db:5432/authdb?sslmode=disable}
+      <<: *default-environment
+      AUTHD_MASTER_KEY:          file:/shared/secrets/authd-master.key
+      AUTHD_ADDR:                ":8443"
+      AUTHD_ISSUER:              https://auth.localhost
+      AUTHD_API_CERT:            /shared/certs/traefik.crt
+      AUTHD_API_KEY:             /shared/certs/traefik.key
+      AUTHD_ADMIN_DATABASE_URL:  postgres://authd_admin@postgres:5432/authd?sslmode=disable
+      AUTHD_DATABASE_URL:        postgres://authd_app@postgres:5432/authd?sslmode=disable
       # Audit sink + source (live tail page + `authd audit query` CLI):
       # publish to and read from the auth_audit JetStream stream.
-      AUTHD_NATS_URL:            ${AUTHD_NATS_URL:-nats://nats:4222}
+      AUTHD_NATS_URL:            nats://nats:4222
       AUTHD_ALLOW_REGISTRATION:  ${AUTHD_ALLOW_REGISTRATION:-false}
       AUTHD_WEBAUTHN_ORIGINS:    ${AUTHD_WEBAUTHN_ORIGINS:-}
       AUTHD_WEBAUTHN_RPID:       ${AUTHD_WEBAUTHN_RPID:-}
@@ -222,41 +141,47 @@ services:
     volumes:
       - shared_data:/shared:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:443/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
 
   # ── Front-proxy ───────────────────────────────────────────────────────────
-  # Listens on host:443, terminates TLS with the mkcert-issued cert, and
-  # routes by virtual host per /shared/traefik/dynamic.yml. Dashboard on
-  # host:${TRAEFIK_DASHBOARD_PORT:-8080}.
+  # Listens on host:443, terminates TLS with the mkcert-issued edge cert, and
+  # routes by virtual host per /shared/traefik/dynamic.yml.
   traefik:
-    image: ${TRAEFIK_IMAGE:-traefik:v3.2}
+    image: ${TRAEFIK_IMAGE:-traefik:v3.7.7}
     ports:
       - "${TRAEFIK_HTTPS_PORT:-443}:443"
-      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     depends_on:
       authd:
         condition: service_healthy
+    environment:
+      <<: *default-environment
     command:
       - "--api.dashboard=true"
-      - "--api.insecure=true"
       - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.ping.address=:8082"
+      - "--ping=true"
+      - "--ping.entryPoint=ping"
       - "--providers.file.filename=/shared/traefik/dynamic.yml"
       - "--providers.file.watch=true"
-      # Plugin: rewrites Teleport's 302 Location: https://github.com/...
-      # response header to https://auth.localhost/... so the browser never
-      # tries to resolve github.com itself — no /etc/hosts edits required.
-      # Server-side calls (api.github.com /user, /user/teams) still hit the
-      # extra_hosts → host-gateway hijack on the teleport service.
       - "--experimental.plugins.rewriteResponseHeaders.moduleName=github.com/jamesmcroft/traefik-plugin-rewrite-response-headers"
       - "--experimental.plugins.rewriteResponseHeaders.version=v1.1.2"
       - "--log.level=INFO"
-      - "--accesslog=true"
     volumes:
       - shared_data:/shared:ro
+    networks:
+      default:
+        aliases:
+          - auth.localhost
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
     restart: unless-stopped
 
   # ── Teleport ──────────────────────────────────────────────────────────────
@@ -268,47 +193,37 @@ services:
     depends_on:
       authd:
         condition: service_healthy
-    # Teleport CE hard-codes github.com / api.github.com in its github
-    # connector (endpoint_url / api_endpoint_url are Enterprise-only). Map
-    # both to host-gateway so Teleport's outbound calls hit Traefik on
-    # host:443, which rewrites Host and forwards to auth. host-gateway works
-    # on native Linux Docker 20.10+ and on Docker Desktop.
     extra_hosts:
       - "github.com:host-gateway"
       - "api.github.com:host-gateway"
     environment:
-      # Trust the mkcert root CA when calling auth's HTTPS endpoints (via
-      # github.com / api.github.com hijack). Go's crypto/x509 SystemCertPool
-      # falls back to SSL_CERT_FILE on Linux.
-      SSL_CERT_FILE: /shared/certs/ca.crt
+      <<: *default-environment
+      SSL_CERT_FILE: /shared/certs/traefik-ca.crt
     volumes:
       - shared_data:/shared:ro
       - teleport_data:/var/lib/teleport
-    # The image's default entrypoint hard-codes `-c /etc/teleport/teleport.yaml`.
-    # Override it with the same dumb-init wrapper but point at the volume path.
+    # Override the image default config path with the shared volume config.
     entrypoint:
       - /usr/bin/dumb-init
       - /usr/local/bin/teleport
       - start
       - -c
-      - /shared/teleport/teleport.yaml
+      - /shared/teleport/teleport.yml
     restart: unless-stopped
     healthcheck:
       # tctl status exits 0 once the local auth API is reachable. CMD form
       # (no shell wrapper) — the distroless image has neither sh nor wget.
       # tctl finds the admin identity in /var/lib/teleport so no creds needed.
-      test: ["CMD", "/usr/local/bin/tctl", "-c", "/shared/teleport/teleport.yaml", "status"]
+      test: ["CMD", "/usr/local/bin/tctl", "-c", "/shared/teleport/teleport.yml", "status"]
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 30s
 
 volumes:
-  # External: populated by `make _sync-shared` (templates + certs + scripts
-  # tar-piped in). Marking it external keeps compose from creating or
-  # destroying it — `docker-down-all -v` won't wipe the staged contents.
   shared_data:
     external: true
+    name: ${COMPOSE_PROJECT_NAME:-tokyo3_auth}_shared_data
   db_data:
   nats_data:
   teleport_data:

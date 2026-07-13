@@ -1,0 +1,21 @@
+version: v3
+teleport:
+  data_dir: /var/lib/teleport
+  log:
+    output: stderr
+    severity: INFO
+auth_service:
+  enabled: true
+  cluster_name: docker
+  proxy_listener_mode: multiplex
+  authentication:
+    type: github
+proxy_service:
+  enabled: true
+  web_listen_addr: 0.0.0.0:3080
+  public_addr: teleport.localhost
+  https_keypairs:
+    - cert_file: /shared/certs/traefik.crt
+      key_file:  /shared/certs/traefik.key
+ssh_service:
+  enabled: false

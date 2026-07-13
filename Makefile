@@ -1,24 +1,7 @@
 ## tokyo3-auth — build targets
 ##
-## Usage:
-##   make build             Build authd + auth-aws-creds binaries to ./bin/
-##   make run               Start authd with dev defaults (Postgres + NATS via compose)
-##   make run-mtls          Start authd with mTLS (cert auth, no password in DSN)
-##   make keygen            Generate an AUTHD_MASTER_KEY
-##   make check             Full pre-commit sequence (fmt + test + staticcheck + gopls + govulncheck)
-##   make docker-build      Build the server Docker image (authd only)
-##   make docker-build-cli  Build a thin Docker image containing the auth-aws-creds CLI helper
-##   make docker-up         Bring up the full stack (Postgres + NATS + auth + Traefik + Teleport)
-##   make docker-up-mtls    Bring up the full stack + mTLS overlay (auto-generates certs)
-##   make docker-down       Stop the stack (overlay-aware; safe in any mode)
-##   make docker-down-all   Stop + remove orphan containers AND named volumes (destroys DB data)
-##   make gen-certs         Generate mTLS certs in shared/certs/ (manual; auto-run elsewhere)
-##   make install           Install authd to GOPATH/bin
-##   make install-cli       Install the auth-aws-creds CLI helper to GOPATH/bin
-##   make clean             Remove ./bin/
-##   make clean-all         Remove ./bin/, shared/certs/*.{crt,key,srl}, and .env
-##   make test              Run tests
-##   make help              Show this help
+## Usage: make <target>
+##
 
 # ── Variables ─────────────────────────────────────────────────────────────────
 
@@ -41,21 +24,21 @@ GOFLAGS :=
 
 IMAGE_NAME ?= abagile/tokyo3-auth
 IMAGE_TAG  ?= $(VERSION)
-AUTHD_PORT ?= 8443
-AUTHD_ADDR ?= :$(AUTHD_PORT)
 
-# Name of the external named volume populated via tar pipe (no bind mounts).
-# Declared `external: true` in docker-compose.yml so compose neither creates
-# nor destroys it — `_sync-shared` is the sole owner of its lifecycle.
-SHARED_VOLUME := shared_data
+COMPOSE_PROJECT_NAME     ?= tokyo3_auth
+TOKYO3_SHARED_VOLUME     ?= tokyo3_shared_data
+TOKYO3_BACKPLANE_NETWORK ?= tokyo3_backplane
+TOKYO3_IDP_NETWORK       ?= tokyo3_idp
+export COMPOSE_PROJECT_NAME TOKYO3_SHARED_VOLUME TOKYO3_BACKPLANE_NETWORK TOKYO3_IDP_NETWORK
+SHARED_VOLUME            := $(COMPOSE_PROJECT_NAME)_shared_data
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
 
 .PHONY: all build build-linux build-linux-amd64 build-darwin \
-        run run-mtls keygen gen-certs \
-        _gen-env _sync-shared \
-        test test-verbose tidy vet lint check \
-        docker-build docker-build-amd64 docker-build-cli docker-push docker-up docker-up-mtls docker-down docker-down-all docker-logs \
+        check \
+        keygen gen-certs _sync-shared \
+        docker-build docker-build-amd64 docker-build-cli docker-push \
+        docker-up docker-up-mesh docker-down \
         install install-cli clean clean-all help
 
 all: build
@@ -89,158 +72,18 @@ build-darwin: $(BIN_DIR)
 	GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/auth-aws-creds-darwin-arm64 $(CMD_AUTH_AWS_CREDS)
 	@echo "  built authd-darwin-arm64 + auth-aws-creds-darwin-arm64"
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-# Generate .env with dev defaults on first run. Used by run / run-mtls and the
-# compose stack. Notable omissions:
-#   - AUTHD_ADDR is NOT seeded: compose's container needs :443 (Traefik
-#     upstream) while `make run` / `run-mtls` listen on :$(AUTHD_PORT) on the
-#     dev-container host. Set inline in the run targets, not here.
-#   - AUTHD_ADMIN_DATABASE_URL / AUTHD_DATABASE_URL / AUTHD_NATS_URL are likewise
-#     NOT seeded — both compose and `make run` / `run-mtls` reach the
-#     container-internal endpoints (db:5432 / nats:4222) over the compose
-#     network; the DSNs are built from the password vars inline.
-_gen-env: build
-	@if [ ! -f .env ]; then \
-	    KEY=$$($(AUTHD_BIN) keygen); \
-	    echo "AUTHD_MASTER_KEY=$$KEY"                                                                                                                              > .env; \
-	    echo "AUTHD_ISSUER=https://auth.localhost"                                                                                                                >> .env; \
-	    echo "AUTHD_ADMIN_DB_PASSWORD=changeme"                                                                                                                   >> .env; \
-	    echo "AUTHD_DB_PASSWORD=changeme"                                                                                                                         >> .env; \
-	    echo "AUTHD_ALLOW_REGISTRATION=true"                                                                                                                      >> .env; \
-	    echo ""                                                                                                                                                  >> .env; \
-	    echo "# ── Teleport github connector ─────────────────────────────────────────"                                                                          >> .env; \
-	    echo "# Fill CLIENT_ID/SECRET after registering an OAuth client; see the"                                                                                >> .env; \
-	    echo "# 'First-time setup' section at the top of docker-compose.yml."                                                                                    >> .env; \
-	    echo "# TELEPORT_IMAGE / TELEPORT_PUBLIC_ADDR have working defaults in"                                                                                  >> .env; \
-	    echo "# docker-compose.yml and the Makefile; set them here only to override."                                                                            >> .env; \
-	    echo "TELEPORT_GITHUB_CLIENT_ID="                                                                                                                         >> .env; \
-	    echo "TELEPORT_GITHUB_CLIENT_SECRET="                                                                                                                    >> .env; \
-	    echo "  generated .env"; \
-	fi
-
-# Render shared/{teleport,traefik}/*.tmpl using values in .env, then tar-pipe
-# the entire shared/ tree into the shared_data named volume. Single source of
-# truth for everything containers read under /shared (certs/, postgres/,
-# teleport/, traefik/). Uses a tar pipe rather than a bind mount so it works
-# when `docker compose` itself runs inside a container — the daemon would see
-# the OUTER host filesystem, not ours.
-#
-# Templates use @@VAR@@ markers (not $VAR / ${VAR}) so sed substitution
-# doesn't collide with Teleport's own config syntax. bootstrap.yaml is
-# rendered only when client_id/secret are present; without it, the
-# docker-up bootstrap step is skipped.
-_sync-shared: _gen-env
-	@if [ ! -f shared/certs/authd-server.crt ]; then bash shared/certs/gen.sh; fi
-	@AUTHD_ISSUER=$$(grep ^AUTHD_ISSUER= .env | cut -d= -f2-); \
-	 TELEPORT_PUBLIC_ADDR=$$(grep ^TELEPORT_PUBLIC_ADDR= .env | cut -d= -f2-); \
-	 TELEPORT_GITHUB_CLIENT_ID=$$(grep ^TELEPORT_GITHUB_CLIENT_ID= .env | cut -d= -f2-); \
-	 TELEPORT_GITHUB_CLIENT_SECRET=$$(grep ^TELEPORT_GITHUB_CLIENT_SECRET= .env | cut -d= -f2-); \
-	 : "$${AUTHD_ISSUER:=https://auth.localhost}"; \
-	 : "$${TELEPORT_PUBLIC_ADDR:=teleport.localhost}"; \
-	 AUTHD_HOST=$$(echo "$$AUTHD_ISSUER" | sed -E 's|^https?://([^:/]+).*|\1|'); \
-	 for t in shared/teleport/*.yaml.tmpl shared/traefik/*.yml.tmpl; do \
-	   out=$${t%.tmpl}; \
-	   if [ "$$(basename $$t)" = "bootstrap.yaml.tmpl" ] && { [ -z "$$TELEPORT_GITHUB_CLIENT_ID" ] || [ -z "$$TELEPORT_GITHUB_CLIENT_SECRET" ]; }; then \
-	     rm -f "$$out"; \
-	     continue; \
-	   fi; \
-	   sed -e "s|@@AUTHD_ISSUER@@|$$AUTHD_ISSUER|g" \
-	       -e "s|@@AUTHD_HOST@@|$$AUTHD_HOST|g" \
-	       -e "s|@@TELEPORT_PUBLIC_ADDR@@|$$TELEPORT_PUBLIC_ADDR|g" \
-	       -e "s|@@TELEPORT_GITHUB_CLIENT_ID@@|$$TELEPORT_GITHUB_CLIENT_ID|g" \
-	       -e "s|@@TELEPORT_GITHUB_CLIENT_SECRET@@|$$TELEPORT_GITHUB_CLIENT_SECRET|g" \
-	       "$$t" > "$$out"; \
-	 done
-	@docker volume create $(SHARED_VOLUME) 2>&1 >/dev/null || true
-	@cp $$(mkcert -CAROOT)/rootCA.pem shared/certs/ca.crt
-	@tar -cf - --exclude='*.tmpl' --exclude='gen.sh' -C shared . | docker run --rm -i -v $(SHARED_VOLUME):/shared alpine:3.21 sh -c "tar -xf - -C /shared && find /shared/postgres -name '*.sh' -exec chmod +x {} \;"
-	@rm -f shared/certs/ca.crt
-	@echo "  rendered + synced shared/ → /shared"
-
-# ── Dev ───────────────────────────────────────────────────────────────────────
-
-## run: Build and start authd with dev defaults (auto-generates .env on first run)
-## DSNs, AUTHD_NATS_URL, and the API cert/key paths are NOT read from .env —
-## they're set inline to target the compose network and host-side cert paths
-## (db:5432 / nats:4222 / shared/certs/...), so .env stays usable as the single
-## source of truth for `docker-up` too. db and nats are NOT published to the
-## host, so this target must run on the compose network (the db/nats certs
-## carry the bare service names as SANs).
-##
-## Without AUTHD_API_CERT/KEY here, authd would mint an ephemeral self-signed
-## cert at startup instead of using the mkcert-issued one — browsers would
-## then show a cert warning when hitting https://localhost:${AUTHD_PORT}.
-run: _sync-shared
-	@docker compose up -d db nats natsbox --wait 2>/dev/null || true
-	@export $$(grep -v '^#' .env | xargs) && \
-	    AUTHD_ADDR=$(AUTHD_ADDR) \
-	    AUTHD_API_CERT=shared/certs/authd-server.crt \
-	    AUTHD_API_KEY=shared/certs/authd-server.key \
-	    AUTHD_ADMIN_DATABASE_URL=postgres://$${AUTHD_ADMIN_DB_USERNAME:-auth_admin}:$${AUTHD_ADMIN_DB_PASSWORD}@db:5432/authdb?sslmode=disable \
-	    AUTHD_DATABASE_URL=postgres://$${AUTHD_DB_USERNAME:-auth_app}:$${AUTHD_DB_PASSWORD}@db:5432/authdb?sslmode=disable \
-	    AUTHD_NATS_URL=nats://nats:4222 \
-	    $(AUTHD_BIN) serve
-
-## run-mtls: Build and start authd with mTLS (cert auth; overrides DSNs — no password)
-run-mtls: _sync-shared
-	@docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d db nats natsbox --wait 2>/dev/null || true
-	@CA_PEM=$$(mkcert -CAROOT)/rootCA.pem; \
-	    export $$(grep -v '^#' .env | xargs) && \
-	    AUTHD_ADDR=$(AUTHD_ADDR) \
-	    AUTHD_API_CERT=shared/certs/authd-server.crt \
-	    AUTHD_API_KEY=shared/certs/authd-server.key \
-	    AUTHD_WORKLOAD_CA=$$CA_PEM \
-	    AUTHD_ADMIN_DB_CERT=shared/certs/authd-admin-db-client.crt \
-	    AUTHD_ADMIN_DB_KEY=shared/certs/authd-admin-db-client.key \
-	    AUTHD_ADMIN_DATABASE_URL=postgres://$${AUTHD_ADMIN_DB_USERNAME:-auth_admin}@db:5432/authdb?sslmode=verify-full \
-	    AUTHD_DB_CERT=shared/certs/authd-app-db-client.crt \
-	    AUTHD_DB_KEY=shared/certs/authd-app-db-client.key \
-	    AUTHD_DATABASE_URL=postgres://$${AUTHD_DB_USERNAME:-auth_app}@db:5432/authdb?sslmode=verify-full \
-	    AUTHD_SCIM_MTLS_CERT=shared/certs/authd-scim-client.crt \
-	    AUTHD_SCIM_MTLS_KEY=shared/certs/authd-scim-client.key \
-	    AUTHD_NATS_CERT=shared/certs/authd-nats-client.crt \
-	    AUTHD_NATS_KEY=shared/certs/authd-nats-client.key \
-	    AUTHD_NATS_URL=tls://nats:4222 \
-	    $(AUTHD_BIN) serve
-
-## keygen: Print a fresh random master key
-keygen: build
-	@$(AUTHD_BIN) keygen
-
-## gen-certs: Generate mTLS certificates for the docker compose overlay
-gen-certs:
-	@bash shared/certs/gen.sh
-
 # ── Quality ───────────────────────────────────────────────────────────────────
 
-## test: Run all tests
-test:
-	$(GO) test ./...
-
-## test-verbose: Run all tests with verbose output
-test-verbose:
-	$(GO) test ./... -v
-
-## tidy: Run go mod tidy
-tidy:
-	$(GO) mod tidy
-
-## vet: Run go vet
-vet:
-	$(GO) vet ./...
-
-## lint: Run staticcheck
-lint:
-	staticcheck ./...
-
-## check: Full pre-commit sequence (gofmt + test + staticcheck + gopls + govulncheck)
+## check: Full pre-commit sequence (gofmt + tidy + test + vet + staticcheck + gopls + govulncheck + deadcode)
 check:
 	gofmt -s -w .
-	$(GO) test ./...
+	$(GO) mod tidy
+	$(GO) test ./... -count=1
+	$(GO) vet ./...
 	staticcheck ./...
 	find . -type f -name "*.go" -print0 | xargs -0 -n 100 gopls check -severity=hint
 	govulncheck ./...
+	@out=$$(deadcode -test ./...); if [ -n "$$out" ]; then echo "$$out"; echo "deadcode: unreachable functions found (above)"; exit 1; fi
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
@@ -249,6 +92,7 @@ docker-build:
 	docker build \
 	  --platform linux/arm64 \
 	  --build-arg TARGETARCH=arm64 \
+	  --build-arg VERSION=$(VERSION) \
 	  --target server \
 	  -t $(IMAGE_NAME):$(IMAGE_TAG) \
 	  -t $(IMAGE_NAME):latest \
@@ -260,23 +104,22 @@ docker-build-amd64:
 	docker build \
 	  --platform linux/amd64 \
 	  --build-arg TARGETARCH=amd64 \
+	  --build-arg VERSION=$(VERSION) \
 	  --target server \
 	  -t $(IMAGE_NAME):$(IMAGE_TAG)-amd64 \
 	  .
 
-## docker-build-cli: Build a thin image containing the developer-side
-## auth-aws-creds CLI helper. The default server image deliberately
-## omits it — developers `go install` on their laptops rather than
-## running in the cluster. The CLI image is offered for shops that
-## prefer a containerized installation path (CI runners, dev
-## containers). No ENTRYPOINT; users explicitly invoke the binary:
-##   docker run --rm <image> auth-aws-creds login --issuer ... --client-id ...
-## (The auth-ssh-creds helper lives in the tokyo3-ca repo; its CLI
-## image is ghcr.io/abagile/tokyo3-ca-cli.)
+## docker-build-cli: Build a thin image containing the auth-aws-creds CLI helper
+# The default server image deliberately omits it — developers `go install` it
+# on their laptops rather than running in the cluster. The CLI image is offered
+# for shops that prefer a containerized installation path (CI runners, dev
+# containers). No ENTRYPOINT; users explicitly invoke it:
+#   docker run --rm <image> auth-aws-creds login --issuer ... --client-id ...
 docker-build-cli:
 	docker build \
 	  --platform linux/arm64 \
 	  --build-arg TARGETARCH=arm64 \
+	  --build-arg VERSION=$(VERSION) \
 	  --target cli \
 	  -t $(IMAGE_NAME)-cli:$(IMAGE_TAG) \
 	  -t $(IMAGE_NAME)-cli:latest \
@@ -288,90 +131,106 @@ docker-push: docker-build
 	docker push $(IMAGE_NAME):$(IMAGE_TAG)
 	docker push $(IMAGE_NAME):latest
 
-## docker-up: Bring up the full stack (Postgres + NATS + auth + Traefik + Teleport).
-##
-## `up --wait` blocks until each service's healthcheck passes — including the
-## teleport service's `tctl status` check — so the bootstrap exec that follows
-## is guaranteed to hit a running auth server. tctl runs *inside* the teleport
-## container because file-based admin auth dials 127.0.0.1:3025, which only
-## resolves to auth from there. `--force` makes the create idempotent so
-## docker-up is safe to re-run. The bootstrap step is skipped when github
-## client_id/secret are unset — see the 'First-time setup' header in
-## docker-compose.yml.
+# ── Dev rig (docker compose) ──────────────────────────────────────────────────
+
+# Prepare shared Docker material.
+_sync-shared: gen-certs
+	@if [ ! -f shared/teleport/bootstrap.yml ]; then \
+	    cp shared/teleport/bootstrap.yml.sample shared/teleport/bootstrap.yml; \
+	    echo "  copied shared/teleport/bootstrap.yml.sample → bootstrap.yml"; \
+	fi
+	@if [ ! -f shared/teleport/teleport.yml ]; then \
+	    cp shared/teleport/teleport.yml.sample shared/teleport/teleport.yml; \
+	    echo "  copied shared/teleport/teleport.yml.sample → teleport.yml"; \
+	fi
+	@if [ ! -f shared/secrets/authd-master.key ]; then \
+	    umask 077; \
+	    mkdir -p shared/secrets; \
+	    od -An -tx1 -N32 /dev/urandom | tr -d '[:space:]' > shared/secrets/authd-master.key; \
+	    echo "  generated shared/secrets/authd-master.key"; \
+	fi
+	@docker volume create $(SHARED_VOLUME) 2>&1 >/dev/null || true
+	@tar -cf - --exclude='*.sample' --exclude='gen.sh' -C shared . | docker run --rm -i -v $(SHARED_VOLUME):/shared alpine:3.21 sh -c "tar -xf - -C /shared && find /shared/postgres -name '*.sh' -exec chmod +x {} \;"
+	@echo "  synced shared/ → /shared"
+
+## keygen: Print a fresh random master key
+keygen: build
+	@$(AUTHD_BIN) keygen
+
+## gen-certs: Generate Traefik edge cert material in shared/certs/
+gen-certs:
+	@bash shared/certs/gen.sh
+
+## docker-up: Bring up the standalone Docker stack.
 docker-up: _sync-shared
 	docker compose up -d --build --wait --remove-orphans
-	@if [ -f shared/teleport/bootstrap.yaml ]; then \
-	    echo "  applying shared/teleport/bootstrap.yaml (github connector)…"; \
+	@if [ -f shared/teleport/bootstrap.yml ] && ! grep -q 'CHANGE_ME_' shared/teleport/bootstrap.yml; then \
+	    echo "  applying shared/teleport/bootstrap.yml (github connector)…"; \
 	    docker compose exec -T teleport \
-	        /usr/local/bin/tctl -c /shared/teleport/teleport.yaml create --force -f /shared/teleport/bootstrap.yaml; \
-	    PUBLIC_ADDR=$$(grep ^TELEPORT_PUBLIC_ADDR= .env | cut -d= -f2-); \
-	    echo "  github connector applied — sign in at https://$${PUBLIC_ADDR:-teleport.localhost}"; \
+	        /usr/local/bin/tctl -c /shared/teleport/teleport.yml create --force -f /shared/teleport/bootstrap.yml; \
+	    echo "  github connector applied — sign in at https://teleport.localhost"; \
 	else \
 	    echo ""; \
-	    echo "  ⚠ TELEPORT_GITHUB_CLIENT_ID/SECRET are unset — github connector NOT created."; \
-	    echo "    Stack is up; register an OAuth client (see docker-compose.yml header),"; \
-	    echo "    set the values in .env, and re-run 'make docker-up' to finish wiring."; \
+	    echo "  ⚠ shared/teleport/bootstrap.yml still has placeholder client credentials."; \
+	    echo "    Create the Teleport OAuth client in auth, edit bootstrap.yml, then re-run 'make docker-up'."; \
 	fi
 
-## docker-up-mtls: Bring up the full stack + mTLS overlay (auto-generates certs on first run)
-docker-up-mtls: _sync-shared
-	docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d --build --wait --remove-orphans
-	@if [ -f shared/teleport/bootstrap.yaml ]; then \
-	    echo "  applying shared/teleport/bootstrap.yaml (github connector)…"; \
-	    docker compose -f docker-compose.yml -f docker-compose.mtls.yml exec -T teleport \
-	        /usr/local/bin/tctl -c /shared/teleport/teleport.yaml create --force -f /shared/teleport/bootstrap.yaml; \
-	    PUBLIC_ADDR=$$(grep ^TELEPORT_PUBLIC_ADDR= .env | cut -d= -f2-); \
-	    echo "  github connector applied — sign in at https://$${PUBLIC_ADDR:-teleport.localhost}"; \
+## docker-up-mesh: Bring up auth against the CA-owned tokyo3 mesh.
+docker-up-mesh: _sync-shared
+	docker compose -f docker-compose.mesh.yml up -d --build --wait --remove-orphans
+	@if [ -f shared/teleport/bootstrap.yml ] && ! grep -q 'CHANGE_ME_' shared/teleport/bootstrap.yml; then \
+	    echo "  applying shared/teleport/bootstrap.yml (github connector)…"; \
+	    docker compose -f docker-compose.mesh.yml exec -T teleport \
+	        /usr/local/bin/tctl -c /shared/teleport/teleport.yml create --force -f /shared/teleport/bootstrap.yml; \
+	    echo "  github connector applied — sign in at https://teleport.localhost"; \
 	else \
 	    echo ""; \
-	    echo "  ⚠ TELEPORT_GITHUB_CLIENT_ID/SECRET are unset — github connector NOT created."; \
-	    echo "    Stack is up; register an OAuth client (see docker-compose.yml header),"; \
-	    echo "    set the values in .env, and re-run 'make docker-up-mtls' to finish wiring."; \
+	    echo "  ⚠ shared/teleport/bootstrap.yml still has placeholder client credentials."; \
+	    echo "    Create the Teleport OAuth client in auth, edit bootstrap.yml, then re-run 'make docker-up-mesh'."; \
 	fi
 
-## docker-down: Stop all compose services (overlay-aware; safe to run in any mode)
+## docker-down: Stop all compose services (safe to run in any mode)
 docker-down:
-	docker compose -f docker-compose.yml -f docker-compose.mtls.yml down
+	docker compose down
+	docker compose -f docker-compose.mesh.yml down 2>/dev/null || true
 
-## docker-down-all: Stop + remove orphan containers AND named volumes (destroys DB data)
-docker-down-all:
-	docker compose -f docker-compose.yml -f docker-compose.mtls.yml down --remove-orphans -v
-
-## docker-logs: Tail authd logs
-docker-logs:
-	docker compose logs -f authd
-
-# ── Install ───────────────────────────────────────────────────────────────────
+# ── Install / Clean ───────────────────────────────────────────────────────────
 
 ## install: Install authd to GOPATH/bin (or ~/go/bin)
 install:
 	$(GO) install -ldflags "$(LDFLAGS)" $(CMD_AUTHD)
 	@echo "  installed authd"
 
-## install-cli: Install the auth-aws-creds CLI helper to GOPATH/bin
-## (or ~/go/bin). Independent target so developers can install just
-## the helper without pulling the server's build dependencies into
-## their workflow.
+## install-cli: Install the auth-aws-creds CLI helper to GOPATH/bin (or ~/go/bin)
 install-cli:
 	$(GO) install -ldflags "$(LDFLAGS)" $(CMD_AUTH_AWS_CREDS)
 	@echo "  installed auth-aws-creds"
-
-# ── Clean ─────────────────────────────────────────────────────────────────────
 
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BIN_DIR)
 
-## clean-all: Remove binaries, generated certs/keys under shared/certs/, and .env
+## clean-all: Stop compose stacks, remove volumes, binaries, and generated edge certs
 clean-all: clean
-	rm -f shared/certs/*.crt shared/certs/*.key shared/certs/ca.srl
-	rm -f .env
-	@echo "  removed shared/certs/*.{crt,key}, shared/certs/ca.srl, and .env"
+	docker compose down --remove-orphans -v 2>/dev/null || true
+	docker compose -f docker-compose.mesh.yml down --remove-orphans -v 2>/dev/null || true
+	docker volume rm $(SHARED_VOLUME) 2>/dev/null || true
+	rm -f shared/certs/traefik*.crt shared/certs/traefik*.key shared/certs/ca.crt
+	@echo "  removed compose stacks, volumes, and generated Traefik edge certs"
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
-## help: Show this help message
+## help: Show this help
 help:
-	@echo "auth Makefile targets:"
-	@echo ""
-	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | awk -F: '{printf "  %-24s %s\n", $$1, $$2}'
+	@awk '/^##/ { \
+	  line=$$0; sub(/^## ?/, "", line); \
+	  if (line ~ /^[a-z0-9_.-]+:/) { \
+	    target=line; sub(/:.*/, "", target); \
+	    desc=line; sub(/^[^:]+:[[:space:]]*/, "", desc); \
+	    names[++n]=target; docs[target]=desc; \
+	  } else header[++h]=line; \
+	} END { \
+	  for (i=1; i<=h; i++) print header[i]; \
+	  for (i=1; i<=n; i++) for (j=i+1; j<=n; j++) if (names[j] < names[i]) { tmp=names[i]; names[i]=names[j]; names[j]=tmp } \
+	  for (i=1; i<=n; i++) printf "  %-22s %s\n", names[i], docs[names[i]]; \
+	}' $(MAKEFILE_LIST)
