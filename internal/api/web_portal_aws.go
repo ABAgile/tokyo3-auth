@@ -413,7 +413,7 @@ func (s *Server) authorizingGroupsForRole(ctx context.Context, userID, roleID uu
 // session names to characters in [A-Za-z0-9=,.@-]; we sanitise by
 // replacing anything else with '-'.
 func buildRoleSessionName(email string, userID uuid.UUID) string {
-	local := strings.SplitN(email, "@", 2)[0]
+	local, _, _ := strings.Cut(email, "@")
 	uid := userID.String()
 	if len(uid) > 8 {
 		uid = uid[:8]

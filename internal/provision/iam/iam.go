@@ -51,7 +51,7 @@ func (p *Provisioner) Name() string { return p.name }
 // User implements provision.Provisioner. IAM usernames are the local-part of
 // the user's email (everything before the first '@').
 func (p *Provisioner) User(ctx context.Context, op provision.Op, u *model.User, groups []string) error {
-	username := strings.SplitN(u.Email, "@", 2)[0]
+	username, _, _ := strings.Cut(u.Email, "@")
 	switch op {
 	case provision.OpCreate:
 		return p.createUser(ctx, username, groups)

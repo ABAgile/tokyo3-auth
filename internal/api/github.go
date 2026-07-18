@@ -116,7 +116,7 @@ func (s *Server) handleGitHubUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "user not found")
 		return
 	}
-	login := strings.SplitN(user.Email, "@", 2)[0]
+	login, _, _ := strings.Cut(user.Email, "@")
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"id":         githubID(user.ID[:]),
 		"login":      login,
