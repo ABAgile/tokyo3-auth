@@ -756,7 +756,7 @@ input[type="checkbox"] {
 .app-card { overflow: hidden; }
 .app-card .card-body { border-left: 4px solid var(--app-accent, transparent); }
 .app-heading { display: flex; align-items: center; gap: var(--space-3); }
-.app-heading h2 { flex: 1; font-size: var(--text-md); font-weight: 650; }
+.app-heading h3 { flex: 1; font-size: var(--text-md); font-weight: 650; }
 .app-icon { width: 32px; height: 32px; flex: none; object-fit: contain; border-radius: var(--radius-sm); }
 .app-subtitle { margin-top: var(--space-1); color: var(--color-text-muted); font-size: var(--text-sm); }
 .app-meta { min-height: 22px; display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-3); }

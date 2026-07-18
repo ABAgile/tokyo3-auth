@@ -333,7 +333,7 @@ Information architecture follows stable operational patterns:
 - **Resource detail:** Breadcrumb, identity, settings, recovery operations, danger zone.
 - **Settings:** Named sections with local explanations and honest form boundaries.
 - **Authentication:** Brand, task title, an optional one-sentence context, form, one primary action. When the flow continues to a known client application, the context sentence names the destination as a highlighted chip — `{colors.surface-selected}` background with a fine `{colors.primary}`-tinted outline, `{colors.primary-active}` text, body-sized 650-weight text, `{rounded.full}` — so the user can verify where they are signing in to at a glance without the chip competing with the primary action. Context sentences that add no information (restating that a sign-in form signs you in) are omitted.
-- **Application launcher:** Product identity, relevant access metadata, one launch action.
+- **Home:** Application launcher first — it is the most frequent task — followed by a compact account summary with a single profile action. Each launcher tile carries product identity, relevant access metadata, and one launch action. Administrative destinations live only in the sidebar, not as home-page shortcuts.
 - **Event list:** Freshness state followed by chronological technical data.
 
 At widths below 1024px, navigation becomes an off-canvas panel when JavaScript is available and remains in normal flow without JavaScript. At widths below 640px, forms become single-column, page actions wrap, and cards use reduced padding. Dense tables scroll only inside their table region; the document itself must never scroll horizontally.
@@ -372,7 +372,7 @@ Icons, when present, use one consistent outline family with matching stroke weig
 
 ### Application shell
 
-The sidebar groups Auth destinations into Identity, Access, Connections, and Operations. Section labels use a quiet surface and border so they read as group headers rather than ordinary links. Active navigation uses `{components.navigation-active}` plus a visible leading indicator and `aria-current`. The current user and icon-only theme toggle share one footer row; Profile and the POST-based Sign out action remain on the row below. The icon must retain an accessible label and tooltip.
+The sidebar's personal destination is Overview — the home page hosting the application launcher and account summary; there is no separate applications page. Administrative destinations group into Identity, Access, Connections, and Operations. Section labels use a quiet surface and border so they read as group headers rather than ordinary links. Active navigation uses `{components.navigation-active}` plus a visible leading indicator and `aria-current`. The current user and icon-only theme toggle share one footer row; Profile and the POST-based Sign out action remain on the row below. The icon must retain an accessible label and tooltip.
 
 Mobile navigation uses a labeled toggle, `aria-expanded`, `aria-hidden`, `inert`, focus containment, Escape handling, backdrop dismissal, and focus restoration. Without JavaScript, navigation remains usable in document flow.
 

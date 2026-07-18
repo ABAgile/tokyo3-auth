@@ -2,10 +2,52 @@
 
 {{define "title"}}Overview{{end}}
 {{define "pagetitle"}}Overview{{end}}
-{{define "pagedescription"}}Review your identity and open the applications available to you.{{end}}
+{{define "pagedescription"}}Launch the applications available to you and review your identity.{{end}}
 
 {{define "content"}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+
 <div class="page-stack">
+  <section aria-labelledby="applications-title">
+    <h2 id="applications-title" class="sr-only">Applications</h2>
+    {{if .Tiles}}
+    <p class="application-intro">OIDC applications start their own secure sign-in flow. AWS roles exchange your current session for short-lived credentials without creating an IAM user.</p>
+    <div class="app-grid">
+      {{range .Tiles}}
+      <article class="card app-card" {{if .BrandColor}}style="--app-accent:{{.BrandColor}}"{{end}}>
+        <div class="card-body">
+          <div class="app-heading">
+            {{if .IconURL}}<img src="{{.IconURL}}" alt="" class="app-icon">{{end}}
+            <h3>{{.DisplayName}}</h3>
+          </div>
+          {{if .Subtitle}}<p class="app-subtitle">{{.Subtitle}}</p>{{end}}
+          <div class="app-meta">
+            {{if eq .Kind "aws"}}
+              {{if .StepUpMFA}}<span class="badge badge-info">Step-up MFA</span>{{end}}
+              <span class="badge badge-neutral">{{.TTLSeconds}}s session</span>
+            {{end}}
+            {{if .VisibleToAll}}<span class="badge badge-neutral">Everyone</span>{{end}}
+          </div>
+          {{if eq .Kind "oidc"}}
+            <a href="{{.LaunchURL}}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm btn-block app-action">Launch</a>
+          {{else if eq .Kind "aws"}}
+            <form method="POST" action="/portal/aws/console" target="_blank" class="app-action">
+              <input type="hidden" name="role_id" value="{{.ID}}">
+              <button type="submit" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
+            </form>
+          {{end}}
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="resource-panel empty-state">
+      <h3 class="empty-state-title">No applications assigned</h3>
+      <p class="empty-state-description">Ask an administrator to assign one of your groups to an OAuth client or AWS role.</p>
+    </div>
+    {{end}}
+  </section>
+
   <section class="card" aria-labelledby="account-summary-title">
     <div class="card-header"><h2 id="account-summary-title">Your account</h2></div>
     <div class="card-body">
@@ -19,26 +61,8 @@
       </table>
       <div class="quick-actions mt-4">
         <a href="/portal/account" class="btn btn-secondary">Edit profile</a>
-        <a href="/portal/apps" class="btn btn-primary">View applications</a>
       </div>
     </div>
   </section>
-
-  {{if .IsAdmin}}
-  <section class="card" aria-labelledby="admin-shortcuts-title">
-    <div class="card-header"><h2 id="admin-shortcuts-title">Administration</h2></div>
-    <div class="card-body">
-      <p class="section-description">Manage identities, access, connections, and operational events.</p>
-      <div class="quick-actions">
-        <a href="/portal/admin/users" class="btn btn-secondary">Users</a>
-        <a href="/portal/admin/groups" class="btn btn-secondary">Groups</a>
-        <a href="/portal/admin/clients" class="btn btn-secondary">OAuth clients</a>
-        <a href="/portal/admin/aws" class="btn btn-secondary">AWS federation</a>
-        <a href="/portal/admin/integrations" class="btn btn-secondary">Integrations</a>
-        <a href="/portal/admin/audit" class="btn btn-secondary">Audit log</a>
-      </div>
-    </div>
-  </section>
-  {{end}}
 </div>
 {{end}}

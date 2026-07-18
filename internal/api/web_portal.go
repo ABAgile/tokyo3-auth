@@ -857,9 +857,16 @@ func (s *Server) createPortalSession(w http.ResponseWriter, r *http.Request, use
 
 func (s *Server) handlePortalHome(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
+	tiles, err := s.portalAppTiles(r, pc)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.portalTmpl.render(w, "portal_home.html", struct {
 		portalBase
-	}{newPortalBase(pc, "home")})
+		Tiles []appTile
+		Error string
+	}{newPortalBase(pc, "home"), tiles, r.URL.Query().Get("error")})
 }
 
 // ── Account / Profile (merged with MFA settings) ──────────────────────────────

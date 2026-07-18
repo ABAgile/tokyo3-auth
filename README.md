@@ -168,7 +168,7 @@ AUTHD_DATABASE_URL="postgres://app:pass@localhost/authd" \
 | `AUTHD_MASTER_KEY` | Yes | — | 64-hex-char KEK, or `file:<path>` to read one from disk, for TOTP secrets + JWT key encryption |
 | `AUTHD_ALLOW_REGISTRATION` | No | `false` | Set to `true` to enable self-registration at `/register` |
 | `AUTHD_PROVISION_SYNC_INTERVAL` | No | `1h` | Period for the background full-sync goroutine that re-pushes every user/group to every enabled integration. Belt-and-suspenders for the event-driven push path; idempotent per tick. Set to `0` (or any negative duration) to disable. |
-| `AUTHD_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on `/portal/apps` won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
+| `AUTHD_AWS_AUDIENCE` | If using AWS federation | — | Single `aud` value emitted on every JWT minted for AWS console/CLI federation. Register the same string as `--client-id-list` on each AWS account's IAM OIDC provider. Empty disables the federation flow (AWS tiles on the portal home won't launch and `/aws/credentials` returns 503). Per-role gating happens via `aws:RequestTag/<key>` conditions, not per-role audiences. |
 | `AUTHD_STEP_UP_MFA_TTL` | No | `5m` | Freshness window for the step-up MFA gate that protects AWS roles flagged `require_step_up_mfa`. A click on such a role re-prompts MFA when the session's last MFA challenge is older than this duration (or never happened). Accepts any `time.ParseDuration` value (`30s`, `10m`, `1h`); invalid or empty values fall back to `5m`. |
 | `AUTHD_AWSFED_REAP_INTERVAL` | No | `6h` | Period for the AWS federation revocation reaper. Trims `aws_revoked_users` entries past each role's `MaxSessionDuration` and re-pushes the trimmed inline policy. No-op when no `aws_federation` integration is enabled. Set to `0` to disable. |
 | `AUTHD_VAULT_SCIM_ENABLED` | No | `false` | Deprecated. Configure Vault SCIM via `/portal/admin/integrations` instead. Auto-imported into `app_integrations` once on first boot when set (always as bearer-mode). |
@@ -342,8 +342,8 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `GET/POST` | `/portal/admin/clients/{id}/edit` | Edit client |
 | `POST` | `/portal/admin/clients/{id}/delete` | Delete client |
 | `POST` | `/portal/admin/clients/{id}/rotate-secret` | Rotate client secret |
-| `GET` | `/portal/apps` | User-facing application portal — unified tile list of OIDC apps + AWS federation roles |
-| `GET` | `/portal/aws` | Redirects to `/portal/apps` (legacy, kept for one transition cycle) |
+| `GET` | `/portal/apps` | Redirects to `/portal` (the launcher merged into the home page; kept for one transition cycle) |
+| `GET` | `/portal/aws` | Redirects to `/portal` (legacy, kept for one transition cycle) |
 | `POST` | `/portal/aws/console` | Assume the requested AWS role and redirect to AWS Console |
 | `GET` | `/portal/aws/refresh` | AWS-Issuer URL: silently re-federates when the console session expires |
 | `GET` | `/portal/admin/aws` | Admin: AWS accounts, roles, group→role assignments |
@@ -390,13 +390,13 @@ The GitHub-compatible user object maps:
 
 ## Application Portal
 
-`/portal/apps` is the user-facing tile grid that aggregates every app the signed-in user can launch — OAuth2 clients (Vault, GitHub-compatible apps, internal apps) and AWS federation roles, all in one place. Replaces the AWS-only `/portal/aws` page; that URL now redirects here.
+The portal home page (`/portal`) opens with the user-facing tile grid that aggregates every app the signed-in user can launch — OAuth2 clients (Vault, GitHub-compatible apps, internal apps) and AWS federation roles, all in one place — followed by a compact account summary. It replaces the earlier separate `/portal/apps` page and the AWS-only `/portal/aws` page; both URLs now redirect here.
 
 ### Making an OAuth client visible
 
 OAuth2 clients are invisible by default — appropriate for machine clients (CI deploy keys, service accounts) and SaaS apps that initiate their own SSO from outside. To surface a client as a launchable tile, edit it at `/portal/admin/clients/{id}/edit` and fill in the **Portal visibility** section:
 
-- **Show as tile on /portal/apps** — enables the tile.
+- **Show as tile on the portal home** — enables the tile.
 - **Launch URL** — where the click navigates. Use the **RP's** initiate-login endpoint (e.g. `https://vault.example.com/ui/vault/auth/oidc`), not auth's `/authorize` — the RP needs to bootstrap its own state/nonce for the code flow.
 - **Brand color / Icon URL** — optional cosmetics for the tile card.
 - **Visible to everyone** — shows the tile to every authenticated user. Use for org-wide tools (status page, wiki).
@@ -404,7 +404,7 @@ OAuth2 clients are invisible by default — appropriate for machine clients (CI 
 
 ### Visibility resolution
 
-The handler at `/portal/apps` runs one DB query per source:
+The home-page launcher runs one DB query per source:
 
 ```
 ListPortalClientsForUser(user)  →  OAuth clients where show_in_portal AND
@@ -469,7 +469,7 @@ Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`;
    - Add each role: ARN, slug (URL/CLI-safe identifier — e.g. `platform-prod`), display name, optional step-up MFA flag, session TTL.
    - Add SCIM-group → role assignments mapping group membership to assumable roles.
 
-5. **Users log in** at `/portal/apps`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTHD_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
+5. **Users log in** at `/portal`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTHD_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
 
 ### Revocation (optional but recommended)
 

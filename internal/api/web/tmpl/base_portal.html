@@ -19,7 +19,6 @@
     <nav aria-label="Primary">
       <div class="nav-section">
         <a href="/portal" {{if eq .ActivePage "home"}}class="active" aria-current="page"{{end}}>Overview</a>
-        <a href="/portal/apps" {{if eq .ActivePage "apps"}}class="active" aria-current="page"{{end}}>Applications</a>
       </div>
       {{if .IsAdmin}}
       <div class="nav-section">

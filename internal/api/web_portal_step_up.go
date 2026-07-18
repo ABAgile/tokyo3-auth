@@ -56,7 +56,7 @@ func (s *Server) handlePortalStepUp(w http.ResponseWriter, r *http.Request) {
 	if !hasTOTP && !hasWebAuthn {
 		// A step-up gate the user can't satisfy: better to refuse
 		// loudly at the launcher than to render a dead-end page.
-		http.Redirect(w, r, "/portal/apps?error="+url.QueryEscape(
+		http.Redirect(w, r, "/portal?error="+url.QueryEscape(
 			"This action requires MFA, but no factors are enrolled on your account. Enroll one in /portal/account first."),
 			http.StatusFound)
 		return
@@ -88,7 +88,7 @@ func (s *Server) handlePortalStepUp(w http.ResponseWriter, r *http.Request) {
 	}
 	dest, err := s.dispatchStepUpNext(r, pc, next, roleID)
 	if err != nil {
-		http.Redirect(w, r, "/portal/apps?error="+url.QueryEscape(err.Error()), http.StatusFound)
+		http.Redirect(w, r, "/portal?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, dest, http.StatusFound)
@@ -178,6 +178,6 @@ func (s *Server) dispatchStepUpNext(r *http.Request, pc *portalCtx, next, roleID
 		}
 		return s.buildAWSConsoleURL(r, pc, role)
 	default:
-		return "/portal/apps", nil
+		return "/portal", nil
 	}
 }

@@ -227,12 +227,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /portal/register", s.handlePortalRegisterGET)
 	mux.HandleFunc("POST /portal/register", s.handlePortalRegisterPOST)
 
-	// Portal — application portal (unified tile page for OIDC + AWS apps).
-	// /portal/aws redirects here for one transition cycle; bookmarks and
-	// legacy nav entries continue to work.
-	mux.HandleFunc("GET /portal/apps", s.portalAuth(s.handlePortalApps))
+	// Portal — the application launcher lives on the portal home page.
+	// /portal/apps and the older /portal/aws redirect there for one
+	// transition cycle; bookmarks and legacy nav entries keep working.
+	mux.HandleFunc("GET /portal/apps", s.portalAuth(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/portal", http.StatusFound)
+	}))
 	mux.HandleFunc("GET /portal/aws", s.portalAuth(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/portal/apps", http.StatusFound)
+		http.Redirect(w, r, "/portal", http.StatusFound)
 	}))
 	mux.HandleFunc("POST /portal/aws/console", s.portalAuth(s.handlePortalAWSConsole))
 	mux.HandleFunc("GET /portal/aws/refresh", s.portalAuth(s.handlePortalAWSRefresh))

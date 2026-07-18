@@ -1,13 +1,15 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/google/uuid"
 )
 
-// appTile is one entry on /portal/apps. The handler builds two kinds:
+// appTile is one entry in the portal home's application launcher. The
+// builder produces two kinds:
 // "oidc" tiles back OAuth2 clients (LaunchURL is a normal HTTP link the
 // browser navigates to directly — the RP starts its own SSO dance from
 // there), and "aws" tiles back AWS federation roles (the user's click
@@ -27,28 +29,20 @@ type appTile struct {
 	VisibleToAll bool // OIDC tiles: rendered with a small "everyone" hint for admin visibility
 }
 
-type appsPageData struct {
-	portalBase
-	Tiles []appTile
-	Error string
-}
-
-// handlePortalApps is the unified /portal/apps entry point — aggregates
-// every launchable target the user is authorized for. Tiles come from
+// portalAppTiles aggregates every launchable target the user is
+// authorized for — the portal home's launcher grid. Tiles come from
 // two sources: portal-visible OAuth2 clients (filtered by the user's
 // SCIM groups via client_visibility or the visible_to_all shortcut) and
 // AWS federation roles (existing ListAWSRolesForUser logic). The
-// previous /portal/aws page is now a thin redirect to here so old
-// bookmarks keep working.
-func (s *Server) handlePortalApps(w http.ResponseWriter, r *http.Request) {
-	pc := portalFromCtx(r)
+// previous /portal/apps and /portal/aws pages are thin redirects to the
+// home page so old bookmarks keep working.
+func (s *Server) portalAppTiles(r *http.Request, pc *portalCtx) ([]appTile, error) {
 	tiles := []appTile{}
 
 	// OIDC client tiles
 	clients, err := s.store.ListPortalClientsForUser(r.Context(), pc.User.ID)
 	if err != nil {
-		http.Error(w, "list portal clients: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("list portal clients: %w", err)
 	}
 	for _, c := range clients {
 		if c.LaunchURL == "" {
@@ -72,8 +66,7 @@ func (s *Server) handlePortalApps(w http.ResponseWriter, r *http.Request) {
 	// AWS federation tiles
 	awsRoles, err := s.store.ListAWSRolesForUser(r.Context(), pc.User.ID)
 	if err != nil {
-		http.Error(w, "list aws roles: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("list aws roles: %w", err)
 	}
 	accounts, _ := s.store.ListAWSAccounts(r.Context())
 	acctByID := make(map[uuid.UUID]*model.AWSAccount, len(accounts))
@@ -100,9 +93,5 @@ func (s *Server) handlePortalApps(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.portalTmpl.render(w, "portal_apps.html", appsPageData{
-		portalBase: newPortalBase(pc, "apps"),
-		Tiles:      tiles,
-		Error:      r.URL.Query().Get("error"),
-	})
+	return tiles, nil
 }

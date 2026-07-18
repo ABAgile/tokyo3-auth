@@ -217,10 +217,10 @@ func TestAWSConsole_NonStepUpRole_NoRedirect(t *testing.T) {
 	}
 }
 
-// TestStepUp_GET_NoFactors_RedirectsToApps: a user who has no MFA
+// TestStepUp_GET_NoFactors_RedirectsToHome: a user who has no MFA
 // enrolled cannot satisfy step-up. The handler refuses at GET time
 // rather than rendering a dead-end challenge page.
-func TestStepUp_GET_NoFactors_RedirectsToApps(t *testing.T) {
+func TestStepUp_GET_NoFactors_RedirectsToHome(t *testing.T) {
 	r := newTestRig(t)
 	seedTestUser(t, r.store, "nofactor@example.com", "N0F@ctorPass1!")
 	cookie, _ := loginPortal(t, r, "nofactor@example.com", "N0F@ctorPass1!")
@@ -232,8 +232,8 @@ func TestStepUp_GET_NoFactors_RedirectsToApps(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("status = %d, want 302", resp.StatusCode)
 	}
-	if !strings.HasPrefix(resp.Header.Get("Location"), "/portal/apps") {
-		t.Errorf("Location = %q, want prefix /portal/apps", resp.Header.Get("Location"))
+	if !strings.HasPrefix(resp.Header.Get("Location"), "/portal?error=") {
+		t.Errorf("Location = %q, want prefix /portal?error=", resp.Header.Get("Location"))
 	}
 }
 
