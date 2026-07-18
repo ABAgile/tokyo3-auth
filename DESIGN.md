@@ -332,7 +332,7 @@ Information architecture follows stable operational patterns:
 - **Resource list:** Page header, optional status, resource table, complete empty state.
 - **Resource detail:** Breadcrumb, identity, settings, recovery operations, danger zone.
 - **Settings:** Named sections with local explanations and honest form boundaries.
-- **Authentication:** Brand, task title, one-sentence context, form, one primary action.
+- **Authentication:** Brand, task title, an optional one-sentence context, form, one primary action. When the flow continues to a known client application, the context sentence names the destination as a highlighted chip — `{colors.surface-selected}` background with a fine `{colors.primary}`-tinted outline, `{colors.primary-active}` text, body-sized 650-weight text, `{rounded.full}` — so the user can verify where they are signing in to at a glance without the chip competing with the primary action. Context sentences that add no information (restating that a sign-in form signs you in) are omitted.
 - **Application launcher:** Product identity, relevant access metadata, one launch action.
 - **Event list:** Freshness state followed by chronological technical data.
 

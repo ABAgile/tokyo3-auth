@@ -302,6 +302,23 @@ a:hover { color: var(--color-action-hover); }
   font-size: var(--text-sm);
 }
 
+/* Destination-app chip in the "Continue to <app>" context sentence. */
+.sso-client {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px var(--space-2);
+  overflow: hidden;
+  color: var(--color-action-active);
+  background: var(--color-surface-selected);
+  border: 1px solid var(--t3-indigo-200);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-md);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 /* Authenticated portal shell. */
 .portal-layout {
   display: flex;
