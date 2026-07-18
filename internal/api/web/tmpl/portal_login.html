@@ -3,10 +3,10 @@
 {{define "title"}}Portal sign in{{end}}
 
 {{define "content"}}
-<h1>Portal sign in</h1>
-<p class="subtitle">Manage your account and settings.</p>
+<h1>Sign in to Tokyo3</h1>
+<p class="subtitle">Use your organization account to continue to the portal.</p>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <form method="POST" action="/portal/login">
   <div class="form-group">
@@ -20,6 +20,6 @@
   <button type="submit" class="btn btn-primary btn-block">Sign in</button>
 </form>
 {{if .AllowRegister}}
-<p class="form-footer"><a href="/portal/register">No account? Create one</a></p>
+<p class="form-footer">New to Tokyo3? <a href="/portal/register">Create an account</a></p>
 {{end}}
 {{end}}

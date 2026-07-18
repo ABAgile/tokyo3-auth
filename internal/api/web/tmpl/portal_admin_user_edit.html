@@ -1,159 +1,149 @@
 {{template "base" .}}
 
 {{define "title"}}{{if .IsNew}}New user{{else}}Edit user{{end}}{{end}}
-{{define "pagetitle"}}{{if .IsNew}}New user{{else}}Edit user{{end}}{{end}}
+{{define "pagetitle"}}{{if .IsNew}}New user{{else}}{{.User.Name}}{{end}}{{end}}
+{{define "breadcrumb"}}<a href="/portal/admin/users">Users</a> <span aria-hidden="true">/</span> {{if .IsNew}}New user{{else}}Details{{end}}{{end}}
+{{define "pagedescription"}}{{if .IsNew}}Create an identity and assign its initial access.{{else}}Manage identity, group membership, credentials, and active access.{{end}}{{end}}
 
 {{define "content"}}
-{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+<div class="section-stack">
+  {{if .Success}}<div class="alert alert-success" role="status">{{.Success}}</div>{{end}}
+  {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
-<div class="card mb-4" style="max-width:680px">
-  <div class="card-body">
-    <form method="POST" action="{{if .IsNew}}/portal/admin/users/new{{else}}/portal/admin/users/{{.User.ID}}/edit{{end}}">
-      <div class="form-group">
-        <label for="name">Full name</label>
-        <input type="text" id="name" name="name" value="{{.User.Name}}" required autofocus>
-      </div>
-      <div class="form-group">
-        <label for="email">Email</label>
-        {{if .IsNew}}
-        <input type="email" id="email" name="email" value="{{.User.Email}}" required autocomplete="email">
-        {{else}}
-        <input type="email" id="email" name="email" value="{{.User.Email}}" disabled>
-        {{end}}
-      </div>
-      {{if .IsNew}}
-      <div class="form-group">
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" required autocomplete="new-password">
-      </div>
-      {{end}}
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="active" name="active" value="1" {{if .User.Active}}checked{{end}}>
-          <label for="active" style="margin:0">Active</label>
+  <section class="card" aria-labelledby="user-details-title">
+    <div class="card-header"><h2 id="user-details-title">Identity details</h2></div>
+    <div class="card-body">
+      <form method="POST" action="{{if .IsNew}}/portal/admin/users/new{{else}}/portal/admin/users/{{.User.ID}}/edit{{end}}">
+        <div class="form-group">
+          <label for="name">Full name</label>
+          <input type="text" id="name" name="name" value="{{.User.Name}}" required autofocus autocomplete="name">
         </div>
-      </div>
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="is_admin" name="is_admin" value="1" {{if .User.IsAdmin}}checked{{end}}>
-          <label for="is_admin" style="margin:0">Administrator</label>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label>Groups</label>
-        {{if .Groups}}
-        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;max-height:240px;overflow:auto">
-          {{range .Groups}}
-          <div class="checkbox-row" style="margin-bottom:4px">
-            <input type="checkbox" id="g_{{.ID}}" name="group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
-            <label for="g_{{.ID}}" style="margin:0">{{.DisplayName}}</label>
-          </div>
+        <div class="form-group">
+          <label for="email">Email</label>
+          {{if .IsNew}}
+          <input type="email" id="email" name="email" value="{{.User.Email}}" required autocomplete="email">
+          {{else}}
+          <input type="email" id="email" name="email" value="{{.User.Email}}" disabled>
+          <p class="field-help">Email is the stable sign-in identifier and cannot be changed here.</p>
           {{end}}
         </div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Membership changes are pushed to every enabled integration.</div>
-        {{else}}
-        <div class="text-muted">No groups defined yet. Create one under <a href="/portal/admin/groups">Groups</a>.</div>
+        {{if .IsNew}}
+        <div class="form-group">
+          <label for="password">Temporary password</label>
+          <input type="password" id="password" name="password" required autocomplete="new-password">
+          <p class="field-help">Use at least 12 characters with uppercase, lowercase, number, and special characters.</p>
+        </div>
         {{end}}
-      </div>
+        <div class="form-group">
+          <div class="checkbox-row">
+            <input type="checkbox" id="active" name="active" value="1" {{if .User.Active}}checked{{end}}>
+            <label for="active">Active</label>
+          </div>
+          <p class="field-help">Inactive users cannot start new authenticated sessions.</p>
+        </div>
+        <div class="form-group">
+          <div class="checkbox-row">
+            <input type="checkbox" id="is_admin" name="is_admin" value="1" {{if .User.IsAdmin}}checked{{end}}>
+            <label for="is_admin">Administrator</label>
+          </div>
+          <p class="field-help">Administrators can manage identities, clients, integrations, federation, and audit events.</p>
+        </div>
 
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button type="submit" class="btn btn-primary">{{if .IsNew}}Create user{{else}}Save changes{{end}}</button>
-        <a href="/portal/admin/users" class="btn btn-secondary">Cancel</a>
-      </div>
-    </form>
+        <div class="form-group">
+          <label>Groups</label>
+          {{if .Groups}}
+          <div class="checkbox-panel" role="group" aria-label="Group membership">
+            {{range .Groups}}
+            <div class="checkbox-row">
+              <input type="checkbox" id="g_{{.ID}}" name="group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
+              <label for="g_{{.ID}}">{{.DisplayName}}</label>
+            </div>
+            {{end}}
+          </div>
+          <p class="field-help">Membership changes are pushed to every enabled integration.</p>
+          {{else}}
+          <p class="text-muted">No groups defined yet. Create one under <a href="/portal/admin/groups">Groups</a>.</p>
+          {{end}}
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">{{if .IsNew}}Create user{{else}}Save changes{{end}}</button>
+          <a href="/portal/admin/users" class="btn btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  {{if not .IsNew}}
+  {{if .TempPW}}
+  <div class="alert alert-info one-time-secret" role="status">
+    <div class="one-time-secret-label">Temporary password — shown once</div>
+    <code class="mono one-time-secret-value">{{.TempPW}}</code>
+    <p>Copy it now and share it through a trusted out-of-band channel. The user must set a new password before any other action.</p>
   </div>
-</div>
+  {{end}}
 
-{{if not .IsNew}}
-{{if .TempPW}}
-<div class="alert alert-info" style="max-width:680px;margin-bottom:16px">
-  <strong>Temporary password (shown once — copy now):</strong>
-  <code class="mono" style="display:block;margin-top:6px;word-break:break-all">{{.TempPW}}</code>
-  <p style="margin:8px 0 0;font-size:13px">
-    Share this with the user through a trusted out-of-band channel. They will be required
-    to set a new password on their next login before any other action is permitted.
-  </p>
-</div>
-{{end}}
+  <section class="card security-action-card" aria-labelledby="reset-password-title">
+    <div class="card-header"><h2 id="reset-password-title">Reset password</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Generate a single-use temporary password and invalidate all current sessions. The user must replace it at the next sign-in.</p>
+      <form method="POST" action="/portal/admin/users/{{.User.ID}}/reset-password"
+            onsubmit="return confirm('Issue a single-use temporary password and revoke this user\'s active sessions?')">
+        <button type="submit" class="btn btn-warning btn-sm">Reset password</button>
+      </form>
+    </div>
+  </section>
 
-<div class="card mb-4" style="max-width:680px">
-  <div class="card-header"><h2>Reset password</h2></div>
-  <div class="card-body">
-    <p class="text-muted" style="margin-top:0">
-      Generates a single-use temporary password and invalidates all current sessions.
-      The temp password is shown once on this page; share it with the user out-of-band.
-      The user will be forced to set a new password on next login (the temp credential
-      cannot be reused).
-    </p>
-    <form method="POST" action="/portal/admin/users/{{.User.ID}}/reset-password"
-          onsubmit="return confirm('Issue a single-use temporary password and revoke this user\'s active sessions?')">
-      <button type="submit" class="btn btn-warning btn-sm">Reset password</button>
-    </form>
-  </div>
-</div>
+  <section class="card security-action-card" aria-labelledby="clear-mfa-title">
+    <div class="card-header"><h2 id="clear-mfa-title">MFA credentials</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Remove the user's TOTP credential and every WebAuthn key. Policy may require re-enrollment at the next sign-in.</p>
+      <form method="POST" action="/portal/admin/users/{{.User.ID}}/clear-mfa"
+            onsubmit="return confirm('Clear all MFA credentials for this user?')">
+        <button type="submit" class="btn btn-warning btn-sm">Clear MFA credentials</button>
+      </form>
+    </div>
+  </section>
 
-<div class="card mb-4" style="max-width:680px">
-  <div class="card-header"><h2>MFA credentials</h2></div>
-  <div class="card-body">
-    <p class="text-muted" style="margin-top:0">Removes the user's TOTP and every WebAuthn key. They will be prompted to re-enroll on next login if MFA is required by policy.</p>
-    <form method="POST" action="/portal/admin/users/{{.User.ID}}/clear-mfa"
-          onsubmit="return confirm('Clear all MFA credentials for this user?')">
-      <button type="submit" class="btn btn-warning btn-sm">Clear MFA credentials</button>
-    </form>
-  </div>
-</div>
+  <section class="card security-action-card" aria-labelledby="aws-sessions-title">
+    <div class="card-header"><h2 id="aws-sessions-title">AWS sessions</h2></div>
+    <div class="card-body">
+      <p class="text-muted">End this user's current AWS STS sessions within approximately 30 seconds. Their Tokyo3 account remains active and they can authenticate and federate again immediately.</p>
+      <form method="POST" action="/portal/admin/users/{{.User.ID}}/revoke-aws"
+            onsubmit="return confirm('Revoke this user\'s active AWS STS sessions? Their auth login keeps working.')">
+        <button type="submit" class="btn btn-warning btn-sm">Revoke AWS sessions</button>
+      </form>
+    </div>
+  </section>
 
-<div class="card mb-4" style="max-width:680px">
-  <div class="card-header"><h2>AWS sessions</h2></div>
-  <div class="card-body">
-    <p class="text-muted" style="margin-top:0">
-      Adds this user's UUID to every AWS federation role's <code>AuthRevokedUsers</code>
-      inline policy, killing their current STS sessions within ~30s. The user can
-      <strong>re-authenticate to auth and federate again immediately</strong> — this
-      action does NOT deactivate the account. Use for lost-laptop / suspect-credential
-      scenarios; use <em>Delete user</em> below for full lockout.
-    </p>
-    <form method="POST" action="/portal/admin/users/{{.User.ID}}/revoke-aws"
-          onsubmit="return confirm('Revoke this user\'s active AWS STS sessions? Their auth login keeps working.')">
-      <button type="submit" class="btn btn-warning btn-sm">Revoke AWS sessions</button>
-    </form>
-  </div>
-</div>
+  <section class="card security-action-card security-action-card-danger" aria-labelledby="compromised-reset-title">
+    <div class="card-header"><h2 id="compromised-reset-title">Compromised account reset</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Use this coordinated response when credentials may have leaked. It:</p>
+      <ul class="prose-list">
+        <li>Issues a single-use temporary password and forces rotation</li>
+        <li>Deletes TOTP and every WebAuthn credential</li>
+        <li>Ends all Auth sessions and broadcasts back-channel logout</li>
+        <li>Revokes active AWS STS sessions</li>
+      </ul>
+      <p class="text-muted">The account remains active so the user can prove identity again, replace the password, and re-enroll MFA.</p>
+      <form method="POST" action="/portal/admin/users/{{.User.ID}}/compromised-reset"
+            onsubmit="return confirm('Treat this account as compromised: rotate password, wipe MFA, kill sessions, revoke AWS. Continue?')">
+        <button type="submit" class="btn btn-danger btn-sm">Reset compromised account</button>
+      </form>
+    </div>
+  </section>
 
-<div class="card mb-4" style="max-width:680px">
-  <div class="card-header"><h2>Compromised account reset</h2></div>
-  <div class="card-body">
-    <p class="text-muted" style="margin-top:0">
-      The "assume the worst" action when credentials may have leaked. In one click:
-    </p>
-    <ul class="text-muted" style="margin-top:4px;font-size:13px">
-      <li>Issues a single-use temporary password and forces rotation on next login</li>
-      <li>Deletes TOTP and every WebAuthn credential (user must re-enroll MFA)</li>
-      <li>Kills all auth sessions and broadcasts back-channel logout to every RP</li>
-      <li>Revokes active AWS STS sessions via the federation revocation provisioner</li>
-    </ul>
-    <p class="text-muted" style="font-size:13px">
-      The account remains Active. The user proves identity again via the temp password,
-      sets a new permanent password, re-enrolls MFA, and re-federates AWS — all forced
-      flows. Use <em>Delete user</em> below for full account lockoff.
-    </p>
-    <form method="POST" action="/portal/admin/users/{{.User.ID}}/compromised-reset"
-          onsubmit="return confirm('Treat this account as compromised: rotate password, wipe MFA, kill sessions, revoke AWS. Continue?')">
-      <button type="submit" class="btn btn-danger btn-sm">Compromised account reset</button>
-    </form>
-  </div>
+  <section class="card danger-zone" aria-labelledby="danger-zone-title">
+    <div class="card-header"><h2 id="danger-zone-title">Danger zone</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Permanently delete this identity and prevent future access. This cannot be undone.</p>
+      <form method="POST" action="/portal/admin/users/{{.User.ID}}/delete" class="mt-4"
+            onsubmit="return confirm('Delete this user? This cannot be undone.')">
+        <button type="submit" class="btn btn-danger btn-sm">Delete user</button>
+      </form>
+    </div>
+  </section>
+  {{end}}
 </div>
-
-<div class="card" style="max-width:680px">
-  <div class="card-header"><h2>Danger zone</h2></div>
-  <div class="card-body">
-    <form method="POST" action="/portal/admin/users/{{.User.ID}}/delete"
-          onsubmit="return confirm('Delete this user? This cannot be undone.')">
-      <button type="submit" class="btn btn-danger btn-sm">Delete user</button>
-    </form>
-  </div>
-</div>
-{{end}}
 {{end}}

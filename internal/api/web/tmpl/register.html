@@ -4,9 +4,9 @@
 
 {{define "content"}}
 <h1>Create account</h1>
-<p class="subtitle">Register to continue</p>
+<p class="subtitle">Register your identity to continue.</p>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <form method="POST" action="/register">
   <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -17,7 +17,6 @@
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
   <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
   <input type="hidden" name="nonce" value="{{.Nonce}}">
-
   <div class="form-group">
     <label for="name">Full name</label>
     <input type="text" id="name" name="name" value="{{.Name}}" required autofocus autocomplete="name">
@@ -29,13 +28,10 @@
   <div class="form-group">
     <label for="password">Password</label>
     <input type="password" id="password" name="password" required autocomplete="new-password">
-    <p class="text-muted" style="margin-top:4px;font-size:12px">Min 12 chars, must include upper, lower, digit, and special character.</p>
+    <p class="field-help">Use at least 12 characters with uppercase, lowercase, number, and special characters.</p>
   </div>
-
-  <button type="submit" class="btn btn-primary btn-block" style="margin-top:4px">Create account</button>
+  <button type="submit" class="btn btn-primary btn-block">Create account</button>
 </form>
 
-<p class="text-muted mt-4" style="text-align:center">
-  Already have an account? <a href="/authorize?{{.QueryString}}">Sign in</a>
-</p>
+<p class="form-footer">Already registered? <a href="/authorize?{{.QueryString}}">Sign in</a></p>
 {{end}}

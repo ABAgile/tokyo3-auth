@@ -2,44 +2,58 @@
 
 {{define "title"}}Users{{end}}
 {{define "pagetitle"}}Users{{end}}
+{{define "pagedescription"}}Manage identities, access status, and authentication requirements.{{end}}
 
 {{define "topbar-right"}}
-<a href="/portal/admin/users/new" class="btn btn-primary btn-sm">+ New user</a>
+<a href="/portal/admin/users/new" class="btn btn-primary">New user</a>
 {{end}}
 
 {{define "content"}}
-{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+{{if .Success}}<div class="alert alert-success" role="status">{{.Success}}</div>{{end}}
 
-<div class="card">
+<div class="resource-panel">
+  {{if .Users}}
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Email</th>
+          <th>User</th>
           <th>Status</th>
           <th>MFA</th>
           <th>Role</th>
           <th>Created</th>
-          <th></th>
+          <th><span class="sr-only">Actions</span></th>
         </tr>
       </thead>
       <tbody>
         {{range .Users}}
         <tr>
-          <td>{{.Name}}</td>
-          <td>{{.Email}}</td>
-          <td>{{if .Active}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
-          <td>{{if .MFAEnabled}}<span class="badge badge-blue">On</span>{{else}}<span class="badge badge-gray">Off</span>{{end}}</td>
-          <td>{{if .IsAdmin}}<span class="badge badge-blue">Admin</span>{{else}}<span class="badge badge-gray">User</span>{{end}}</td>
+          <td class="resource-primary">
+            <div class="resource-name">{{.Name}}</div>
+            <div class="resource-meta">{{.Email}}</div>
+          </td>
+          <td>
+            {{if .Active}}
+            <span class="status status-success"><span class="status-dot" aria-hidden="true"></span>Active</span>
+            {{else}}
+            <span class="status status-danger"><span class="status-dot" aria-hidden="true"></span>Inactive</span>
+            {{end}}
+          </td>
+          <td>{{if .MFAEnabled}}<span class="badge badge-success">Enrolled</span>{{else}}<span class="badge badge-neutral">Not enrolled</span>{{end}}</td>
+          <td>{{if .IsAdmin}}<span class="badge badge-info">Administrator</span>{{else}}<span class="badge badge-neutral">User</span>{{end}}</td>
           <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
-          <td><a href="/portal/admin/users/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a></td>
+          <td class="resource-actions"><a href="/portal/admin/users/{{.ID}}/edit" class="btn btn-secondary btn-sm" aria-label="Edit {{.Name}}">Edit</a></td>
         </tr>
-        {{else}}
-        <tr><td colspan="7" class="text-muted" style="text-align:center;padding:28px">No users found.</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
+  {{else}}
+  <div class="empty-state">
+    <h2 class="empty-state-title">No users yet</h2>
+    <p class="empty-state-description">Create the first identity to grant access to Tokyo3 applications.</p>
+    <a href="/portal/admin/users/new" class="btn btn-primary">Create user</a>
+  </div>
+  {{end}}
 </div>
 {{end}}

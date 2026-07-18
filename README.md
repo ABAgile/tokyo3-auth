@@ -19,6 +19,11 @@ A minimal self-hosted Identity Provider (IdP) for internal applications.
 
 ## Design Concepts
 
+### Portal UI
+
+The server-rendered portal adopts the visual identity and design tokens defined
+in [`DESIGN.md`](DESIGN.md).
+
 ### Token model
 - **Access tokens**: Opaque random 32-byte hex strings. SHA-256 hashes stored in the database. Never stored in plain text.
 - **Refresh tokens**: Same opaque model; rotated on each use.

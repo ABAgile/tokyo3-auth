@@ -1,64 +1,57 @@
 {{template "base" .}}
 
 {{define "title"}}{{if .IsNew}}New group{{else}}Edit group{{end}}{{end}}
-{{define "pagetitle"}}{{if .IsNew}}New group{{else}}Edit group{{end}}{{end}}
+{{define "pagetitle"}}{{if .IsNew}}New group{{else}}{{.Group.DisplayName}}{{end}}{{end}}
+{{define "breadcrumb"}}<a href="/portal/admin/groups">Groups</a> <span aria-hidden="true">/</span> {{if .IsNew}}New group{{else}}Details{{end}}{{end}}
+{{define "pagedescription"}}{{if .IsNew}}Create a role group and choose its initial members.{{else}}Manage group identity and membership.{{end}}{{end}}
 
 {{define "content"}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+<div class="page-stack page-stack-narrow">
+  {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
-<div class="card" style="max-width:680px">
-  <div class="card-body">
-    {{if not .IsNew}}
-    <div class="form-group">
-      <label>Group ID</label>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input type="text" value="{{.Group.ID}}" readonly class="mono" style="flex:1" onclick="this.select()">
-        <button type="button" class="btn btn-secondary btn-sm" data-copy="{{.Group.ID}}" title="Copy ID">Copy</button>
-      </div>
-      <div class="text-muted" style="font-size:12px;margin-top:4px">Use this UUID when wiring downstream integrations (e.g. vault's <code>POST /api/v1/scim/group-roles</code> <code>scim_external_id</code>).</div>
-    </div>
-    {{end}}
-
-    <form method="POST" action="{{if .IsNew}}/portal/admin/groups/new{{else}}/portal/admin/groups/{{.Group.ID}}/edit{{end}}">
+  <section class="card" aria-labelledby="group-details-title">
+    <div class="card-header"><h2 id="group-details-title">Group details</h2></div>
+    <div class="card-body">
+      {{if not .IsNew}}
       <div class="form-group">
-        <label for="display_name">Display name</label>
-        <input type="text" id="display_name" name="display_name" value="{{.Group.DisplayName}}" required autofocus>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Pushed to every enabled integration as the SCIM group displayName / IAM group name.</div>
+        <label for="group-id">Group ID</label>
+        <div class="copy-field">
+          <input type="text" id="group-id" value="{{.Group.ID}}" readonly class="mono" onclick="this.select()">
+          <button type="button" class="btn btn-secondary" data-copy="{{.Group.ID}}" title="Copy group ID">Copy</button>
+        </div>
+        <p class="field-help">Use this UUID as the external group identifier when configuring downstream integrations.</p>
       </div>
+      {{end}}
 
-      <div class="form-group">
-        <label>Members</label>
-        {{if .Users}}
-        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;max-height:280px;overflow:auto">
-          {{range .Users}}
-          <div class="checkbox-row" style="margin-bottom:4px">
-            <input type="checkbox" id="m_{{.User.ID}}" name="members" value="{{.User.ID}}" {{if .IsMember}}checked{{end}}>
-            <label for="m_{{.User.ID}}" style="margin:0">{{.User.Name}} <span class="text-muted">&lt;{{.User.Email}}&gt;</span></label>
+      <form method="POST" action="{{if .IsNew}}/portal/admin/groups/new{{else}}/portal/admin/groups/{{.Group.ID}}/edit{{end}}">
+        <div class="form-group">
+          <label for="display_name">Display name</label>
+          <input type="text" id="display_name" name="display_name" value="{{.Group.DisplayName}}" required autofocus>
+          <p class="field-help">Pushed to enabled integrations as the SCIM group display name or IAM group name.</p>
+        </div>
+
+        <div class="form-group">
+          <label>Members</label>
+          {{if .Users}}
+          <div class="checkbox-panel" role="group" aria-label="Group members">
+            {{range .Users}}
+            <div class="checkbox-row">
+              <input type="checkbox" id="m_{{.User.ID}}" name="members" value="{{.User.ID}}" {{if .IsMember}}checked{{end}}>
+              <label for="m_{{.User.ID}}">{{.User.Name}} <span class="text-muted">&lt;{{.User.Email}}&gt;</span></label>
+            </div>
+            {{end}}
           </div>
+          {{else}}
+          <p class="text-muted">No users available.</p>
           {{end}}
         </div>
-        {{else}}
-        <div class="text-muted">No users available.</div>
-        {{end}}
-      </div>
 
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button type="submit" class="btn btn-primary">{{if .IsNew}}Create group{{else}}Save changes{{end}}</button>
-        <a href="/portal/admin/groups" class="btn btn-secondary">Cancel</a>
-      </div>
-    </form>
-  </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">{{if .IsNew}}Create group{{else}}Save changes{{end}}</button>
+          <a href="/portal/admin/groups" class="btn btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
 </div>
-
-<script>
-document.addEventListener('click', function(e) {
-  var btn = e.target.closest('[data-copy]');
-  if (!btn) return;
-  navigator.clipboard.writeText(btn.dataset.copy).then(function() {
-    var original = btn.textContent;
-    btn.textContent = 'Copied';
-    setTimeout(function() { btn.textContent = original; }, 1200);
-  });
-});
-</script>
 {{end}}

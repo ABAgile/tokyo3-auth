@@ -1,115 +1,143 @@
 {{template "base" .}}
 
 {{define "title"}}{{if .IsNew}}New client{{else}}Edit client{{end}}{{end}}
-{{define "pagetitle"}}{{if .IsNew}}New OAuth client{{else}}Edit client{{end}}{{end}}
+{{define "pagetitle"}}{{if .IsNew}}New OAuth client{{else}}{{.Client.Name}}{{end}}{{end}}
+{{define "breadcrumb"}}<a href="/portal/admin/clients">OAuth clients</a> <span aria-hidden="true">/</span> {{if .IsNew}}New client{{else}}Details{{end}}{{end}}
+{{define "pagedescription"}}{{if .IsNew}}Register a relying application or headless OAuth client.{{else}}Manage protocol settings, credentials, and portal visibility.{{end}}{{end}}
 
 {{define "content"}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-{{if .NewSecret}}<div class="alert alert-info">Client secret (save now, shown only once): <strong class="mono">{{.NewSecret}}</strong></div>{{end}}
-
-<div class="card" style="max-width:600px">
-  <div class="card-body">
-    <form method="POST" action="{{if .IsNew}}/portal/admin/clients/new{{else}}/portal/admin/clients/{{.Client.ID}}/edit{{end}}">
-      <div class="form-group">
-        <label for="name">Client name</label>
-        <input type="text" id="name" name="name" value="{{.Client.Name}}" required autofocus>
-      </div>
-      <div class="form-group">
-        <label for="redirect_uris">Redirect URIs (one per line)</label>
-        <textarea id="redirect_uris" name="redirect_uris" rows="3">{{range .Client.RedirectURIs}}{{.}}
-{{end}}</textarea>
-      </div>
-      <div class="form-group">
-        <label for="scopes">Allowed scopes (space-separated)</label>
-        <input type="text" id="scopes" name="scopes" value="{{range $i,$s := .Client.Scopes}}{{if $i}} {{end}}{{$s}}{{end}}">
-      </div>
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="public" name="public" value="1" {{if .Client.Public}}checked{{end}}>
-          <label for="public" style="margin:0">Public client (PKCE only, no secret)</label>
-        </div>
-      </div>
-      <div class="form-group">
-        <label for="backchannel_logout_uri">Back-channel logout URI <span class="text-muted" style="font-weight:400">(optional)</span></label>
-        <input type="url" id="backchannel_logout_uri" name="backchannel_logout_uri"
-               value="{{if .Client.BackchannelLogoutURI}}{{.Client.BackchannelLogoutURI}}{{end}}"
-               placeholder="https://app.example.com/oidc/backchannel-logout">
-        <div class="text-muted" style="font-size:12px;margin-top:4px">When set, auth POSTs a signed <code>logout_token</code> JWT here on every event that ends a user's session (portal logout, admin deactivation, SCIM deprovision, password reset). Leave empty to opt out.</div>
-      </div>
-
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="allow_device_grant" name="allow_device_grant" value="1" {{if .Client.AllowDeviceGrant}}checked{{end}}>
-          <label for="allow_device_grant" style="margin:0">Allow device authorization grant (RFC 8628)</label>
-        </div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Enables headless clients (CLI helpers, IoT) to authenticate via <code>POST /device_authorization</code> &rarr; user code on <code>/device</code> &rarr; poll <code>/token</code>. Off by default; enable only for clients that genuinely need it.</div>
-      </div>
-
-      <h3 style="margin-top:24px;margin-bottom:8px;font-size:14px">Portal visibility</h3>
-      <div class="text-muted" style="font-size:12px;margin-bottom:12px">
-        Controls whether this client renders as a launchable tile on the user-facing
-        <a href="/portal/apps">Applications</a> page. Leave disabled for machine clients
-        (service accounts, CI deploy keys) and confidential SaaS apps that initiate
-        their own SSO from outside.
-      </div>
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="show_in_portal" name="show_in_portal" value="1" {{if .Client.ShowInPortal}}checked{{end}}>
-          <label for="show_in_portal" style="margin:0">Show as tile on /portal/apps</label>
-        </div>
-      </div>
-      <div class="form-group">
-        <label for="launch_url">Launch URL <span class="text-muted" style="font-weight:400">(required when shown)</span></label>
-        <input type="url" id="launch_url" name="launch_url" value="{{.Client.LaunchURL}}"
-               placeholder="https://vault.example.com/ui/vault/auth/oidc">
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Where the tile's click navigates. Typically the RP's initiate-login endpoint, NOT auth's <code>/authorize</code> directly — the RP needs to set its own state/nonce for the code flow.</div>
-      </div>
-      <div class="form-group" style="display:flex;gap:12px">
-        <div style="flex:1">
-          <label for="brand_color">Brand color <span class="text-muted" style="font-weight:400">(optional)</span></label>
-          <input type="text" id="brand_color" name="brand_color" value="{{.Client.BrandColor}}" placeholder="#1a73e8" pattern="^#?[0-9a-fA-F]{3,8}$">
-        </div>
-        <div style="flex:2">
-          <label for="icon_url">Icon URL <span class="text-muted" style="font-weight:400">(optional)</span></label>
-          <input type="url" id="icon_url" name="icon_url" value="{{.Client.IconURL}}" placeholder="https://example.com/icon.svg">
-        </div>
-      </div>
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="visible_to_all" name="visible_to_all" value="1" {{if .Client.VisibleToAll}}checked{{end}}>
-          <label for="visible_to_all" style="margin:0">Visible to everyone (overrides group selection below)</label>
-        </div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Use for org-wide tools (status page, wiki). When unchecked, only members of the selected groups see the tile.</div>
-      </div>
-      {{if .VisibilityGroups}}
-      <div class="form-group">
-        <label>Visible to SCIM groups</label>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
-          {{range .VisibilityGroups}}
-          <label class="checkbox-row" style="margin:0;flex:0 0 calc(50% - 4px)">
-            <input type="checkbox" name="visibility_group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
-            <span>{{.DisplayName}}</span>
-          </label>
-          {{end}}
-        </div>
-      </div>
-      {{else}}
-      <div class="text-muted" style="font-size:12px">No SCIM groups defined yet. <a href="/portal/admin/groups">Add groups</a> first to gate visibility per group.</div>
-      {{end}}
-
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button type="submit" class="btn btn-primary">{{if .IsNew}}Create client{{else}}Save changes{{end}}</button>
-        <a href="/portal/admin/clients" class="btn btn-secondary">Cancel</a>
-      </div>
-    </form>
-
-    {{if .IsNew}}{{else}}
-    <div class="separator"></div>
-    <form method="POST" action="/portal/admin/clients/{{.Client.ID}}/delete"
-          onsubmit="return confirm('Delete this client?')">
-      <button type="submit" class="btn btn-danger btn-sm">Delete client</button>
-    </form>
-    {{end}}
+<div class="page-stack page-stack-narrow">
+  {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+  {{if .NewSecret}}
+  <div class="alert alert-info one-time-secret" role="status">
+    <div class="one-time-secret-label">Client secret — shown once</div>
+    <code class="mono one-time-secret-value">{{.NewSecret}}</code>
+    <p>Copy it now and store it in the relying application's secret manager.</p>
   </div>
+  {{end}}
+
+  <section class="card" aria-labelledby="client-settings-title">
+    <div class="card-header"><h2 id="client-settings-title">Client settings</h2></div>
+    <div class="card-body">
+      <form method="POST" action="{{if .IsNew}}/portal/admin/clients/new{{else}}/portal/admin/clients/{{.Client.ID}}/edit{{end}}">
+        <section class="form-section" aria-labelledby="client-protocol-title">
+          <h2 class="form-section-title" id="client-protocol-title">Identity and protocol</h2>
+          <p class="form-section-description">Define how the relying application identifies itself and where Tokyo3 may return authorization responses.</p>
+          <div class="form-group">
+            <label for="name">Client name</label>
+            <input type="text" id="name" name="name" value="{{.Client.Name}}" required autofocus>
+          </div>
+          <div class="form-group">
+            <label for="redirect_uris">Redirect URIs</label>
+            <textarea id="redirect_uris" name="redirect_uris" rows="3">{{range .Client.RedirectURIs}}{{.}}
+{{end}}</textarea>
+            <p class="field-help">Enter one exact redirect URI per line.</p>
+          </div>
+          <div class="form-group">
+            <label for="scopes">Allowed scopes</label>
+            <input type="text" id="scopes" name="scopes" value="{{range $i,$s := .Client.Scopes}}{{if $i}} {{end}}{{$s}}{{end}}">
+            <p class="field-help">Space-separated scope names.</p>
+          </div>
+        </section>
+
+        <section class="form-section" aria-labelledby="client-security-title">
+          <h2 class="form-section-title" id="client-security-title">Security and authorization</h2>
+          <p class="form-section-description">Choose the authentication and session behaviors this client is allowed to use.</p>
+          <div class="form-group">
+            <div class="checkbox-row">
+              <input type="checkbox" id="public" name="public" value="1" {{if .Client.Public}}checked{{end}}>
+              <label for="public">Public client (PKCE only, no secret)</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="backchannel_logout_uri">Back-channel logout URI <span class="text-muted">(optional)</span></label>
+            <input type="url" id="backchannel_logout_uri" name="backchannel_logout_uri"
+                   value="{{if .Client.BackchannelLogoutURI}}{{.Client.BackchannelLogoutURI}}{{end}}"
+                   placeholder="https://app.example.com/oidc/backchannel-logout">
+            <p class="field-help">Auth posts a signed <code>logout_token</code> here when a user's session ends. Leave empty to opt out.</p>
+          </div>
+          <div class="form-group">
+            <div class="checkbox-row">
+              <input type="checkbox" id="allow_device_grant" name="allow_device_grant" value="1" {{if .Client.AllowDeviceGrant}}checked{{end}}>
+              <label for="allow_device_grant">Allow device authorization grant (RFC 8628)</label>
+            </div>
+            <p class="field-help">Enable only for headless clients that need user-code authentication through <code>/device</code>.</p>
+          </div>
+        </section>
+
+        <section class="form-section" aria-labelledby="client-portal-title">
+          <h2 class="form-section-title" id="client-portal-title">Portal presentation</h2>
+          <p class="form-section-description">Control whether this client appears on the user-facing Applications page. Machine clients normally remain hidden.</p>
+          <div class="form-group">
+            <div class="checkbox-row">
+              <input type="checkbox" id="show_in_portal" name="show_in_portal" value="1" {{if .Client.ShowInPortal}}checked{{end}}>
+              <label for="show_in_portal">Show on the Applications page</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="launch_url">Launch URL <span class="text-muted">(required when shown)</span></label>
+            <input type="url" id="launch_url" name="launch_url" value="{{.Client.LaunchURL}}"
+                   placeholder="https://vault.example.com/ui/vault/auth/oidc">
+            <p class="field-help">Use the relying party's initiate-login endpoint, not Auth's <code>/authorize</code> endpoint.</p>
+          </div>
+          <div class="form-group field-grid field-grid-wide-second">
+            <div>
+              <label for="brand_color">Brand color <span class="text-muted">(optional)</span></label>
+              <input type="text" id="brand_color" name="brand_color" value="{{.Client.BrandColor}}" placeholder="#1a73e8" pattern="^#?[0-9a-fA-F]{3,8}$">
+            </div>
+            <div>
+              <label for="icon_url">Icon URL <span class="text-muted">(optional)</span></label>
+              <input type="url" id="icon_url" name="icon_url" value="{{.Client.IconURL}}" placeholder="https://example.com/icon.svg">
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section" aria-labelledby="client-access-title">
+          <h2 class="form-section-title" id="client-access-title">Portal access</h2>
+          <p class="form-section-description">Make the application available to everyone or restrict it to selected SCIM groups.</p>
+          <div class="form-group">
+            <div class="checkbox-row">
+              <input type="checkbox" id="visible_to_all" name="visible_to_all" value="1" {{if .Client.VisibleToAll}}checked{{end}}>
+              <label for="visible_to_all">Visible to everyone</label>
+            </div>
+            <p class="field-help">Use for organization-wide tools. This overrides group selection below.</p>
+          </div>
+          {{if .VisibilityGroups}}
+          <div class="form-group">
+            <label>Visible to SCIM groups</label>
+            <div class="checkbox-grid" role="group" aria-label="Client visibility groups">
+              {{range .VisibilityGroups}}
+              <label class="checkbox-row">
+                <input type="checkbox" name="visibility_group_ids" value="{{.ID}}" {{if .IsMember}}checked{{end}}>
+                <span>{{.DisplayName}}</span>
+              </label>
+              {{end}}
+            </div>
+          </div>
+          {{else}}
+          <p class="text-muted">No SCIM groups defined yet. <a href="/portal/admin/groups">Add groups</a> first to restrict visibility.</p>
+          {{end}}
+        </section>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">{{if .IsNew}}Create client{{else}}Save changes{{end}}</button>
+          <a href="/portal/admin/clients" class="btn btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  {{if .IsNew}}{{else}}
+  <section class="card danger-zone" aria-labelledby="client-danger-title">
+    <div class="card-header"><h2 id="client-danger-title">Danger zone</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Delete this client and prevent future authorization and token exchange. This cannot be undone.</p>
+      <form method="POST" action="/portal/admin/clients/{{.Client.ID}}/delete" class="mt-4"
+            onsubmit="return confirm('Delete this client?')">
+        <button type="submit" class="btn btn-danger btn-sm">Delete client</button>
+      </form>
+    </div>
+  </section>
+  {{end}}
 </div>
 {{end}}

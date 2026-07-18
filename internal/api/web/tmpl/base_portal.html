@@ -4,48 +4,84 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{block "title" .}}Portal{{end}} — tokyo3-auth</title>
+<script>try{const t=localStorage.getItem("tokyo3-theme");document.documentElement.dataset.theme=t==="light"||t==="dark"?t:"dark"}catch(_){document.documentElement.dataset.theme="dark"}</script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="portal-body">
 <div class="portal-layout">
-  <aside class="sidebar">
-    <div class="sidebar-brand">
-      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <aside class="sidebar" id="portal-sidebar" aria-label="Portal navigation">
+    <a class="sidebar-brand" href="/portal">
+      <svg viewBox="0 0 24 24" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
         <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 3a3 3 0 110 6 3 3 0 010-6zm0 14.2a7.2 7.2 0 01-6-3.22c.03-1.99 4-3.08 6-3.08s5.97 1.09 6 3.08A7.2 7.2 0 0112 19.2z"/>
       </svg>
-      tokyo3-auth
-    </div>
-    <nav>
-      <a href="/portal" {{if eq .ActivePage "home"}}class="active"{{end}}>Overview</a>
-      <a href="/portal/apps" {{if eq .ActivePage "apps"}}class="active"{{end}}>Applications</a>
+      <span>tokyo3-auth</span>
+    </a>
+    <nav aria-label="Primary">
+      <div class="nav-section">
+        <a href="/portal" {{if eq .ActivePage "home"}}class="active" aria-current="page"{{end}}>Overview</a>
+        <a href="/portal/apps" {{if eq .ActivePage "apps"}}class="active" aria-current="page"{{end}}>Applications</a>
+      </div>
       {{if .IsAdmin}}
-      <a href="/portal/admin/users" {{if eq .ActivePage "admin-users"}}class="active"{{end}}>Users</a>
-      <a href="/portal/admin/groups" {{if eq .ActivePage "admin-groups"}}class="active"{{end}}>Groups</a>
-      <a href="/portal/admin/clients" {{if eq .ActivePage "admin-clients"}}class="active"{{end}}>OAuth Clients</a>
-      <a href="/portal/admin/aws" {{if eq .ActivePage "admin-aws"}}class="active"{{end}}>AWS Federation</a>
-      <a href="/portal/admin/integrations" {{if eq .ActivePage "admin-integrations"}}class="active"{{end}}>Integrations</a>
-      <a href="/portal/admin/audit" {{if eq .ActivePage "admin-audit"}}class="active"{{end}}>Audit Log</a>
+      <div class="nav-section">
+        <div class="nav-section-label">Identity</div>
+        <a href="/portal/admin/users" {{if eq .ActivePage "admin-users"}}class="active" aria-current="page"{{end}}>Users</a>
+        <a href="/portal/admin/groups" {{if eq .ActivePage "admin-groups"}}class="active" aria-current="page"{{end}}>Groups</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Access</div>
+        <a href="/portal/admin/clients" {{if eq .ActivePage "admin-clients"}}class="active" aria-current="page"{{end}}>OAuth clients</a>
+        <a href="/portal/admin/aws" {{if eq .ActivePage "admin-aws"}}class="active" aria-current="page"{{end}}>AWS federation</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Connections</div>
+        <a href="/portal/admin/integrations" {{if eq .ActivePage "admin-integrations"}}class="active" aria-current="page"{{end}}>Integrations</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Operations</div>
+        <a href="/portal/admin/audit" {{if eq .ActivePage "admin-audit"}}class="active" aria-current="page"{{end}}>Audit log</a>
+      </div>
       {{end}}
     </nav>
     <div class="sidebar-footer">
-      <div class="text-muted" style="margin-bottom:6px">{{.UserEmail}}</div>
-      <a href="/portal/account" class="sidebar-footer-link {{if eq .ActivePage "account"}}active{{end}}">Profile</a>
-      <form method="POST" action="/portal/logout" style="margin:0">
-        <button type="submit" class="btn-link">Sign out</button>
-      </form>
+      <div class="sidebar-user-row">
+        <div class="sidebar-user" title="{{.UserEmail}}">{{.UserEmail}}</div>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 15.5A8.5 8.5 0 0 1 8.5 3.5 8.5 8.5 0 1 0 20.5 15.5Z"/></svg>
+        </button>
+      </div>
+      <div class="sidebar-footer-actions">
+        <a href="/portal/account" {{if eq .ActivePage "account"}}class="active" aria-current="page"{{end}}>Profile</a>
+        <form method="POST" action="/portal/logout">
+          <button type="submit" class="btn-link">Sign out</button>
+        </form>
+      </div>
     </div>
   </aside>
+  <button type="button" class="portal-backdrop" data-portal-nav-backdrop aria-label="Close navigation"></button>
   <div class="portal-main">
-    <div class="portal-topbar">
-      <h1>{{block "pagetitle" .}}Portal{{end}}</h1>
-      <div>{{block "topbar-right" .}}{{end}}</div>
-    </div>
-    <div class="portal-content">
+    <header class="portal-topbar">
+      <button type="button" class="mobile-nav-toggle" data-portal-nav-toggle aria-controls="portal-sidebar" aria-expanded="false">
+        <span class="sr-only">Open navigation</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <div class="portal-heading">
+        <div class="portal-breadcrumb">{{block "breadcrumb" .}}{{end}}</div>
+        <h1>{{block "pagetitle" .}}Portal{{end}}</h1>
+        <p class="portal-description">{{block "pagedescription" .}}{{end}}</p>
+      </div>
+      <div class="portal-actions">{{block "topbar-right" .}}{{end}}</div>
+    </header>
+    <main class="portal-content" id="main-content">
       {{block "content" .}}{{end}}
-    </div>
+    </main>
   </div>
 </div>
 <script src="/static/webauthn.js"></script>
+<script src="/static/theme.js"></script>
+<script src="/static/portal.js"></script>
 {{block "scripts" .}}{{end}}
 </body>
 </html>

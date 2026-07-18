@@ -1,51 +1,57 @@
 {{template "base" .}}
 
-{{define "title"}}OAuth Clients{{end}}
-{{define "pagetitle"}}OAuth Clients{{end}}
+{{define "title"}}OAuth clients{{end}}
+{{define "pagetitle"}}OAuth clients{{end}}
+{{define "pagedescription"}}Manage relying parties, redirect targets, scopes, and client credentials.{{end}}
 
 {{define "topbar-right"}}
-<a href="/portal/admin/clients/new" class="btn btn-primary btn-sm">+ New client</a>
+<a href="/portal/admin/clients/new" class="btn btn-primary">New client</a>
 {{end}}
 
 {{define "content"}}
-{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-{{if .NewSecret}}<div class="alert alert-info">New client secret (save now, shown only once): <strong class="mono">{{.NewSecret}}</strong></div>{{end}}
+{{if .Success}}<div class="alert alert-success" role="status">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .NewSecret}}
+<div class="alert alert-info one-time-secret" role="status">
+  <div class="one-time-secret-label">New client secret — shown once</div>
+  <code class="mono one-time-secret-value">{{.NewSecret}}</code>
+  <p>Copy it now and store it in the relying application's secret manager.</p>
+</div>
+{{end}}
 
-<div class="card">
+<div class="resource-panel">
+  {{if .Clients}}
   <div class="table-wrap">
     <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Client ID</th>
-          <th>Type</th>
-          <th>Scopes</th>
-          <th>Created</th>
-          <th></th>
-        </tr>
-      </thead>
+      <thead><tr><th>Client</th><th>Client ID</th><th>Type</th><th>Scopes</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {{range .Clients}}
         <tr>
-          <td>{{.Name}}</td>
-          <td class="mono truncate">{{.ClientID}}</td>
-          <td>{{if .Public}}<span class="badge badge-blue">Public</span>{{else}}<span class="badge badge-gray">Confidential</span>{{end}}</td>
+          <td class="resource-primary"><div class="resource-name">{{.Name}}</div></td>
+          <td class="mono truncate" title="{{.ClientID}}">{{.ClientID}}</td>
+          <td>{{if .Public}}<span class="badge badge-info">Public</span>{{else}}<span class="badge badge-neutral">Confidential</span>{{end}}</td>
           <td class="text-muted truncate">{{range $i,$s := .Scopes}}{{if $i}} {{end}}{{$s}}{{end}}</td>
           <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
-          <td style="white-space:nowrap">
-            <a href="/portal/admin/clients/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
-            <form method="POST" action="/portal/admin/clients/{{.ID}}/rotate-secret"
-                  style="display:inline" onsubmit="return confirm('Rotate client secret? Apps using the old secret will stop working.')">
-              <button type="submit" class="btn btn-secondary btn-sm">Rotate secret</button>
-            </form>
+          <td class="resource-actions">
+            <div class="inline-actions">
+              <a href="/portal/admin/clients/{{.ID}}/edit" class="btn btn-secondary btn-sm" aria-label="Edit {{.Name}}">Edit</a>
+              <form method="POST" action="/portal/admin/clients/{{.ID}}/rotate-secret"
+                    onsubmit="return confirm('Rotate client secret? Apps using the old secret will stop working.')">
+                <button type="submit" class="btn btn-secondary btn-sm" aria-label="Rotate secret for {{.Name}}">Rotate secret</button>
+              </form>
+            </div>
           </td>
         </tr>
-        {{else}}
-        <tr><td colspan="6" class="text-muted" style="text-align:center;padding:28px">No clients found.</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
+  {{else}}
+  <div class="empty-state">
+    <h2 class="empty-state-title">No OAuth clients</h2>
+    <p class="empty-state-description">Register a relying application or headless client to use Tokyo3 authentication.</p>
+    <a href="/portal/admin/clients/new" class="btn btn-primary">Create client</a>
+  </div>
+  {{end}}
 </div>
 {{end}}

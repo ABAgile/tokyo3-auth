@@ -2,42 +2,43 @@
 
 {{define "title"}}Overview{{end}}
 {{define "pagetitle"}}Overview{{end}}
+{{define "pagedescription"}}Review your identity and open the applications available to you.{{end}}
 
 {{define "content"}}
-<div class="card mb-4">
-  <div class="card-header"><h2>Your account</h2></div>
-  <div class="card-body">
-    <table style="max-width:480px">
-      <tbody>
-        <tr><td class="text-muted" style="width:140px">Name</td><td>{{.User.Name}}</td></tr>
-        <tr><td class="text-muted">Email</td><td>{{.User.Email}}</td></tr>
-        <tr><td class="text-muted">MFA</td><td>
-          {{if .User.MFAEnabled}}<span class="badge badge-green">Enabled</span>{{else}}<span class="badge badge-red">Disabled</span>{{end}}
-        </td></tr>
-        {{if .User.IsAdmin}}<tr><td class="text-muted">Role</td><td><span class="badge badge-blue">Administrator</span></td></tr>{{end}}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<div style="display:flex;gap:12px;flex-wrap:wrap">
-  <a href="/portal/account" class="btn btn-secondary">Edit profile</a>
-  <a href="/portal/apps" class="btn btn-secondary">Applications</a>
-</div>
-
-{{if .IsAdmin}}
-<div class="card mt-4">
-  <div class="card-header"><h2>Admin shortcuts</h2></div>
-  <div class="card-body">
-    <div style="display:flex;gap:12px;flex-wrap:wrap">
-      <a href="/portal/admin/users" class="btn btn-secondary">Users</a>
-      <a href="/portal/admin/groups" class="btn btn-secondary">Groups</a>
-      <a href="/portal/admin/clients" class="btn btn-secondary">OAuth Clients</a>
-      <a href="/portal/admin/aws" class="btn btn-secondary">AWS Federation</a>
-      <a href="/portal/admin/integrations" class="btn btn-secondary">Integrations</a>
-      <a href="/portal/admin/audit" class="btn btn-secondary">Audit Log</a>
+<div class="page-stack">
+  <section class="card" aria-labelledby="account-summary-title">
+    <div class="card-header"><h2 id="account-summary-title">Your account</h2></div>
+    <div class="card-body">
+      <table class="summary-list">
+        <tbody>
+          <tr><th scope="row">Name</th><td>{{.User.Name}}</td></tr>
+          <tr><th scope="row">Email</th><td>{{.User.Email}}</td></tr>
+          <tr><th scope="row">MFA</th><td>{{if .User.MFAEnabled}}<span class="badge badge-success">Enabled</span>{{else}}<span class="badge badge-warning">Not enabled</span>{{end}}</td></tr>
+          {{if .User.IsAdmin}}<tr><th scope="row">Role</th><td><span class="badge badge-info">Administrator</span></td></tr>{{end}}
+        </tbody>
+      </table>
+      <div class="quick-actions mt-4">
+        <a href="/portal/account" class="btn btn-secondary">Edit profile</a>
+        <a href="/portal/apps" class="btn btn-primary">View applications</a>
+      </div>
     </div>
-  </div>
+  </section>
+
+  {{if .IsAdmin}}
+  <section class="card" aria-labelledby="admin-shortcuts-title">
+    <div class="card-header"><h2 id="admin-shortcuts-title">Administration</h2></div>
+    <div class="card-body">
+      <p class="section-description">Manage identities, access, connections, and operational events.</p>
+      <div class="quick-actions">
+        <a href="/portal/admin/users" class="btn btn-secondary">Users</a>
+        <a href="/portal/admin/groups" class="btn btn-secondary">Groups</a>
+        <a href="/portal/admin/clients" class="btn btn-secondary">OAuth clients</a>
+        <a href="/portal/admin/aws" class="btn btn-secondary">AWS federation</a>
+        <a href="/portal/admin/integrations" class="btn btn-secondary">Integrations</a>
+        <a href="/portal/admin/audit" class="btn btn-secondary">Audit log</a>
+      </div>
+    </div>
+  </section>
+  {{end}}
 </div>
-{{end}}
 {{end}}

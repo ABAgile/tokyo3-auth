@@ -1,63 +1,62 @@
 {{template "base" .}}
 
 {{define "title"}}Integrations{{end}}
-{{define "pagetitle"}}App Integrations{{end}}
+{{define "pagetitle"}}Integrations{{end}}
+{{define "pagedescription"}}Provision identities and groups to downstream systems.{{end}}
 
 {{define "topbar-right"}}
-<a href="/portal/admin/integrations/new" class="btn btn-primary btn-sm">+ New integration</a>
+<a href="/portal/admin/integrations/new" class="btn btn-primary">New integration</a>
 {{end}}
 
 {{define "content"}}
-{{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-{{if .Notice}}<div class="alert alert-info">{{.Notice}}</div>{{end}}
+{{if .Success}}<div class="alert alert-success" role="status">{{.Success}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+{{if .Notice}}<div class="alert alert-info" role="status">{{.Notice}}</div>{{end}}
 
-<div class="card">
+<div class="resource-panel">
+  {{if .Integrations}}
   <div class="table-wrap">
     <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Provider</th>
-          <th>Auth</th>
-          <th>Status</th>
-          <th>Endpoint</th>
-          <th>Created</th>
-          <th></th>
-        </tr>
-      </thead>
+      <thead><tr><th>Integration</th><th>Provider</th><th>Authentication</th><th>Status</th><th>Endpoint</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {{range .Integrations}}
         <tr>
-          <td>{{.Name}}</td>
+          <td class="resource-primary"><div class="resource-name">{{.Name}}</div></td>
           <td>
-            <span class="badge badge-gray">{{.Provider}}</span>
-            {{if eq .Provider "aws_iam"}}<span class="badge badge-gray" title="Use AWS OIDC Federation for human access instead">legacy</span>{{end}}
+            <span class="badge badge-neutral">{{.Provider}}</span>
+            {{if eq .Provider "aws_iam"}}<span class="badge badge-warning" title="Use AWS OIDC federation for human access instead">Legacy</span>{{end}}
           </td>
-          <td>{{if eq .Provider "scim"}}{{if eq .Config.AuthMode "mtls"}}<span class="badge badge-gray">mtls</span>{{else}}<span class="badge badge-gray">bearer</span>{{end}}{{else}}<span class="text-muted">—</span>{{end}}</td>
-          <td>{{if .Enabled}}<span class="badge badge-blue">Enabled</span>{{else}}<span class="badge badge-gray">Disabled</span>{{end}}</td>
-          <td class="text-muted truncate">{{.Config.BaseURL}}</td>
+          <td>{{if eq .Provider "scim"}}{{if eq .Config.AuthMode "mtls"}}<span class="badge badge-neutral">mTLS</span>{{else}}<span class="badge badge-neutral">Bearer</span>{{end}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+          <td>{{if .Enabled}}<span class="status status-success"><span class="status-dot" aria-hidden="true"></span>Enabled</span>{{else}}<span class="status"><span class="status-dot" aria-hidden="true"></span>Disabled</span>{{end}}</td>
+          <td class="text-muted truncate" title="{{.Config.BaseURL}}">{{.Config.BaseURL}}</td>
           <td class="text-muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
-          <td style="white-space:nowrap">
-            <a href="/portal/admin/integrations/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
-            {{if eq .Provider "scim"}}
-            <form method="POST" action="/portal/admin/integrations/{{.ID}}/test" style="display:inline">
-              <button type="submit" class="btn btn-secondary btn-sm">Test</button>
-            </form>
-            {{end}}
-            {{if and .Enabled (ne .Provider "aws_federation")}}
-            <form method="POST" action="/portal/admin/integrations/{{.ID}}/sync" style="display:inline"
-                  onsubmit="return confirm('Re-push every user and group to {{.Name}} now? Idempotent on the downstream — safe to repeat.')">
-              <button type="submit" class="btn btn-secondary btn-sm">Sync now</button>
-            </form>
-            {{end}}
+          <td class="resource-actions">
+            <div class="inline-actions">
+              <a href="/portal/admin/integrations/{{.ID}}/edit" class="btn btn-secondary btn-sm" aria-label="Edit {{.Name}}">Edit</a>
+              {{if eq .Provider "scim"}}
+              <form method="POST" action="/portal/admin/integrations/{{.ID}}/test">
+                <button type="submit" class="btn btn-secondary btn-sm" aria-label="Test {{.Name}}">Test</button>
+              </form>
+              {{end}}
+              {{if and .Enabled (ne .Provider "aws_federation")}}
+              <form method="POST" action="/portal/admin/integrations/{{.ID}}/sync"
+                    onsubmit="return confirm('Re-push every user and group to {{.Name}} now? Idempotent on the downstream — safe to repeat.')">
+                <button type="submit" class="btn btn-secondary btn-sm" aria-label="Sync {{.Name}} now">Sync now</button>
+              </form>
+              {{end}}
+            </div>
           </td>
         </tr>
-        {{else}}
-        <tr><td colspan="7" class="text-muted" style="text-align:center;padding:28px">No integrations configured. <a href="/portal/admin/integrations/new">Add one</a> to provision users to a downstream system via SCIM or AWS IAM.</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
+  {{else}}
+  <div class="empty-state">
+    <h2 class="empty-state-title">No integrations configured</h2>
+    <p class="empty-state-description">Add a SCIM or AWS integration to provision identities to a downstream system.</p>
+    <a href="/portal/admin/integrations/new" class="btn btn-primary">Create integration</a>
+  </div>
+  {{end}}
 </div>
 {{end}}

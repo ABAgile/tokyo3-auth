@@ -4,16 +4,17 @@
 
 {{define "content"}}
 {{if .Error}}
-<h1>Already processed</h1>
-<div class="alert alert-error" style="margin-top:14px">{{.Error}}</div>
-<p class="text-muted">If your device is still waiting, restart the sign-in from the device.</p>
+<h1>Request already processed</h1>
+<p class="subtitle">This device request cannot be changed.</p>
+<div class="alert alert-error" role="alert">{{.Error}}</div>
+<p class="text-muted">If the device is still waiting, restart sign-in from the device.</p>
 {{else if .Approved}}
-<h1>Approved</h1>
-<p class="subtitle">Return to the device — it should complete sign-in within a few seconds.</p>
+<h1>Device approved</h1>
+<p class="subtitle">Return to the device. It should complete sign-in within a few seconds.</p>
 <p class="text-muted">You can close this tab.</p>
 {{else}}
-<h1>Denied</h1>
-<p class="subtitle">The request was rejected. The device will not receive credentials.</p>
+<h1>Request denied</h1>
+<p class="subtitle">The device will not receive credentials.</p>
 <p class="text-muted">You can close this tab.</p>
 {{end}}
 {{end}}

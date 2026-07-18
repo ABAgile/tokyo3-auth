@@ -5,8 +5,5 @@
 {{define "content"}}
 <h1>{{if .Title}}{{.Title}}{{else}}Something went wrong{{end}}</h1>
 <p class="subtitle text-danger">{{.Message}}</p>
-
-{{if .ReturnURL}}
-<a href="{{.ReturnURL}}" class="btn btn-secondary mt-4">Go back</a>
-{{end}}
+{{if .ReturnURL}}<a href="{{.ReturnURL}}" class="btn btn-secondary">Go back</a>{{end}}
 {{end}}

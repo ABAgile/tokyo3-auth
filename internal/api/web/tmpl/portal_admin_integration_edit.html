@@ -1,132 +1,125 @@
 {{template "base" .}}
 
 {{define "title"}}{{if .IsNew}}New integration{{else}}Edit integration{{end}}{{end}}
-{{define "pagetitle"}}{{if .IsNew}}New integration{{else}}Edit integration{{end}}{{end}}
+{{define "pagetitle"}}{{if .IsNew}}New integration{{else}}{{.Integration.Name}}{{end}}{{end}}
+{{define "breadcrumb"}}<a href="/portal/admin/integrations">Integrations</a> <span aria-hidden="true">/</span> {{if .IsNew}}New integration{{else}}Details{{end}}{{end}}
+{{define "pagedescription"}}{{if .IsNew}}Connect a downstream identity or access system.{{else}}Manage provider configuration, credentials, and provisioning state.{{end}}{{end}}
 
 {{define "content"}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+<div class="page-stack page-stack-narrow">
+  {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
-<div class="card" style="max-width:680px">
-  <div class="card-body">
-    <form method="POST" action="{{if .IsNew}}/portal/admin/integrations/new{{else}}/portal/admin/integrations/{{.Integration.ID}}/edit{{end}}">
-      <div class="form-group">
-        <label for="name">Name</label>
-        <input type="text" id="name" name="name" value="{{.Integration.Name}}" required autofocus>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Used as the cache key for downstream user IDs &mdash; do not rename a live integration.</div>
-      </div>
-
-      <div class="form-group">
-        <label for="provider">Provider</label>
-        {{if .IsNew}}
-        <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
-          <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
-          <option value="aws_federation" {{if eq .Integration.Provider "aws_federation"}}selected{{end}}>AWS OIDC Federation (session revocation)</option>
-          <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM Users (legacy)</option>
-        </select>
-        {{else}}
-        <input type="text" value="{{.Integration.Provider}}" readonly disabled>
-        <input type="hidden" name="provider" value="{{.Integration.Provider}}">
-        <div class="text-muted" style="font-size:12px;margin-top:4px">Provider type cannot be changed after creation.</div>
-        {{end}}
-      </div>
-
-      <div class="form-group">
-        <div class="checkbox-row">
-          <input type="checkbox" id="enabled" name="enabled" value="1" {{if .Integration.Enabled}}checked{{end}}>
-          <label for="enabled" style="margin:0">Enabled (fan-out user/group changes to this target)</label>
-        </div>
-      </div>
-
-      <div data-provider="scim" {{if ne .Integration.Provider "scim"}}style="display:none"{{end}}>
+  <section class="card" aria-labelledby="integration-settings-title">
+    <div class="card-header"><h2 id="integration-settings-title">Integration settings</h2></div>
+    <div class="card-body">
+      <form method="POST" action="{{if .IsNew}}/portal/admin/integrations/new{{else}}/portal/admin/integrations/{{.Integration.ID}}/edit{{end}}">
         <div class="form-group">
-          <label for="base_url">Base URL</label>
-          <input type="url" id="base_url" name="base_url" value="{{.Integration.Config.BaseURL}}" placeholder="https://vault.example.com/scim/v2">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" value="{{.Integration.Name}}" required autofocus>
+          <p class="field-help">Used as the cache key for downstream user IDs. Do not rename a live integration.</p>
         </div>
+
         <div class="form-group">
-          <label for="timeout_ms">HTTP timeout (ms, blank = 10000)</label>
-          <input type="number" id="timeout_ms" name="timeout_ms" value="{{if .Integration.Config.TimeoutMS}}{{.Integration.Config.TimeoutMS}}{{end}}" min="0">
-        </div>
-        <div class="form-group">
-          <label for="auth_mode">Authentication</label>
-          <select id="auth_mode" name="auth_mode"
-                  onchange="document.querySelectorAll('[data-auth-mode]').forEach(el=>el.style.display=el.dataset.authMode===this.value?'':'none')">
-            <option value="bearer" {{if or (eq .Integration.Config.AuthMode "bearer") (eq .Integration.Config.AuthMode "")}}selected{{end}}>Bearer token</option>
-            <option value="mtls" {{if eq .Integration.Config.AuthMode "mtls"}}selected{{end}}>mTLS (client cert)</option>
+          <label for="provider">Provider</label>
+          {{if .IsNew}}
+          <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
+            <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
+            <option value="aws_federation" {{if eq .Integration.Provider "aws_federation"}}selected{{end}}>AWS OIDC federation (session revocation)</option>
+            <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM users (legacy)</option>
           </select>
+          {{else}}
+          <input type="text" value="{{.Integration.Provider}}" readonly disabled>
+          <input type="hidden" name="provider" value="{{.Integration.Provider}}">
+          <p class="field-help">Provider type cannot be changed after creation.</p>
+          {{end}}
         </div>
-        <div data-auth-mode="bearer" {{if eq .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
-          <div class="form-group">
-            <label for="token">Bearer token</label>
-            {{if .IsNew}}
-            <input type="password" id="token" name="token" autocomplete="new-password">
-            <div class="text-muted" style="font-size:12px;margin-top:4px">Stored AES-256-GCM-encrypted with the master KEK. Never echoed back.</div>
-            {{else}}
-            <div class="checkbox-row" style="margin-bottom:6px">
-              <input type="checkbox" id="update_token" name="update_token" value="1" onchange="document.getElementById('token').disabled = !this.checked">
-              <label for="update_token" style="margin:0">Replace token</label>
-            </div>
-            <input type="password" id="token" name="token" autocomplete="new-password" disabled placeholder="••••••••">
-            {{end}}
-          </div>
-        </div>
-        <div data-auth-mode="mtls" {{if ne .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
-          <div class="alert alert-info" style="font-size:13px">
-            mTLS auth uses the client cert/key/CA configured at process level via
-            <code>AUTHD_SCIM_MTLS_CERT</code>, <code>AUTHD_SCIM_MTLS_KEY</code>, and
-            <code>AUTHD_SCIM_MTLS_CA</code> (env vars, not portal-managed). The cert is
-            hot-reloaded; the downstream must allow-list auth's CA + SAN/CN.
-          </div>
-        </div>
-      </div>
 
-      <div data-provider="aws_federation" {{if ne .Integration.Provider "aws_federation"}}style="display:none"{{end}}>
-        <div class="alert alert-info" style="font-size:13px;margin-bottom:12px">
-          <strong>Session revocation only.</strong> Federation itself (login → AWS Console / CLI) works without this integration — it lives on
-          <a href="/portal/admin/aws"><strong>/portal/admin/aws</strong></a>. Enabling this row adds a deactivation-time push that writes a Deny
-          statement into each managed role's <code>AuthRevokedUsers</code> inline policy, killing in-flight STS sessions within ~30s instead of
-          waiting up to the role's <code>MaxSessionDuration</code> for natural expiry.
-          <br><br>
-          No fields below — the provisioner reads AWS credentials from the SDK default chain (instance profile / IRSA / task role / IAM Roles
-          Anywhere). The IAM principal authd assumes must have <code>iam:GetRolePolicy</code>, <code>iam:PutRolePolicy</code>, and
-          <code>iam:DeleteRolePolicy</code> on every federation role; scoping with
-          <code>"Condition": {"StringEquals": {"iam:PolicyName": "AuthRevokedUsers"}}</code>
-          keeps the blast radius to just this inline policy.
-        </div>
-      </div>
-
-      <div data-provider="aws_iam" {{if ne .Integration.Provider "aws_iam"}}style="display:none"{{end}}>
-        <div class="alert alert-warning" style="font-size:13px;margin-bottom:12px">
-          <strong>This provisioner is deprecated for human access.</strong>
-          Creating IAM users per workforce member is the legacy path. For console + CLI access,
-          use <a href="/portal/admin/aws"><strong>AWS OIDC Federation</strong></a>
-          (configure under <code>/portal/admin/aws</code>): no IAM users are created, sessions
-          are short-lived STS credentials, and deactivation propagates via session-tag revocation.
-          <br><br>
-          Enable this provisioner only when you need stable IAM user ARNs for one of the
-          narrow cases that still requires them: <strong>CodeCommit Git credentials</strong>
-          (per-IAM-user), <strong>SES SMTP credentials</strong> (derived from IAM access keys),
-          or <strong>resource policies that hardcode</strong> <code>arn:aws:iam::ACCOUNT:user/&lt;name&gt;</code>.
-        </div>
         <div class="form-group">
-          <label for="group_map">Group mapping (one per line, format <code>scimGroup=iamGroup</code>)</label>
-          <textarea id="group_map" name="group_map" rows="4" placeholder="engineers=eng-iam-grp">{{.GroupMapStr}}</textarea>
-          <div class="text-muted" style="font-size:12px;margin-top:4px">Credentials come from the AWS SDK default credential chain on the host running authd.</div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="enabled" name="enabled" value="1" {{if .Integration.Enabled}}checked{{end}}>
+            <label for="enabled">Enable provisioning to this target</label>
+          </div>
+          <p class="field-help">When enabled, user and group changes fan out to this integration.</p>
         </div>
-      </div>
 
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button type="submit" class="btn btn-primary">{{if .IsNew}}Create integration{{else}}Save changes{{end}}</button>
-        <a href="/portal/admin/integrations" class="btn btn-secondary">Cancel</a>
-      </div>
-    </form>
+        <div data-provider="scim" class="provider-section" {{if ne .Integration.Provider "scim"}}style="display:none"{{end}}>
+          <h2 class="section-heading">SCIM connection</h2>
+          <div class="form-group">
+            <label for="base_url">Base URL</label>
+            <input type="url" id="base_url" name="base_url" value="{{.Integration.Config.BaseURL}}" placeholder="https://vault.example.com/scim/v2">
+          </div>
+          <div class="form-group">
+            <label for="timeout_ms">HTTP timeout <span class="text-muted">(milliseconds; blank uses 10000)</span></label>
+            <input type="number" id="timeout_ms" name="timeout_ms" value="{{if .Integration.Config.TimeoutMS}}{{.Integration.Config.TimeoutMS}}{{end}}" min="0">
+          </div>
+          <div class="form-group">
+            <label for="auth_mode">Authentication</label>
+            <select id="auth_mode" name="auth_mode"
+                    onchange="document.querySelectorAll('[data-auth-mode]').forEach(el=>el.style.display=el.dataset.authMode===this.value?'':'none')">
+              <option value="bearer" {{if or (eq .Integration.Config.AuthMode "bearer") (eq .Integration.Config.AuthMode "")}}selected{{end}}>Bearer token</option>
+              <option value="mtls" {{if eq .Integration.Config.AuthMode "mtls"}}selected{{end}}>mTLS client certificate</option>
+            </select>
+          </div>
+          <div data-auth-mode="bearer" {{if eq .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
+            <div class="form-group">
+              <label for="token">Bearer token</label>
+              {{if .IsNew}}
+              <input type="password" id="token" name="token" autocomplete="new-password">
+              <p class="field-help">Encrypted with the master key and never displayed again.</p>
+              {{else}}
+              <div class="checkbox-row mb-3">
+                <input type="checkbox" id="update_token" name="update_token" value="1" onchange="document.getElementById('token').disabled = !this.checked">
+                <label for="update_token">Replace token</label>
+              </div>
+              <input type="password" id="token" name="token" autocomplete="new-password" disabled placeholder="••••••••">
+              {{end}}
+            </div>
+          </div>
+          <div data-auth-mode="mtls" {{if ne .Integration.Config.AuthMode "mtls"}}style="display:none"{{end}}>
+            <div class="alert alert-info">
+              mTLS uses <code>AUTHD_SCIM_MTLS_CERT</code>, <code>AUTHD_SCIM_MTLS_KEY</code>, and <code>AUTHD_SCIM_MTLS_CA</code>. Certificates are managed at process level and hot-reloaded.
+            </div>
+          </div>
+        </div>
 
-    {{if not .IsNew}}
-    <div class="separator"></div>
-    <form method="POST" action="/portal/admin/integrations/{{.Integration.ID}}/delete"
-          onsubmit="return confirm('Delete this integration? Provisioning will stop fanning out to this target.')">
-      <button type="submit" class="btn btn-danger btn-sm">Delete integration</button>
-    </form>
-    {{end}}
-  </div>
+        <div data-provider="aws_federation" class="provider-section" {{if ne .Integration.Provider "aws_federation"}}style="display:none"{{end}}>
+          <h2 class="section-heading">AWS session revocation</h2>
+          <div class="alert alert-info">
+            <strong>This integration handles session revocation only.</strong> Configure accounts and roles under <a href="/portal/admin/aws">AWS federation</a>. The provisioner writes the <code>AuthRevokedUsers</code> inline policy using credentials from the AWS SDK default chain.
+          </div>
+        </div>
+
+        <div data-provider="aws_iam" class="provider-section" {{if ne .Integration.Provider "aws_iam"}}style="display:none"{{end}}>
+          <h2 class="section-heading">Legacy AWS IAM users</h2>
+          <div class="alert alert-warning">
+            <strong>Deprecated for human access.</strong> Prefer <a href="/portal/admin/aws">AWS OIDC federation</a>. Use IAM users only for narrow cases requiring stable IAM user identities or user-derived credentials.
+          </div>
+          <div class="form-group">
+            <label for="group_map">Group mapping</label>
+            <textarea id="group_map" name="group_map" rows="4" placeholder="engineers=eng-iam-grp">{{.GroupMapStr}}</textarea>
+            <p class="field-help">Enter one <code>scimGroup=iamGroup</code> mapping per line. Credentials come from the AWS SDK default chain.</p>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">{{if .IsNew}}Create integration{{else}}Save changes{{end}}</button>
+          <a href="/portal/admin/integrations" class="btn btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  {{if not .IsNew}}
+  <section class="card danger-zone" aria-labelledby="integration-danger-title">
+    <div class="card-header"><h2 id="integration-danger-title">Danger zone</h2></div>
+    <div class="card-body">
+      <p class="text-muted">Delete this integration and stop provisioning to the target. Existing downstream identities are not removed automatically.</p>
+      <form method="POST" action="/portal/admin/integrations/{{.Integration.ID}}/delete" class="mt-4"
+            onsubmit="return confirm('Delete this integration? Provisioning will stop fanning out to this target.')">
+        <button type="submit" class="btn btn-danger btn-sm">Delete integration</button>
+      </form>
+    </div>
+  </section>
+  {{end}}
 </div>
 {{end}}

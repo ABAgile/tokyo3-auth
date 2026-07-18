@@ -2,30 +2,20 @@
 
 {{define "title"}}Audit log{{end}}
 {{define "pagetitle"}}Audit log{{end}}
+{{define "pagedescription"}}Observe authentication, identity, and administrative events as they occur.{{end}}
 {{define "topbar-right"}}
-<span id="audit-status" class="text-muted" style="font-size:13px">connecting…</span>
+<span id="audit-status" class="audit-status audit-status-reconnecting" role="status" aria-live="polite">Connecting…</span>
 {{end}}
 
 {{define "content"}}
-<div class="card">
-  <div class="card-body" style="padding:0">
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th style="white-space:nowrap">Time</th>
-            <th>Action</th>
-            <th>User</th>
-            <th>Client</th>
-            <th>IP</th>
-            <th>Metadata</th>
-          </tr>
-        </thead>
-        <tbody id="audit-rows">
-          <tr id="audit-empty"><td colspan="6" class="text-muted" style="text-align:center;padding:20px">Waiting for events…</td></tr>
-        </tbody>
-      </table>
-    </div>
+<div class="resource-panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Action</th><th>User</th><th>Client</th><th>IP</th><th>Metadata</th></tr></thead>
+      <tbody id="audit-rows">
+        <tr id="audit-empty"><td colspan="6" class="empty-table-cell">Waiting for events…</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 {{end}}
@@ -36,14 +26,17 @@
   const tbody = document.getElementById('audit-rows');
   const empty = document.getElementById('audit-empty');
   const status = document.getElementById('audit-status');
-  const MAX_ROWS = 500; // cap DOM growth on long-running tabs
-
-  // The browser's EventSource auto-reconnects with Last-Event-ID so a brief
-  // network drop replays only the missed events, not the full backfill.
+  const MAX_ROWS = 500;
   const es = new EventSource('/portal/admin/audit/sse');
 
-  es.onopen  = () => { status.textContent = 'live'; status.className = 'text-muted'; };
-  es.onerror = () => { status.textContent = 'reconnecting…'; };
+  es.onopen = () => {
+    status.textContent = 'Live';
+    status.className = 'audit-status audit-status-live';
+  };
+  es.onerror = () => {
+    status.textContent = 'Reconnecting…';
+    status.className = 'audit-status audit-status-reconnecting';
+  };
 
   es.onmessage = (ev) => {
     let e;
@@ -78,9 +71,6 @@
     return isNaN(d) ? s : d.toLocaleString();
   }
 
-  // Prefer "Display Name <email>", fall back to either alone, then dash.
-  // Names come from publish-time lookup on auth.Entry; rows for already-deleted
-  // principals (rare) leave them empty and we render — rather than a raw UUID.
   function userLabel(e) {
     if (e.user_name && e.user_email) return e.user_name + ' <' + e.user_email + '>';
     return e.user_name || e.user_email || (e.user_id ? '—' : '');

@@ -2,50 +2,45 @@
 
 {{define "title"}}Applications{{end}}
 {{define "pagetitle"}}Applications{{end}}
+{{define "pagedescription"}}Launch applications and federated roles assigned to your groups.{{end}}
 
 {{define "content"}}
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 {{if .Tiles}}
-<p class="text-muted" style="max-width:640px">
-Apps you can launch from auth. OIDC tiles redirect to the app — the app starts its
-own SSO dance from there. AWS tiles trade your session for a short-lived STS
-session and drop you into the AWS Console; no IAM user is created.
-</p>
-<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+<p class="application-intro">OIDC applications start their own secure sign-in flow. AWS roles exchange your current session for short-lived credentials without creating an IAM user.</p>
+<div class="app-grid">
   {{range .Tiles}}
-  <div class="card">
-    <div class="card-body" {{if .BrandColor}}style="border-left:4px solid {{.BrandColor}}"{{end}}>
-      <div style="display:flex;align-items:center;gap:10px">
-        {{if .IconURL}}<img src="{{.IconURL}}" alt="" style="width:32px;height:32px;border-radius:4px;object-fit:contain">{{end}}
-        <h3 style="margin:0;flex:1">{{.DisplayName}}</h3>
+  <article class="card app-card" {{if .BrandColor}}style="--app-accent:{{.BrandColor}}"{{end}}>
+    <div class="card-body">
+      <div class="app-heading">
+        {{if .IconURL}}<img src="{{.IconURL}}" alt="" class="app-icon">{{end}}
+        <h2>{{.DisplayName}}</h2>
       </div>
-      {{if .Subtitle}}<div class="text-muted" style="font-size:13px;margin-top:4px">{{.Subtitle}}</div>{{end}}
-      <div style="margin-top:8px;font-size:12px">
+      {{if .Subtitle}}<p class="app-subtitle">{{.Subtitle}}</p>{{end}}
+      <div class="app-meta">
         {{if eq .Kind "aws"}}
-          {{if .StepUpMFA}}<span class="badge badge-blue">step-up MFA</span>{{end}}
-          <span class="badge badge-gray">{{.TTLSeconds}}s</span>
+          {{if .StepUpMFA}}<span class="badge badge-info">Step-up MFA</span>{{end}}
+          <span class="badge badge-neutral">{{.TTLSeconds}}s session</span>
         {{end}}
-        {{if .VisibleToAll}}<span class="badge badge-gray">everyone</span>{{end}}
+        {{if .VisibleToAll}}<span class="badge badge-neutral">Everyone</span>{{end}}
       </div>
       {{if eq .Kind "oidc"}}
-        <a href="{{.LaunchURL}}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm" style="display:block;width:100%;margin-top:12px;text-align:center">Launch</a>
+        <a href="{{.LaunchURL}}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm btn-block app-action">Launch</a>
       {{else if eq .Kind "aws"}}
-        <form method="POST" action="/portal/aws/console" target="_blank" style="margin-top:12px">
+        <form method="POST" action="/portal/aws/console" target="_blank" class="app-action">
           <input type="hidden" name="role_id" value="{{.ID}}">
-          <button type="submit" class="btn btn-primary btn-sm" style="width:100%">Open AWS Console</button>
+          <button type="submit" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
         </form>
       {{end}}
     </div>
-  </div>
+  </article>
   {{end}}
 </div>
 {{else}}
-<div class="card">
-  <div class="card-body" style="text-align:center;padding:32px">
-    <p class="text-muted">You have no applications assigned yet.</p>
-    <p class="text-muted" style="font-size:13px">Ask an administrator to add your group to an OAuth client at <code>/portal/admin/clients</code> or to an AWS role at <code>/portal/admin/aws</code>.</p>
-  </div>
+<div class="resource-panel empty-state">
+  <h2 class="empty-state-title">No applications assigned</h2>
+  <p class="empty-state-description">Ask an administrator to assign one of your groups to an OAuth client or AWS role.</p>
 </div>
 {{end}}
 {{end}}

@@ -4,11 +4,9 @@
 
 {{define "content"}}
 <h1>Sign in</h1>
-<p class="subtitle">
-  {{if .ClientName}}Authorizing <strong>{{.ClientName}}</strong>{{else}}Continue to your account{{end}}
-</p>
+<p class="subtitle">{{if .ClientName}}Continue to <strong>{{.ClientName}}</strong>{{else}}Continue to your account{{end}}</p>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 <form method="POST" action="/authorize">
   <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -19,7 +17,6 @@
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
   <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
   <input type="hidden" name="nonce" value="{{.Nonce}}">
-
   <div class="form-group">
     <label for="email">Email</label>
     <input type="email" id="email" name="email" value="{{.Email}}" required autofocus autocomplete="email">
@@ -28,13 +25,10 @@
     <label for="password">Password</label>
     <input type="password" id="password" name="password" required autocomplete="current-password">
   </div>
-
-  <button type="submit" class="btn btn-primary btn-block" style="margin-top:4px">Sign in</button>
+  <button type="submit" class="btn btn-primary btn-block">Sign in</button>
 </form>
 
 {{if .AllowRegistration}}
-<p class="text-muted mt-4" style="text-align:center">
-  Don't have an account? <a href="/register?{{.QueryString}}">Register</a>
-</p>
+<p class="form-footer">New to Tokyo3? <a href="/register?{{.QueryString}}">Create an account</a></p>
 {{end}}
 {{end}}

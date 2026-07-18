@@ -3,10 +3,10 @@
 {{define "title"}}Verify your identity{{end}}
 
 {{define "content"}}
-<h1>Two-factor authentication</h1>
-<p class="subtitle">Verify your identity to continue.</p>
+<h1>Verify your identity</h1>
+<p class="subtitle">Complete two-factor authentication to continue.</p>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
 
 {{if .HasTOTP}}
 <form method="POST" action="/portal/login/mfa">
@@ -20,15 +20,11 @@
 </form>
 {{end}}
 
-{{if and .HasTOTP .HasWebAuthn}}
-<div class="mfa-divider"><span>or</span></div>
-{{end}}
+{{if and .HasTOTP .HasWebAuthn}}<div class="mfa-divider"><span>or</span></div>{{end}}
 
 {{if .HasWebAuthn}}
-<button class="btn btn-secondary btn-block" onclick="loginWithKey()">
-  Use security key
-</button>
-<div id="wa-status" style="margin-top:8px;text-align:center;font-size:13px"></div>
+<button type="button" class="btn btn-secondary btn-block" onclick="loginWithKey()">Use security key</button>
+<div id="wa-status" role="status" aria-live="polite"></div>
 {{end}}
 {{end}}
 
@@ -42,9 +38,7 @@ async function loginWithKey() {
     const beginResp = await fetch("/portal/login/mfa/webauthn/begin", { method: "POST" });
     if (!beginResp.ok) throw new Error(await beginResp.text());
     const { options, session_id } = await beginResp.json();
-
     const assertion = await navigator.credentials.get({ publicKey: prepareRequestOptions(options.publicKey) });
-
     const finishResp = await fetch("/portal/login/mfa/webauthn/finish?session_id=" + session_id, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -58,12 +52,6 @@ async function loginWithKey() {
   }
 }
 {{if and .HasWebAuthn (not .HasTOTP) (not .Error)}}
-// WebAuthn-only: auto-invoke the ceremony so the user isn't asked to
-// click a button just to confirm the single factor they have. Skipped
-// on error re-renders so a failed attempt doesn't immediately loop.
-// The button remains as fallback if the browser refuses the
-// auto-trigger (some browsers require a user gesture, in which case
-// loginWithKey() throws and the status div shows the error).
 document.addEventListener("DOMContentLoaded", loginWithKey);
 {{end}}
 </script>
