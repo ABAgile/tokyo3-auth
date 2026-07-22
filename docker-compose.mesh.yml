@@ -51,6 +51,7 @@ services:
       tokyo3_idp: {}
     environment:
       <<: *default-environment
+      AUTHD_BACKCHANNEL_CA: /shared/certs/traefik-ca.crt
       AUTHD_ADDR: ":8443"
       AUTHD_API_CERT: /tokyo3/workloads/authd.crt
       AUTHD_API_KEY: /tokyo3/workloads/authd.key

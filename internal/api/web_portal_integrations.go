@@ -275,10 +275,10 @@ func (s *Server) scimServiceProviderConfig(ctx context.Context, row *model.AppIn
 		}
 		req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
 	case model.AppIntegrationAuthMTLS:
-		if s.outboundTLS == nil {
+		if s.scimTLS == nil {
 			return 0, "", errors.New("mtls auth_mode but AUTHD_SCIM_MTLS_CERT/KEY are unset")
 		}
-		client.Transport = &http.Transport{TLSClientConfig: s.outboundTLS}
+		client.Transport = &http.Transport{TLSClientConfig: s.scimTLS}
 	default:
 		return 0, "", errors.New("unsupported auth_mode: " + authMode)
 	}

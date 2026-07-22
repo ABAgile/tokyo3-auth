@@ -429,5 +429,5 @@ Adding a new app
 - `auth/internal/jwt/signer.go` — `MintFederationToken`, session-tag claim shaping
 - `auth/cmd/auth-aws-creds/main.go` — CLI credential helper for boto3 `credential_process`
 - `auth/internal/api/admin.go`, `web_sso.go`, `web_portal.go`, `web_portal_groups.go` — native-path fan-out call sites
-- `auth/cmd/authd/main.go` — `buildProvisioner` (auth-mode dispatch), `outboundTLSFromEnv`, `awsFedReapInterval`, `admin sync` subcommand
+- `auth/cmd/authd/main.go` — `buildProvisioner` (auth-mode dispatch), `scimTLSFromEnv`, `backchannelTLSFromEnv`, `awsFedReapInterval`, `admin sync` subcommand
 - `vault/docs/oidc-sso-design.md` — vault-side protocol details, SCIM filter subset, "tokyo3-auth as IdP" appendix

@@ -110,6 +110,7 @@ services:
       default: {}
     environment:
       <<: *default-environment
+      AUTHD_BACKCHANNEL_CA:      /shared/certs/traefik-ca.crt
       AUTHD_MASTER_KEY:          file:/shared/secrets/authd-master.key
       AUTHD_ADDR:                ":8443"
       AUTHD_ISSUER:              https://auth.localhost

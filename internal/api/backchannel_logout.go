@@ -124,8 +124,8 @@ func (s *Server) pushLogoutToken(r *http.Request, clientDBID uuid.UUID, logoutUR
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	httpClient := &http.Client{Timeout: backchannelLogoutTimeout}
-	if s.outboundTLS != nil {
-		httpClient.Transport = &http.Transport{TLSClientConfig: s.outboundTLS}
+	if s.backchannelTLS != nil {
+		httpClient.Transport = &http.Transport{TLSClientConfig: s.backchannelTLS}
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {

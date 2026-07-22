@@ -62,14 +62,15 @@
 //	AUTHD_API_CLIENT_CA            Optional CA PEM for client cert
 //	                               verification (mTLS).
 //
-// Workload CA (single root for every internal mTLS channel — DB, NATS, SCIM):
+// Workload CA (shared fallback for internal outbound TLS):
 //
 //	AUTHD_WORKLOAD_CA              CA PEM that signs every internal workload
-//	                               cert auth talks to (Postgres, NATS,
-//	                               downstream SCIM endpoints). Used as the
+//	                               cert auth talks to (Postgres, NATS, SCIM,
+//	                               backchannel logout endpoints). Used as the
 //	                               fallback for AUTHD_DB_CA /
 //	                               AUTHD_ADMIN_DB_CA / AUTHD_NATS_CA /
-//	                               AUTHD_SCIM_MTLS_CA when any of those is
+//	                               AUTHD_SCIM_MTLS_CA / AUTHD_BACKCHANNEL_CA
+//	                               when any of those is
 //	                               unset. Leave the per-channel CA vars
 //	                               empty in deployments that issue all
 //	                               internal certs from one workload CA; set
@@ -108,6 +109,14 @@
 //	                               AUTHD_WORKLOAD_CA, then to the system
 //	                               root pool. A single cert/key pair is
 //	                               shared across every mTLS integration.
+//
+// Backchannel logout TLS:
+//
+//	AUTHD_BACKCHANNEL_CA           Optional CA bundle for verifying relying
+//	                               party backchannel logout endpoints. Falls
+//	                               back to AUTHD_WORKLOAD_CA, then to the
+//	                               system root pool. This config never carries
+//	                               the SCIM mTLS client certificate.
 //
 // Audit log shipping (publishes events to NATS JetStream stream "auth_audit"):
 //
@@ -239,9 +248,13 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("db TLS: %w", err)
 	}
-	outboundTLS, err := outboundTLSFromEnv()
+	scimTLS, err := scimTLSFromEnv()
 	if err != nil {
-		return fmt.Errorf("outbound TLS: %w", err)
+		return fmt.Errorf("SCIM TLS: %w", err)
+	}
+	backchannelTLS, err := backchannelTLSFromEnv()
+	if err != nil {
+		return fmt.Errorf("backchannel TLS: %w", err)
 	}
 	// Audit publisher + reader share rt.NATS material; cli.AuditSink/Source
 	// hot-reload the workload cert per handshake and the CA pool on mtime
@@ -294,7 +307,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	provReg := provision.NewRegistry(func(ctx context.Context) (*provision.Set, error) {
-		return buildProvSet(ctx, db, kp, outboundTLS, log)
+		return buildProvSet(ctx, db, kp, scimTLS, log)
 	})
 	if err := provReg.Reload(ctx); err != nil {
 		return fmt.Errorf("load provisioners: %w", err)
@@ -307,7 +320,8 @@ func runServe(ctx context.Context) error {
 		WAHandler:         waHandler,
 		KP:                kp,
 		Provisioners:      provReg,
-		OutboundTLS:       outboundTLS,
+		SCIMTLS:           scimTLS,
+		BackchannelTLS:    backchannelTLS,
 		Audit:             auditSink,
 		AuditSource:       auditSource,
 		Issuer:            issuer,
@@ -488,9 +502,9 @@ func runAdminSync(target string) error {
 	if err != nil {
 		return fmt.Errorf("db TLS: %w", err)
 	}
-	outboundTLS, err := outboundTLSFromEnv()
+	scimTLS, err := scimTLSFromEnv()
 	if err != nil {
-		return fmt.Errorf("outbound TLS: %w", err)
+		return fmt.Errorf("SCIM TLS: %w", err)
 	}
 	if err := postgres.Migrate(adminMat.URL, adminDBTLS); err != nil {
 		return fmt.Errorf("migrate: %w", err)
@@ -536,7 +550,7 @@ func runAdminSync(target string) error {
 	}
 
 	for _, integration := range integrations {
-		prov, err := buildProvisioner(ctx, integration, db, kp, outboundTLS, log)
+		prov, err := buildProvisioner(ctx, integration, db, kp, scimTLS, log)
 		if err != nil {
 			log.Error("build provisioner", "integration", integration.Name, "err", err)
 			continue
@@ -699,14 +713,14 @@ func runAWSFedReaper(ctx context.Context, reg *provision.Registry, interval time
 // buildProvSet constructs a provision.Set from every enabled integration row.
 // Decryption errors are logged and the offending row is skipped so a single
 // corrupt config cannot wedge the whole fan-out.
-func buildProvSet(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (*provision.Set, error) {
+func buildProvSet(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, scimTLS *tls.Config, log *slog.Logger) (*provision.Set, error) {
 	rows, err := db.ListEnabledIntegrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list integrations: %w", err)
 	}
 	set := &provision.Set{Log: log}
 	for _, row := range rows {
-		prov, err := buildProvisioner(ctx, row, db, kp, outboundTLS, log)
+		prov, err := buildProvisioner(ctx, row, db, kp, scimTLS, log)
 		if err != nil {
 			log.Error("build provisioner", "integration", row.Name, "err", err)
 			continue
@@ -717,7 +731,7 @@ func buildProvSet(ctx context.Context, db *postgres.DB, kp bcrypto.KeyProvider, 
 	return set, nil
 }
 
-func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp bcrypto.KeyProvider, outboundTLS *tls.Config, log *slog.Logger) (provision.Provisioner, error) {
+func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres.DB, kp bcrypto.KeyProvider, scimTLS *tls.Config, log *slog.Logger) (provision.Provisioner, error) {
 	switch i.Provider {
 	case model.AppIntegrationProviderSCIM:
 		if i.Config.BaseURL == "" {
@@ -746,10 +760,10 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			}
 			cfg.Token = string(token)
 		case model.AppIntegrationAuthMTLS:
-			if outboundTLS == nil {
+			if scimTLS == nil {
 				return nil, fmt.Errorf("scim integration %q uses mtls but AUTHD_SCIM_MTLS_CERT/KEY are unset", i.Name)
 			}
-			cfg.TLSConfig = outboundTLS
+			cfg.TLSConfig = scimTLS
 		default:
 			return nil, fmt.Errorf("scim integration %q unsupported auth_mode %q", i.Name, authMode)
 		}
@@ -946,28 +960,25 @@ func masterKeyFromEnv() ([]byte, error) {
 	return bcrypto.ParseKEK(ref)
 }
 
-// outboundTLSFromEnv builds the *tls.Config used by mTLS-mode integrations to
-// authenticate auth as a client to downstream SCIM endpoints. A single shared
-// cert/key pair is presented for every mtls integration (auth has one IdP
-// identity). Returns nil when no env vars are set; mtls-mode integrations then
-// fail at registry-build time with a clear error.
-//
-// A full cert+key pair gets reloader.ClientConfig — the presented client cert
-// is re-read per handshake and the CA pool on mtime — so a cert-agentd
-// rotation lands without a restart. Anything short of a pair falls back to
-// one-shot btls.FromFiles (CA-only server-auth verification, or nil when
-// nothing is configured).
-//
-//	AUTHD_SCIM_MTLS_CERT  Client cert PEM path.
-//	AUTHD_SCIM_MTLS_KEY   Client key PEM path. Required iff CERT is set.
-//	AUTHD_SCIM_MTLS_CA    Optional CA bundle for verifying downstream servers.
-//	                     Falls back to AUTHD_WORKLOAD_CA, then to the system
-//	                     root pool.
-func outboundTLSFromEnv() (*tls.Config, error) {
+// scimTLSFromEnv builds the client TLS config used by mTLS-mode SCIM
+// integrations. The client certificate and selected CA bundle are hot-reloaded
+// when a full cert/key pair is configured. Returns nil when no SCIM TLS
+// material is configured; mTLS-mode integrations then fail at registry-build
+// time with a clear error.
+func scimTLSFromEnv() (*tls.Config, error) {
 	certFile := os.Getenv("AUTHD_SCIM_MTLS_CERT")
 	keyFile := os.Getenv("AUTHD_SCIM_MTLS_KEY")
 	caFile := envutil.First("AUTHD_SCIM_MTLS_CA", "AUTHD_WORKLOAD_CA")
 	return reloader.ClientTLS(certFile, keyFile, caFile)
+}
+
+// backchannelTLSFromEnv builds a CA-only TLS config for OIDC backchannel logout
+// requests. It intentionally carries no SCIM client certificate. An explicit
+// AUTHD_BACKCHANNEL_CA takes precedence over the shared workload CA; when both
+// are absent, nil leaves net/http using the system root pool.
+func backchannelTLSFromEnv() (*tls.Config, error) {
+	caFile := envutil.First("AUTHD_BACKCHANNEL_CA", "AUTHD_WORKLOAD_CA")
+	return reloader.ClientTLS("", "", caFile)
 }
 
 // dbAdminTLS builds the one-shot admin (migration) TLS config from resolved

@@ -20,16 +20,17 @@ import (
 
 // Server holds all dependencies for the HTTP API.
 type Server struct {
-	store       store.Store
-	signer      *internaljwt.Signer
-	policy      *policy.Engine
-	wa          *mfa.WAHandler
-	kp          bcrypto.KeyProvider
-	provReg     *provision.Registry // outbound user/group provisioning fan-out; may be nil
-	outboundTLS *tls.Config         // shared client cert + CA for mtls-mode integrations; may be nil
-	audit       audit.Sink          // JetStream publisher; NoopSink when AUTHD_NATS_URL is unset
-	auditSrc    journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTHD_NATS_URL is unset
-	issuer      string
+	store          store.Store
+	signer         *internaljwt.Signer
+	policy         *policy.Engine
+	wa             *mfa.WAHandler
+	kp             bcrypto.KeyProvider
+	provReg        *provision.Registry // outbound user/group provisioning fan-out; may be nil
+	scimTLS        *tls.Config         // client cert + CA for mTLS-mode SCIM integrations; may be nil
+	backchannelTLS *tls.Config         // CA-only config for backchannel logout; may be nil for system roots
+	audit          audit.Sink          // JetStream publisher; NoopSink when AUTHD_NATS_URL is unset
+	auditSrc       journal.Source      // JetStream reader for the audit-log stream page; NoopSource when AUTHD_NATS_URL is unset
+	issuer         string
 	// awsAudience is the single value emitted as the `aud` claim on every
 	// federation JWT minted for AWS console / CLI assumption. Sourced from
 	// the AUTHD_AWS_AUDIENCE env var at startup; empty disables federation
@@ -53,17 +54,18 @@ type Server struct {
 
 // Config holds server constructor options.
 type Config struct {
-	Store        store.Store
-	Signer       *internaljwt.Signer
-	Policy       *policy.Engine
-	WAHandler    *mfa.WAHandler
-	KP           bcrypto.KeyProvider
-	Provisioners *provision.Registry
-	OutboundTLS  *tls.Config
-	Audit        audit.Sink
-	AuditSource  journal.Source
-	Issuer       string
-	AWSAudience  string
+	Store          store.Store
+	Signer         *internaljwt.Signer
+	Policy         *policy.Engine
+	WAHandler      *mfa.WAHandler
+	KP             bcrypto.KeyProvider
+	Provisioners   *provision.Registry
+	SCIMTLS        *tls.Config
+	BackchannelTLS *tls.Config
+	Audit          audit.Sink
+	AuditSource    journal.Source
+	Issuer         string
+	AWSAudience    string
 	// StepUpMFATTL bounds how recently the user must have completed an
 	// MFA challenge for sensitive role assumption to proceed without
 	// re-prompting. Zero or negative falls back to the package default.
@@ -102,23 +104,24 @@ func New(cfg Config) (*Server, error) {
 		stepUpTTL = defaultStepUpMFATTL
 	}
 	return &Server{
-		store:        cfg.Store,
-		signer:       cfg.Signer,
-		policy:       cfg.Policy,
-		wa:           cfg.WAHandler,
-		kp:           cfg.KP,
-		provReg:      cfg.Provisioners,
-		outboundTLS:  cfg.OutboundTLS,
-		audit:        auditSink,
-		auditSrc:     auditSrc,
-		issuer:       cfg.Issuer,
-		awsAudience:  cfg.AWSAudience,
-		stepUpMFATTL: stepUpTTL,
-		masterKey:    cfg.MasterKey,
-		log:          cfg.Log,
-		ssoTmpl:      ssoTmpl,
-		portalTmpl:   portalTmpl,
-		allowReg:     cfg.AllowRegistration,
+		store:          cfg.Store,
+		signer:         cfg.Signer,
+		policy:         cfg.Policy,
+		wa:             cfg.WAHandler,
+		kp:             cfg.KP,
+		provReg:        cfg.Provisioners,
+		scimTLS:        cfg.SCIMTLS,
+		backchannelTLS: cfg.BackchannelTLS,
+		audit:          auditSink,
+		auditSrc:       auditSrc,
+		issuer:         cfg.Issuer,
+		awsAudience:    cfg.AWSAudience,
+		stepUpMFATTL:   stepUpTTL,
+		masterKey:      cfg.MasterKey,
+		log:            cfg.Log,
+		ssoTmpl:        ssoTmpl,
+		portalTmpl:     portalTmpl,
+		allowReg:       cfg.AllowRegistration,
 	}, nil
 }
 
