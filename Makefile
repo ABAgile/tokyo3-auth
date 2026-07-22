@@ -219,6 +219,7 @@ clean-all: clean
 	docker compose -f docker-compose.mesh.yml down --remove-orphans -v 2>/dev/null || true
 	docker volume rm $(SHARED_VOLUME) 2>/dev/null || true
 	rm -f shared/certs/traefik*.crt shared/certs/traefik*.key shared/certs/ca.crt
+	rm -f shared/secrets/authd-master.key
 	@echo "  removed compose stacks, volumes, and generated Traefik edge certs"
 
 # ── Help ──────────────────────────────────────────────────────────────────────
