@@ -41,7 +41,6 @@ services:
       target: server
       args:
         VERSION: ${VERSION:-dev-docker}
-    image: abagile/tokyo3-auth:${VERSION:-latest}
     restart: unless-stopped
     depends_on:
       authd-certs-ready:
@@ -51,21 +50,16 @@ services:
       tokyo3_idp: {}
     environment:
       <<: *default-environment
-      AUTHD_BACKCHANNEL_CA: /shared/certs/traefik-ca.crt
+      AUTHD_MASTER_KEY: file:/shared/secrets/authd-master.key
       AUTHD_ADDR: ":8443"
+      AUTHD_ISSUER: https://auth.localhost
       AUTHD_API_CERT: /tokyo3/workloads/authd.crt
       AUTHD_API_KEY: /tokyo3/workloads/authd.key
-      AUTHD_ISSUER: https://auth.localhost
-      AUTHD_MASTER_KEY: file:/shared/secrets/authd-master.key
       AUTHD_ALLOW_REGISTRATION: ${AUTHD_ALLOW_REGISTRATION:-false}
       AUTHD_WEBAUTHN_ORIGINS: ${AUTHD_WEBAUTHN_ORIGINS:-}
       AUTHD_WEBAUTHN_RPID: ${AUTHD_WEBAUTHN_RPID:-}
-      AUTHD_AWS_AUDIENCE: ${AUTHD_AWS_AUDIENCE:-}
-      AWS_REGION: ${AWS_REGION:-}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-
       AUTHD_WORKLOAD_CA: /tokyo3/certs/certd-x509-ca.crt
+
       AUTHD_ADMIN_DATABASE_URL: "postgres://authd_admin@tokyo3-postgres:5432/authd?sslmode=verify-full"
       AUTHD_ADMIN_DB_CERT: /tokyo3/workloads/authd-db-admin.crt
       AUTHD_ADMIN_DB_KEY: /tokyo3/workloads/authd-db-admin.key
@@ -77,8 +71,17 @@ services:
       AUTHD_NATS_URL: tls://tokyo3-nats:4222
       AUTHD_NATS_CERT: /tokyo3/workloads/authd-nats.crt
       AUTHD_NATS_KEY: /tokyo3/workloads/authd-nats.key
+
+      SSL_CERT_FILE: /shared/certs/traefik-ca.crt
+      AUTHD_BACKCHANNEL_CA: /shared/certs/traefik-ca.crt
+
       AUTHD_SCIM_MTLS_CERT: /tokyo3/workloads/authd-scim.crt
       AUTHD_SCIM_MTLS_KEY: /tokyo3/workloads/authd-scim.key
+
+      AUTHD_AWS_AUDIENCE: ${AUTHD_AWS_AUDIENCE:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     volumes:
       - shared_data:/shared:ro
       - ${TOKYO3_SHARED_VOLUME:-tokyo3_shared_data}:/tokyo3:ro

@@ -3,6 +3,15 @@
 # Use `make docker-up` for the local Postgres/NATS stack, or
 # `make docker-up-mesh` after `cd ../ca && make docker-up` to run authd on the
 # CA-owned tokyo3_backplane/tokyo3_idp networks.
+#
+# Even in standalone mode, the workload service (authd) and its Traefik edge
+# join the shared tokyo3_idp network (pre-created by `make docker-up`, same
+# idempotent pattern as ../ca): sibling stacks (e.g. vault) reach
+# https://auth.localhost via this Traefik's tokyo3_idp alias, and authd
+# reaches their edges (e.g. https://vault.localhost) for back-channel logout
+# and SCIM. Backend services (postgres, nats, natsbox, teleport) stay on the
+# project-default network only — their names never leak onto the shared
+# network, so parallel stacks can't collide.
 
 name: ${COMPOSE_PROJECT_NAME:-tokyo3_auth}
 
@@ -108,27 +117,35 @@ services:
         condition: service_healthy
     networks:
       default: {}
+      # Shared IdP network: lets authd dial sibling workloads' edges (e.g.
+      # https://vault.localhost) for back-channel logout / SCIM.
+      tokyo3_idp: {}
     environment:
       <<: *default-environment
-      AUTHD_BACKCHANNEL_CA:      /shared/certs/traefik-ca.crt
       AUTHD_MASTER_KEY:          file:/shared/secrets/authd-master.key
       AUTHD_ADDR:                ":8443"
       AUTHD_ISSUER:              https://auth.localhost
       AUTHD_API_CERT:            /shared/certs/traefik.crt
       AUTHD_API_KEY:             /shared/certs/traefik.key
+      AUTHD_ALLOW_REGISTRATION:  ${AUTHD_ALLOW_REGISTRATION:-false}
+      AUTHD_WEBAUTHN_ORIGINS:    ${AUTHD_WEBAUTHN_ORIGINS:-}
+      AUTHD_WEBAUTHN_RPID:       ${AUTHD_WEBAUTHN_RPID:-}
+
       AUTHD_ADMIN_DATABASE_URL:  postgres://authd_admin@postgres:5432/authd?sslmode=disable
       AUTHD_DATABASE_URL:        postgres://authd_app@postgres:5432/authd?sslmode=disable
       # Audit sink + source (live tail page + `authd audit query` CLI):
       # publish to and read from the auth_audit JetStream stream.
       AUTHD_NATS_URL:            nats://nats:4222
-      AUTHD_ALLOW_REGISTRATION:  ${AUTHD_ALLOW_REGISTRATION:-false}
-      AUTHD_WEBAUTHN_ORIGINS:    ${AUTHD_WEBAUTHN_ORIGINS:-}
-      AUTHD_WEBAUTHN_RPID:       ${AUTHD_WEBAUTHN_RPID:-}
+
+      SSL_CERT_FILE:             /shared/certs/traefik-ca.crt
+      AUTHD_BACKCHANNEL_CA:      /shared/certs/traefik-ca.crt
+
       # AWS OIDC federation (per-role tile + auth-aws-creds CLI). Set the
       # audience to the value registered on each account's IAM OIDC
       # provider. Empty disables the federation handler; setup runbook is
       # in README's "AWS OIDC Federation" section.
       AUTHD_AWS_AUDIENCE:        ${AUTHD_AWS_AUDIENCE:-}
+
       # Standard AWS SDK credential env vars — consumed by the SDK's
       # default credential chain inside the IAM provisioner and the
       # federation revocation provisioner. Empty values let the chain
@@ -175,6 +192,11 @@ services:
       - shared_data:/shared:ro
     networks:
       default:
+        aliases:
+          - auth.localhost
+      # Alias auth.localhost on the shared IdP network too, so sibling
+      # stacks' OIDC clients (e.g. vaultd) resolve the issuer here.
+      tokyo3_idp:
         aliases:
           - auth.localhost
     healthcheck:
@@ -228,3 +250,10 @@ volumes:
   db_data:
   nats_data:
   teleport_data:
+
+networks:
+  # Shared with the vault/ca stacks; pre-created by `make docker-up` (and by
+  # ../ca's docker-up), so compose neither owns nor removes it.
+  tokyo3_idp:
+    external: true
+    name: ${TOKYO3_IDP_NETWORK:-tokyo3_idp}

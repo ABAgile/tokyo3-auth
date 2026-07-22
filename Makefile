@@ -162,7 +162,10 @@ gen-certs:
 	@bash shared/certs/gen.sh
 
 ## docker-up: Bring up the standalone Docker stack.
+# Pre-creates the shared tokyo3_idp network (idempotent, same pattern as
+# ../ca) so sibling stacks can reach auth.localhost when this rig is up.
 docker-up: _sync-shared
+	@docker network create $(TOKYO3_IDP_NETWORK) >/dev/null 2>&1 || true
 	docker compose up -d --build --wait --remove-orphans
 	@if [ -f shared/teleport/bootstrap.yml ] && ! grep -q 'CHANGE_ME_' shared/teleport/bootstrap.yml; then \
 	    echo "  applying shared/teleport/bootstrap.yml (github connector)…"; \

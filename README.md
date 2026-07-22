@@ -64,7 +64,7 @@ Both readers use `journal/jetstream.Source` from `tokyo3-base`; same primitive, 
 Operating the journal:
 
 ```
-make docker-up                              # standalone Docker stack
+make docker-up                              # standalone Docker stack (authd + Traefik also join tokyo3_idp)
 # or, after `cd ../ca && make docker-up`, use the shared certd-rooted mesh:
 make docker-up-mesh                         # authd on tokyo3_backplane/tokyo3_idp
 docker compose exec natsbox nats stream info auth_audit
