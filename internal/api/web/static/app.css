@@ -761,6 +761,7 @@ input[type="checkbox"] {
 .app-subtitle { margin-top: var(--space-1); color: var(--color-text-muted); font-size: var(--text-sm); }
 .app-meta { min-height: 22px; display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-3); }
 .app-action { margin-top: var(--space-4); }
+.app-action-aws { display: flex; flex-direction: column; gap: var(--space-2); }
 
 .wa-challenge { padding: var(--space-8) 0; text-align: center; }
 .device-code { font-family: var(--font-mono); letter-spacing: .15em; text-transform: uppercase; }

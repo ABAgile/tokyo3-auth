@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -38,6 +39,46 @@ const (
 	federationTokenTTL = 15 * time.Minute
 )
 
+// signinFedURLForRegion returns the federation endpoint to use for
+// getSigninToken/login. Opt-in regions (not enabled by default on the
+// account) have their own signin domain and reject a session minted
+// against the global one. Empty region keeps today's global endpoint.
+func signinFedURLForRegion(region string) string {
+	if region == "" {
+		return awsSigninFedURL
+	}
+	return fmt.Sprintf("https://%s.signin.aws.amazon.com/federation", region)
+}
+
+// consoleHomeURLForRegion returns the console landing page (the
+// "Destination" federation parameter) for region. Empty region keeps
+// today's global console home.
+func consoleHomeURLForRegion(region string) string {
+	if region == "" {
+		return awsConsoleHomeURL
+	}
+	return fmt.Sprintf("https://%s.console.aws.amazon.com/console/home?region=%s", region, region)
+}
+
+// awsRegionPattern matches a syntactically safe AWS region name:
+// lowercase letters, digits, and hyphens only.
+var awsRegionPattern = regexp.MustCompile(`^[a-z0-9-]{1,20}$`)
+
+// sanitizeAWSRegion is applied to the `region` request parameter before
+// it is spliced into the signin/console hostnames (signinFedURLForRegion,
+// consoleHomeURLForRegion). It comes straight from the browser (which
+// button the user clicked), so it must not be trusted as-is: a value
+// containing e.g. "/" or "@" could change which host authd's own
+// server-side HTTP call in exchangeSigninToken actually dials. Returns
+// region unchanged when it is empty (meaning: use the global domains) or
+// matches the safe pattern, and "" — the same safe fallback — otherwise.
+func sanitizeAWSRegion(region string) string {
+	if region == "" || awsRegionPattern.MatchString(region) {
+		return region
+	}
+	return ""
+}
+
 // stsAPI is the subset of *sts.Client this handler uses. Defined as an
 // interface so tests can supply a mock and verify the federation flow
 // without touching real AWS.
@@ -66,6 +107,11 @@ func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("invalid role_id"), http.StatusFound)
 		return
 	}
+	region := r.FormValue("region")
+	if region == "" {
+		region = r.URL.Query().Get("region")
+	}
+	region = sanitizeAWSRegion(region)
 
 	role, allowed, err := s.resolveAuthorizedAWSRole(r.Context(), pc.User.ID, roleID)
 	if err != nil {
@@ -90,12 +136,12 @@ func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) 
 				"reason", "step_up_required",
 				"mfa_authenticated", pc.Session.MFAVerified,
 			))
-		q := url.Values{"next": {"aws_console"}, "role_id": {roleID.String()}}
+		q := url.Values{"next": {"aws_console"}, "role_id": {roleID.String()}, "region": {region}}
 		http.Redirect(w, r, "/portal/step-up?"+q.Encode(), http.StatusFound)
 		return
 	}
 
-	consoleURL, err := s.buildAWSConsoleURL(r, pc, role)
+	consoleURL, err := s.buildAWSConsoleURL(r, pc, role, region)
 	if err != nil {
 		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
@@ -118,11 +164,18 @@ func (s *Server) stepUpMFAFresh(sess *model.Session) bool {
 // Audit-logs success and the two failure modes; callers translate the
 // returned error to a redirect or JSON response.
 //
+// region is the AWS-region choice the user made on the "Open Console"
+// button they clicked (sanitizeAWSRegion already applied by the caller);
+// empty means the default, globally-shared signin/console domains. It is
+// re-embedded on the refresh URL below so AWS's hourly silent
+// re-federation keeps using the same door the user originally picked —
+// see the "Opt-in regions" section in README.
+//
 // Extracted from handlePortalAWSConsole because the step-up MFA path
 // needs to reach the same finish line from a different entrypoint
 // (the step-up handler), and the two callers need different response
 // shapes (302 vs JSON for WebAuthn).
-func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.AWSRole) (string, error) {
+func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.AWSRole, region string) (string, error) {
 	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role)
 	if err != nil {
 		s.log.Error("AssumeRoleWithWebIdentity", "role", role.RoleARN, "err", err)
@@ -131,7 +184,7 @@ func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.
 		return "", fmt.Errorf("AWS rejected the federation request: %s", err.Error())
 	}
 
-	signinToken, err := s.exchangeSigninToken(r.Context(), out)
+	signinToken, err := s.exchangeSigninToken(r.Context(), out, region)
 	if err != nil {
 		s.log.Error("getSigninToken", "err", err)
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
@@ -139,7 +192,16 @@ func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.
 		return "", fmt.Errorf("AWS console federation failed: %s", err.Error())
 	}
 
-	consoleURL := buildConsoleLoginURL(signinToken, s.issuer+"/portal/aws/refresh?role_id="+role.ID.String(), awsConsoleHomeURL)
+	refreshURL := s.issuer + "/portal/aws/refresh?" + url.Values{
+		"role_id": {role.ID.String()},
+		"region":  {region},
+	}.Encode()
+	consoleURL := buildConsoleLoginURL(
+		signinToken,
+		refreshURL,
+		consoleHomeURLForRegion(region),
+		signinFedURLForRegion(region),
+	)
 	// mfa_authenticated and step_up together let auditors distinguish
 	// "MFA required and present" from "MFA optional but present" from
 	// "MFA not required, not present" without joining against sessions.
@@ -152,6 +214,7 @@ func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.
 			"role_session_name", sessionName,
 			"step_up", role.RequireStepUpMFA,
 			"mfa_authenticated", pc.Session.MFAVerified,
+			"region", region,
 		)); err != nil {
 		return "", err
 	}
@@ -163,9 +226,12 @@ func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.
 // AWS calls it via 302; we treat it as a GET equivalent of /console: if
 // the user's portal session is still alive, re-run the AssumeRole + signin
 // dance with a fresh id_token; if not, portalAuth has already redirected
-// to /portal/login.
+// to /portal/login. role_id and region both ride on this URL's query
+// string (stamped there by buildAWSConsoleURL), so the region the user
+// originally picked survives this automatic round trip too.
 func (s *Server) handlePortalAWSRefresh(w http.ResponseWriter, r *http.Request) {
-	// Delegate to the same handler — accepting role_id from the query.
+	// Delegate to the same handler — accepting role_id and region from
+	// the query.
 	s.handlePortalAWSConsole(w, r)
 }
 
@@ -306,9 +372,10 @@ func (s *Server) stsClient() stsAPI {
 }
 
 // exchangeSigninToken trades STS session credentials for a single-use
-// SigninToken at https://signin.aws.amazon.com/federation. The request is
-// authenticated by the session JSON it carries — no SigV4 needed.
-func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleWithWebIdentityOutput) (string, error) {
+// SigninToken at the federation endpoint for region (global when empty —
+// see signinFedURLForRegion). The request is authenticated by the session
+// JSON it carries — no SigV4 needed.
+func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleWithWebIdentityOutput, region string) (string, error) {
 	if creds == nil || creds.Credentials == nil {
 		return "", errors.New("nil STS credentials")
 	}
@@ -328,7 +395,7 @@ func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleW
 	q := url.Values{}
 	q.Set("Action", "getSigninToken")
 	q.Set("Session", string(b))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, awsSigninFedURL+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signinFedURLForRegion(region)+"?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -357,14 +424,16 @@ func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleW
 // buildConsoleLoginURL constructs the redirect URL that signs the user
 // into the AWS Console. Issuer is the URL AWS bounces back to when the
 // console session expires — we point it at /portal/aws/refresh so the
-// re-federation is transparent.
-func buildConsoleLoginURL(signinToken, issuerURL, destination string) string {
+// re-federation is transparent. fedURL must be the same signin domain the
+// SigninToken in signinToken was minted against (signinFedURLForRegion) —
+// an opt-in region's door won't honour a token minted at the global one.
+func buildConsoleLoginURL(signinToken, issuerURL, destination, fedURL string) string {
 	q := url.Values{}
 	q.Set("Action", "login")
 	q.Set("Issuer", issuerURL)
 	q.Set("Destination", destination)
 	q.Set("SigninToken", signinToken)
-	return awsSigninFedURL + "?" + q.Encode()
+	return fedURL + "?" + q.Encode()
 }
 
 // authorizingGroupsForRole returns the display names of SCIM groups

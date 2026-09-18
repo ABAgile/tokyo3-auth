@@ -22,17 +22,22 @@ import (
 // State carried on the URL:
 //   next     — opaque action name (only "aws_console" today)
 //   role_id  — UUID of the AWS role the user clicked
+//   region   — AWS region the user's "Open Console" button targeted
+//              (sanitizeAWSRegion already applied by the originating
+//              handler); empty means the default, global domains
 //
 // All routes here run under portalAuth; they require an authenticated
 // portal session already exists (the gate before step-up is reached).
 
-// stepUpForm is the template payload for portal_step_up.html. Next and
-// RoleID survive the GET → POST round trip via hidden form fields so a
-// failed TOTP attempt re-renders without dropping the user's target.
+// stepUpForm is the template payload for portal_step_up.html. Next,
+// RoleID and Region survive the GET → POST round trip via hidden form
+// fields so a failed TOTP attempt re-renders without dropping the user's
+// target.
 type stepUpForm struct {
 	Error       string
 	Next        string
 	RoleID      string
+	Region      string
 	HasTOTP     bool
 	HasWebAuthn bool
 }
@@ -51,6 +56,11 @@ func (s *Server) handlePortalStepUp(w http.ResponseWriter, r *http.Request) {
 	if roleID == "" {
 		roleID = r.URL.Query().Get("role_id")
 	}
+	region := r.FormValue("region")
+	if region == "" {
+		region = r.URL.Query().Get("region")
+	}
+	region = sanitizeAWSRegion(region)
 
 	hasTOTP, hasWebAuthn := s.portalMFAMethods(r.Context(), pc.User.ID)
 	if !hasTOTP && !hasWebAuthn {
@@ -64,7 +74,7 @@ func (s *Server) handlePortalStepUp(w http.ResponseWriter, r *http.Request) {
 
 	render := func(errMsg string) {
 		s.ssoTmpl.render(w, "portal_step_up.html", stepUpForm{
-			Error: errMsg, Next: next, RoleID: roleID,
+			Error: errMsg, Next: next, RoleID: roleID, Region: region,
 			HasTOTP: hasTOTP, HasWebAuthn: hasWebAuthn,
 		})
 	}
@@ -86,7 +96,7 @@ func (s *Server) handlePortalStepUp(w http.ResponseWriter, r *http.Request) {
 		render("Server error. Please try again.")
 		return
 	}
-	dest, err := s.dispatchStepUpNext(r, pc, next, roleID)
+	dest, err := s.dispatchStepUpNext(r, pc, next, roleID, region)
 	if err != nil {
 		http.Redirect(w, r, "/portal?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
@@ -134,7 +144,8 @@ func (s *Server) handlePortalStepUpWebAuthnFinish(w http.ResponseWriter, r *http
 		s.writeError(w, http.StatusInternalServerError, "server_error", "mark session failed")
 		return
 	}
-	dest, err := s.dispatchStepUpNext(r, pc, r.URL.Query().Get("next"), r.URL.Query().Get("role_id"))
+	dest, err := s.dispatchStepUpNext(r, pc, r.URL.Query().Get("next"), r.URL.Query().Get("role_id"),
+		sanitizeAWSRegion(r.URL.Query().Get("region")))
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "dispatch_failed", err.Error())
 		return
@@ -162,7 +173,7 @@ func (s *Server) markStepUpSuccess(r *http.Request, pc *portalCtx) error {
 // assigned, AWS-side failure); unknown/empty next falls back to the
 // apps launcher so a user who navigated to /portal/step-up by hand
 // still gets somewhere sensible after refreshing their MFA.
-func (s *Server) dispatchStepUpNext(r *http.Request, pc *portalCtx, next, roleIDStr string) (string, error) {
+func (s *Server) dispatchStepUpNext(r *http.Request, pc *portalCtx, next, roleIDStr, region string) (string, error) {
 	switch next {
 	case "aws_console":
 		roleID, err := uuid.Parse(roleIDStr)
@@ -176,7 +187,7 @@ func (s *Server) dispatchStepUpNext(r *http.Request, pc *portalCtx, next, roleID
 		if !allowed {
 			return "", errors.New("not authorized for that role")
 		}
-		return s.buildAWSConsoleURL(r, pc, role)
+		return s.buildAWSConsoleURL(r, pc, role, region)
 	default:
 		return "/portal", nil
 	}

@@ -12,6 +12,7 @@
 <form method="POST" action="/portal/step-up">
   <input type="hidden" name="next" value="{{.Next}}">
   <input type="hidden" name="role_id" value="{{.RoleID}}">
+  <input type="hidden" name="region" value="{{.Region}}">
   <div class="form-group">
     <label for="code">Authenticator app code</label>
     <input type="text" id="code" name="code" class="code-input"
@@ -26,7 +27,7 @@
 
 {{if .HasWebAuthn}}
 <button type="button" id="step-up-key" class="btn btn-secondary btn-block"
-        data-next="{{.Next}}" data-role-id="{{.RoleID}}" onclick="stepUpWithKey(this)">Use security key</button>
+        data-next="{{.Next}}" data-role-id="{{.RoleID}}" data-region="{{.Region}}" onclick="stepUpWithKey(this)">Use security key</button>
 <div id="wa-status" role="status" aria-live="polite"></div>
 {{end}}
 {{end}}
@@ -37,9 +38,11 @@
 async function stepUpWithKey(btn) {
   const next = btn.dataset.next || "";
   const roleID = btn.dataset.roleId || "";
+  const region = btn.dataset.region || "";
   const q = new URLSearchParams();
   if (next) q.set("next", next);
   if (roleID) q.set("role_id", roleID);
+  if (region) q.set("region", region);
   const status = document.getElementById("wa-status");
   status.textContent = "Waiting for security key…";
   try {

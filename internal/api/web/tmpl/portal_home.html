@@ -31,9 +31,10 @@
           {{if eq .Kind "oidc"}}
             <a href="{{.LaunchURL}}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm btn-block app-action">Launch</a>
           {{else if eq .Kind "aws"}}
-            <form method="POST" action="/portal/aws/console" target="_blank" class="app-action">
+            <form method="POST" action="/portal/aws/console" target="_blank" class="app-action app-action-aws">
               <input type="hidden" name="role_id" value="{{.ID}}">
-              <button type="submit" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
+              <button type="submit" name="region" value="" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
+              <button type="submit" name="region" value="ap-east-2" class="btn btn-secondary btn-sm btn-block">Open Console (ap-east-2)</button>
             </form>
           {{end}}
         </div>

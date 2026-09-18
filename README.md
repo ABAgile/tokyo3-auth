@@ -465,6 +465,12 @@ Auth publishes `/.well-known/openid-configuration` and `/.well-known/jwks.json`;
 
 5. **Users log in** at `/portal`, click an AWS tile, land in the AWS Console. Roles flagged `require_step_up_mfa` interpose a fresh MFA challenge (`/portal/step-up`) when the session's last MFA is older than `AUTHD_STEP_UP_MFA_TTL` (default 5m); the user re-verifies and the assume continues without a second click.
 
+### Opt-in regions (regions not enabled by default on the account)
+
+A region AWS does not enable by default (e.g. `ap-east-2`) has its own signin domain — `<region>.signin.aws.amazon.com` — separate from the global `signin.aws.amazon.com` that default-enabled regions share. A console session minted at the global domain is not honoured there, which surfaces as an endless sign-in loop when a tile opens the console into one.
+
+Every AWS tile on the portal home page renders two "Open Console" buttons instead of one — the default (global) button, and one for the opt-in region — each posting its own `region` value on the same `/portal/aws/console` request, so the choice is made per click, not stored anywhere (no per-role or per-user setting). The value is validated against a strict AWS-region-name pattern before use (`sanitizeAWSRegion` in `web_portal_aws.go`) — an unrecognised value is treated as "no region" (the existing global-domain behaviour) rather than trusted as-is, since it is spliced directly into the signin/console hostnames. The choice survives the step-up MFA detour and AWS's hourly silent session refresh: both carry `region` on their own return URLs the same way they already carry `role_id`.
+
 ### Revocation (optional but recommended)
 
 Without revocation, STS sessions for a deactivated user keep working until natural expiry (≤role TTL, default 1h). To kill them in ≤30s, enable the revocation provisioner:

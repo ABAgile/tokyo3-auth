@@ -128,3 +128,83 @@ func TestAuthorizingGroupsForRole(t *testing.T) {
 		})
 	}
 }
+
+// TestSigninFedURLForRegion pins the fix for opt-in AWS regions (e.g.
+// ap-east-2 / Taipei): they have their own signin domain and reject a
+// session minted at the global one. Empty region must keep today's
+// global behavior unchanged.
+func TestSigninFedURLForRegion(t *testing.T) {
+	tests := []struct {
+		name   string
+		region string
+		want   string
+	}{
+		{"empty region keeps global endpoint", "", "https://signin.aws.amazon.com/federation"},
+		{"opt-in region gets its own domain", "ap-east-2", "https://ap-east-2.signin.aws.amazon.com/federation"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := signinFedURLForRegion(tc.region); got != tc.want {
+				t.Errorf("signinFedURLForRegion(%q) = %q, want %q", tc.region, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConsoleHomeURLForRegion(t *testing.T) {
+	tests := []struct {
+		name   string
+		region string
+		want   string
+	}{
+		{"empty region keeps global console home", "", "https://console.aws.amazon.com/"},
+		{"opt-in region gets a regional console home", "ap-east-2", "https://ap-east-2.console.aws.amazon.com/console/home?region=ap-east-2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := consoleHomeURLForRegion(tc.region); got != tc.want {
+				t.Errorf("consoleHomeURLForRegion(%q) = %q, want %q", tc.region, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildConsoleLoginURL pins that the login Action is always posted to
+// the SAME fedURL the SigninToken was minted against — mixing the global
+// and regional domains is exactly the bug this fix closes.
+func TestBuildConsoleLoginURL(t *testing.T) {
+	got := buildConsoleLoginURL("tok123", "https://issuer.example/refresh", "https://ap-east-2.console.aws.amazon.com/console/home?region=ap-east-2", "https://ap-east-2.signin.aws.amazon.com/federation")
+	want := "https://ap-east-2.signin.aws.amazon.com/federation?Action=login&Destination=https%3A%2F%2Fap-east-2.console.aws.amazon.com%2Fconsole%2Fhome%3Fregion%3Dap-east-2&Issuer=https%3A%2F%2Fissuer.example%2Frefresh&SigninToken=tok123"
+	if got != want {
+		t.Errorf("buildConsoleLoginURL() = %q, want %q", got, want)
+	}
+}
+
+// TestSanitizeAWSRegion pins that the `region` request parameter — which
+// comes straight from which "Open Console" button the browser clicked —
+// is rejected (falls back to "", the global domains) unless it matches a
+// syntactically safe AWS region name. A value containing "/" or "@" would
+// otherwise change which host authd's own server-side HTTP call in
+// exchangeSigninToken actually dials.
+func TestSanitizeAWSRegion(t *testing.T) {
+	tests := []struct {
+		name   string
+		region string
+		want   string
+	}{
+		{"empty stays empty", "", ""},
+		{"known region passes through", "ap-east-2", "ap-east-2"},
+		{"other known region passes through", "ap-southeast-1", "ap-southeast-1"},
+		{"path injection rejected", "evil.com/x", ""},
+		{"userinfo injection rejected", "evil.com@x", ""},
+		{"query injection rejected", "x?evil=1", ""},
+		{"uppercase rejected", "AP-EAST-2", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeAWSRegion(tc.region); got != tc.want {
+				t.Errorf("sanitizeAWSRegion(%q) = %q, want %q", tc.region, got, tc.want)
+			}
+		})
+	}
+}
