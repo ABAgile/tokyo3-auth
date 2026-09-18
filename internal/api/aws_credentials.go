@@ -103,7 +103,10 @@ func (s *Server) handleAWSCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, sessionName, err := s.assumeRoleForUser(r.Context(), user, sess, role)
+	// No per-request region concept on this programmatic endpoint (unlike
+	// the console tile's region buttons) — always mint against the global
+	// STS endpoint, matching this endpoint's pre-existing behavior.
+	out, sessionName, err := s.assumeRoleForUser(r.Context(), user, sess, role, "")
 	if err != nil {
 		if errors.Is(err, errFederationUnconfigured) {
 			s.writeError(w, http.StatusServiceUnavailable, "federation_disabled", err.Error())

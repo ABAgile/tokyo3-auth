@@ -176,7 +176,7 @@ func (s *Server) stepUpMFAFresh(sess *model.Session) bool {
 // (the step-up handler), and the two callers need different response
 // shapes (302 vs JSON for WebAuthn).
 func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.AWSRole, region string) (string, error) {
-	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role)
+	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role, region)
 	if err != nil {
 		s.log.Error("AssumeRoleWithWebIdentity", "role", role.RoleARN, "err", err)
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
@@ -244,6 +244,14 @@ func (s *Server) handlePortalAWSRefresh(w http.ResponseWriter, r *http.Request) 
 // credential_process JSON. Returning the raw STS output keeps the helper
 // free of presentation concerns.
 //
+// region selects which STS endpoint mints the credentials
+// (stsClientForRegion) — pass "" from any caller that has no per-request
+// region concept (e.g. the /aws/credentials API). It matters because AWS
+// STS credentials minted at the global endpoint are only valid in
+// AWS-default-enabled regions; an opt-in region needs credentials minted
+// at its own regional STS endpoint, or the console federation call two
+// steps later fails even though the sign-in domain used is correct.
+//
 // The audience claim comes from s.awsAudience (the AUTHD_AWS_AUDIENCE env
 // var), not from the role row — per-role authorisation is delegated to
 // aws:RequestTag/<key> conditions in the role's trust policy. Returns
@@ -253,7 +261,7 @@ func (s *Server) handlePortalAWSRefresh(w http.ResponseWriter, r *http.Request) 
 //
 // Returns the raw AssumeRoleWithWebIdentity output plus the
 // CloudTrail-friendly RoleSessionName for audit metadata.
-func (s *Server) assumeRoleForUser(ctx context.Context, user *model.User, sess *model.Session, role *model.AWSRole) (*sts.AssumeRoleWithWebIdentityOutput, string, error) {
+func (s *Server) assumeRoleForUser(ctx context.Context, user *model.User, sess *model.Session, role *model.AWSRole, region string) (*sts.AssumeRoleWithWebIdentityOutput, string, error) {
 	if s.awsAudience == "" {
 		return nil, "", errFederationUnconfigured
 	}
@@ -306,7 +314,7 @@ func (s *Server) assumeRoleForUser(ctx context.Context, user *model.User, sess *
 		return nil, "", fmt.Errorf("mint federation token: %w", err)
 	}
 	sessionName := buildRoleSessionName(user.Email, user.ID)
-	out, err := s.stsClient().AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
+	out, err := s.stsClientForRegion(region).AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
 		RoleArn:          aws.String(role.RoleARN),
 		RoleSessionName:  aws.String(sessionName),
 		WebIdentityToken: aws.String(idToken),
@@ -355,19 +363,35 @@ func (s *Server) groupNamesForUser(ctx context.Context, userID uuid.UUID) ([]str
 	return out, nil
 }
 
-// stsClient builds an STS client with anonymous credentials.
-// AssumeRoleWithWebIdentity is one of the few AWS API calls that
-// authenticates via the JWT body rather than SigV4 — the SDK still
-// requires *some* credentials provider, so we pass aws.AnonymousCredentials
-// to suppress signing and avoid attempting to read ambient creds (which
-// authd may not even have if it's deployed without an IAM role).
-func (s *Server) stsClient() stsAPI {
+// stsClientForRegion builds an STS client with anonymous credentials,
+// pointed at the regional STS endpoint for region (or the global one when
+// region is empty). AssumeRoleWithWebIdentity is one of the few AWS API
+// calls that authenticates via the JWT body rather than SigV4 — the SDK
+// still requires *some* credentials provider, so we pass
+// aws.AnonymousCredentials to suppress signing and avoid attempting to
+// read ambient creds (which authd may not even have if it's deployed
+// without an IAM role).
+//
+// The region matters beyond just latency: per AWS's own documentation,
+// "Session tokens from the global [STS] endpoint are valid only in AWS
+// Regions that are enabled by default" — an opt-in region (not enabled by
+// default) rejects credentials minted at the global endpoint outright, no
+// matter which signin domain they're later presented to. Regional STS
+// endpoint tokens are valid everywhere, so using region's own endpoint
+// here fixes that for both default and opt-in regions.
+func (s *Server) stsClientForRegion(region string) stsAPI {
+	endpoint := awsSTSEndpoint
+	sdkRegion := "us-east-1" // STS global endpoint is region-bound for SDK purposes; us-east-1 is canonical
+	if region != "" {
+		endpoint = fmt.Sprintf("https://sts.%s.amazonaws.com", region)
+		sdkRegion = region
+	}
 	cfg := aws.Config{
-		Region:      "us-east-1", // STS global endpoint is region-bound for SDK purposes; us-east-1 is canonical
+		Region:      sdkRegion,
 		Credentials: aws.AnonymousCredentials{},
 	}
 	return sts.NewFromConfig(cfg, func(o *sts.Options) {
-		o.BaseEndpoint = aws.String(awsSTSEndpoint)
+		o.BaseEndpoint = aws.String(endpoint)
 	})
 }
 

@@ -5,6 +5,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/google/uuid"
 )
@@ -177,6 +180,42 @@ func TestBuildConsoleLoginURL(t *testing.T) {
 	want := "https://ap-east-2.signin.aws.amazon.com/federation?Action=login&Destination=https%3A%2F%2Fap-east-2.console.aws.amazon.com%2Fconsole%2Fhome%3Fregion%3Dap-east-2&Issuer=https%3A%2F%2Fissuer.example%2Frefresh&SigninToken=tok123"
 	if got != want {
 		t.Errorf("buildConsoleLoginURL() = %q, want %q", got, want)
+	}
+}
+
+// TestSTSClientForRegion pins that credentials are minted at the
+// matching regional STS endpoint when a region is given, and at the
+// existing global one when it is not. This is the other half of the
+// opt-in region fix: AWS documents that session tokens minted at the
+// global STS endpoint are only valid in regions enabled by default, so
+// an opt-in region needs its own regional endpoint's tokens regardless
+// of which signin domain they're later presented to.
+func TestSTSClientForRegion(t *testing.T) {
+	r := newTestRig(t)
+
+	tests := []struct {
+		name          string
+		region        string
+		wantEndpoint  string
+		wantSDKRegion string
+	}{
+		{"empty region keeps the global STS endpoint", "", "https://sts.amazonaws.com", "us-east-1"},
+		{"opt-in region gets its own STS endpoint", "ap-east-2", "https://sts.ap-east-2.amazonaws.com", "ap-east-2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, ok := r.server.stsClientForRegion(tc.region).(*sts.Client)
+			if !ok {
+				t.Fatalf("stsClientForRegion(%q) did not return a *sts.Client", tc.region)
+			}
+			opts := client.Options()
+			if got := aws.ToString(opts.BaseEndpoint); got != tc.wantEndpoint {
+				t.Errorf("BaseEndpoint = %q, want %q", got, tc.wantEndpoint)
+			}
+			if opts.Region != tc.wantSDKRegion {
+				t.Errorf("Region = %q, want %q", opts.Region, tc.wantSDKRegion)
+			}
+		})
 	}
 }
 
