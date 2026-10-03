@@ -154,13 +154,12 @@ type SigningKey struct {
 // cmd/authd/main.go.
 const (
 	AppIntegrationProviderSCIM          = "scim"
-	AppIntegrationProviderIAM           = "aws_iam"
 	AppIntegrationProviderAWSFederation = "aws_federation"
 )
 
 // AppIntegrationAuthMode enumerates the mutually-exclusive ways auth proves
-// itself to a downstream SCIM endpoint. AWS IAM ignores this field — credentials
-// always come from the AWS SDK's default chain.
+// itself to a downstream SCIM endpoint. AWS federation ignores this field —
+// revocation credentials come from the AWS SDK's default chain.
 const (
 	AppIntegrationAuthBearer = "bearer" // RP-issued bearer token; stored encrypted on the row
 	AppIntegrationAuthMTLS   = "mtls"   // client cert from AUTHD_SCIM_* env vars
@@ -168,12 +167,11 @@ const (
 
 // AppIntegrationConfig is the non-secret JSON payload persisted alongside an
 // AppIntegration. SCIM providers populate BaseURL + TimeoutMS + AuthMode;
-// AWS IAM uses GroupMap (SCIM display name → IAM group name). Unknown fields
+// AWS federation needs no provider-specific configuration. Unknown fields
 // for the chosen provider are ignored at runtime.
 type AppIntegrationConfig struct {
-	BaseURL   string            `json:"base_url,omitempty"`
-	TimeoutMS int               `json:"timeout_ms,omitempty"`
-	GroupMap  map[string]string `json:"group_map,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
 	// AuthMode applies to SCIM integrations only: "bearer" or "mtls".
 	// Empty defaults to "bearer" for backward compatibility with rows
 	// created before this field was added.
@@ -182,8 +180,8 @@ type AppIntegrationConfig struct {
 
 // AppIntegration is a single outbound provisioning target. Tokens are
 // envelope-encrypted via bcrypto.EncryptEnvelope (matching mfa/totp.go); the
-// EncryptedToken/EncryptedDEK pair is nil for IAM-style providers that source
-// credentials from elsewhere.
+// EncryptedToken/EncryptedDEK pair is nil for mTLS SCIM and AWS federation
+// integrations, which source credentials from elsewhere.
 type AppIntegration struct {
 	ID             uuid.UUID
 	Name           string

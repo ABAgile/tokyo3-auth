@@ -7,7 +7,7 @@ How to bring up the auth ↔ vault bridge, and how to extend the same pattern to
 Auth is the source of truth for identity. Two channels carry that identity outward:
 
 - **OIDC** — downstream apps log users in by redirecting to auth's `/authorize`. Each app is an entry in auth's `clients` table.
-- **Provisioning** — auth pushes user/group lifecycle events (create / update / deactivate / delete) to downstream systems through `provision.Set` whenever an authoritative mutation happens (inbound SCIM, admin API, self-registration, portal admin). Each downstream is a `provision.Provisioner` implementation. The built-in implementations are `iam` (AWS IAM) and `scim` (SCIM 2.0 over bearer auth, used for vault).
+- **Provisioning** — auth pushes user/group lifecycle events (create / update / deactivate / delete) to downstream systems through `provision.Set` whenever an authoritative mutation happens (inbound SCIM, admin API, self-registration, portal admin). Each downstream is a `provision.Provisioner` implementation. The built-in implementations are `scim` (SCIM 2.0 over bearer auth or mTLS, used for vault) and `awsfed` (AWS federation session revocation; it does not create IAM users or groups).
 
 The two channels are independent. An app can use either, both, or neither.
 
@@ -197,7 +197,7 @@ func (p *Provisioner) Group(ctx context.Context, op provision.Op, g *model.SCIMG
 }
 ```
 
-Wire it into `cmd/authd/main.go`'s `buildProvisioner` switch alongside the existing `scim` and `aws_iam` cases, and add a new `AppIntegrationProvider*` constant in `internal/model/model.go`. The fan-out, all native-path hooks, and the `external_ids` cache work unchanged. Typical size: 150–300 LOC + tests.
+Wire it into `cmd/authd/main.go`'s `buildProvisioner` switch alongside the existing `scim` and `aws_federation` cases, and add a new `AppIntegrationProvider*` constant in `internal/model/model.go`. The fan-out, all native-path hooks, and the `external_ids` cache work unchanged. Typical size: 150–300 LOC + tests.
 
 ### Level C — no provisioning API, OIDC-only
 
@@ -373,13 +373,7 @@ Join auth's audit on `user_id` with CloudTrail on `sub` for the complete story (
 
 - **No IAM users created for workforce members.** Federation is identity-less in AWS — sessions are minted on demand, no per-user IAM rows.
 
-  The `iam` provisioner (`internal/provision/iam`, labelled "AWS IAM Users (legacy)" in the admin form) is kept as a deliberate escape hatch for environments where IAM users are *actually* required:
-  - **CodeCommit Git credentials** (`iam:CreateServiceSpecificCredential`, `iam:UploadSSHPublicKey`) — no federation alternative
-  - **SES SMTP credentials** — derived from IAM access keys; SES's SMTP endpoint doesn't accept STS sessions (the SES *API* does)
-  - **Resource policies that hardcode `arn:aws:iam::ACCOUNT:user/<name>` as Principal** — common in long-running AWS accounts; rare in greenfield
-  - **Third-party SaaS that only documents IAM-user setup** — check the vendor's role-based integration docs before assuming this applies
-
-  Greenfield deployments should not enable the `iam` provisioner. The admin form surfaces a deprecation banner explaining the same — federation is the human-access path, and `aws_iam` is the legacy compatibility hatch.
+  IAM user/group provisioning is not supported. IAM role-policy operations remain in the `awsfed` provisioner solely for session revocation.
 - **No Identity Center.** Direct OIDC federation against auth is the architecturally simpler answer for ≤5 AWS accounts. Identity Center pays off at higher account counts and unlocks Trusted Identity Propagation for analytics services (QuickSight rows, S3 Access Grants, Redshift query authorization) — but requires SAML support in the IdP, which auth doesn't have today.
 - **CLI credential helper lives at `cmd/auth-aws-creds/`** in this same repo (not a separate project). Install with `go install github.com/abagile/tokyo3-auth/cmd/auth-aws-creds@latest`; users wire it via `credential_process` in `~/.aws/config`. The helper depends only on the standard library and `internal/awsclaims` — no DB or AWS SDK in its import graph, so installing it doesn't drag in server dependencies.
 
@@ -420,7 +414,6 @@ Adding a new app
 - `auth/internal/provision/provision.go` — `Provisioner` interface + `Set` fan-out
 - `auth/internal/provision/registry.go` — hot-reloading wrapper around `Set` (rebuilt on integration save)
 - `auth/internal/provision/scim/client.go` — generic SCIM 2.0 outbound client (bearer + mTLS)
-- `auth/internal/provision/iam/iam.go` — AWS IAM provisioner (reference impl for non-SCIM targets)
 - `auth/internal/provision/awsfed/awsfed.go` — AWS OIDC federation revocation provisioner (session-tag Deny + reaper)
 - `auth/internal/api/web_portal_aws.go` — user-facing federation handler (`/portal/aws`, `/portal/aws/console`, `/portal/aws/refresh`)
 - `auth/internal/api/web_portal_aws_admin.go` — admin UI for the federation catalogue (accounts, roles, group→role assignments)

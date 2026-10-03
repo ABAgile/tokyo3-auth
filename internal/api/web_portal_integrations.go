@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +26,6 @@ type integrationFormView struct {
 	portalBase
 	Integration *model.AppIntegration
 	IsNew       bool
-	GroupMapStr string
 	Error       string
 }
 
@@ -74,7 +72,6 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 			portalBase:  newPortalBase(pc, "admin-integrations"),
 			Integration: form.row,
 			IsNew:       true,
-			GroupMapStr: form.groupMapStr,
 			Error:       msg,
 		})
 	}
@@ -128,11 +125,15 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 	}
 
 	if r.Method == http.MethodGet {
+		var message string
+		if existing.Provider != model.AppIntegrationProviderSCIM && existing.Provider != model.AppIntegrationProviderAWSFederation {
+			message = "This provider is no longer supported. Clean up downstream resources before deleting this integration."
+		}
 		s.portalTmpl.render(w, "portal_admin_integration_edit.html", integrationFormView{
 			portalBase:  newPortalBase(pc, "admin-integrations"),
 			Integration: existing,
 			IsNew:       false,
-			GroupMapStr: groupMapToString(existing.Config.GroupMap),
+			Error:       message,
 		})
 		return
 	}
@@ -146,7 +147,6 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 			portalBase:  newPortalBase(pc, "admin-integrations"),
 			Integration: form.row,
 			IsNew:       false,
-			GroupMapStr: form.groupMapStr,
 			Error:       msg,
 		})
 	}
@@ -213,8 +213,8 @@ func (s *Server) handlePortalAdminIntegrationDelete(w http.ResponseWriter, r *ht
 }
 
 // handlePortalAdminIntegrationTest pings the integration to verify connectivity.
-// For SCIM it issues GET {BaseURL}/ServiceProviderConfig; IAM testing is left
-// out because credentials are validated lazily by the AWS SDK on first use.
+// For SCIM it issues GET {BaseURL}/ServiceProviderConfig; federation testing
+// is left out because credentials are validated lazily by the AWS SDK.
 func (s *Server) handlePortalAdminIntegrationTest(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -367,9 +367,8 @@ func (s *Server) reloadProvisioners(ctx context.Context) {
 // ── form parsing ──────────────────────────────────────────────────────────────
 
 type integrationFormInput struct {
-	row         *model.AppIntegration
-	tokenPlain  string
-	groupMapStr string
+	row        *model.AppIntegration
+	tokenPlain string
 }
 
 func readIntegrationForm(r *http.Request, isNew bool) integrationFormInput {
@@ -379,7 +378,6 @@ func readIntegrationForm(r *http.Request, isNew bool) integrationFormInput {
 		provider = ""
 	}
 	timeoutMS, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("timeout_ms")))
-	groupMapStr := r.FormValue("group_map")
 	authMode := strings.TrimSpace(r.FormValue("auth_mode"))
 	if authMode == "" {
 		authMode = model.AppIntegrationAuthBearer
@@ -391,14 +389,12 @@ func readIntegrationForm(r *http.Request, isNew bool) integrationFormInput {
 		Config: model.AppIntegrationConfig{
 			BaseURL:   strings.TrimSpace(r.FormValue("base_url")),
 			TimeoutMS: timeoutMS,
-			GroupMap:  parseGroupMap(groupMapStr),
 			AuthMode:  authMode,
 		},
 	}
 	return integrationFormInput{
-		row:         row,
-		tokenPlain:  r.FormValue("token"),
-		groupMapStr: groupMapStr,
+		row:        row,
+		tokenPlain: r.FormValue("token"),
 	}
 }
 
@@ -423,8 +419,6 @@ func (f integrationFormInput) validate(needToken bool) string {
 		default:
 			return "Unsupported auth mode."
 		}
-	case model.AppIntegrationProviderIAM:
-		// no required fields beyond name
 	case model.AppIntegrationProviderAWSFederation:
 		// Credential-less provisioner: name + enabled is the whole row.
 		// IAM permissions come from the SDK default chain on the host.
@@ -434,46 +428,4 @@ func (f integrationFormInput) validate(needToken bool) string {
 		return "Unsupported provider."
 	}
 	return ""
-}
-
-func parseGroupMap(s string) map[string]string {
-	out := map[string]string{}
-	for _, line := range parseLines(s) {
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if k == "" || v == "" {
-			continue
-		}
-		out[k] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// groupMapToString renders the SCIM-group → IAM-group mapping for the edit
-// form. Keys are sorted so re-rendering an unchanged map produces stable text;
-// otherwise Go's randomized map iteration would shuffle the lines on every save.
-func groupMapToString(m map[string]string) string {
-	if len(m) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(m[k])
-		b.WriteByte('\n')
-	}
-	return b.String()
 }

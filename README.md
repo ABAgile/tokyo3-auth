@@ -14,7 +14,7 @@ A minimal self-hosted Identity Provider (IdP) for internal applications.
 
 1. **OAuth2/OIDC** — Authorization Code + PKCE (S256), ID tokens (RS256), JWKS rotation, UserInfo, token revocation.
 2. **AWS OIDC federation** — Short-lived console and CLI credentials through AWS roles, with group assignments, step-up MFA, and optional session revocation.
-3. **Outbound provisioning** — auth pushes user/group lifecycle events to downstream systems via SCIM 2.0 (Vault, Okta-as-target, custom REST) and the AWS IAM SDK. Per-integration auth is bearer token *or* mTLS (mutually exclusive).
+3. **Outbound provisioning** — auth pushes user/group lifecycle events to downstream systems via SCIM 2.0 (Vault, Okta-as-target, custom REST). Per-integration auth is bearer token *or* mTLS (mutually exclusive).
 4. **PCI-DSS v4.0.1 policy engine** — Pluggable rule engine enforcing password complexity, MFA, lockout, session timeout, and audit logging.
 
 ## Design Concepts
@@ -77,7 +77,7 @@ Required env vars on `authd` to enable JetStream publish + read: `AUTHD_NATS_URL
 The same NATS endpoint also receives **operational log shipping** — every structured log line authd emits is fanned out to subject `app_log.authd` (alongside stdout). Reuses the same `AUTHD_NATS_*` env vars; ships nothing when `AUTHD_NATS_URL` is unset. The shipper dials with `RetryOnFailedConnect(true)` so a broker that's down at boot doesn't fail process startup — entries drop on the floor (200-entry discard-on-full buffer) while disconnected and resume on reconnect.
 
 ### Outbound provisioning
-Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls; AWS IAM targets translate group display names to IAM groups via a configurable map. The OIDC discovery endpoint enables `AssumeRoleWithWebIdentity` federation.
+Authoritative user/group mutations (admin API, portal admin actions, self-registration) fan out to every enabled integration. SCIM targets receive standards-compliant SCIM 2.0 calls. AWS access uses group-to-role assignments and `AssumeRoleWithWebIdentity` federation, not IAM user/group provisioning.
 
 ### Crypto
 - Passwords: bcrypt cost 12.
@@ -188,8 +188,8 @@ AUTHD_DATABASE_URL="postgres://app:pass@localhost/authd" \
 | `AUTHD_DEBUG_ADDR` | No | — | Listen address (e.g. `127.0.0.1:6060`) for the opt-in diagnostics server: Go runtime profiles (`/debug/pprof/…`) plus a periodic `runtime stats` log line. Empty disables it entirely. **Unauthenticated — bind to loopback or a private interface, never expose publicly.** |
 | `AUTHD_WEBAUTHN_ORIGINS` | No | Derived from `AUTHD_ISSUER` | Space-separated additional WebAuthn origins |
 | `AUTHD_WEBAUTHN_RPID` | No | Hostname of `AUTHD_ISSUER` | WebAuthn Relying Party ID override. Set to a registrable parent domain (e.g. `example.com`) so credentials work across sibling subdomains; list each subdomain's full origin in `AUTHD_WEBAUTHN_ORIGINS`. **Changing the RP ID invalidates all previously registered WebAuthn credentials** — users must re-register. |
-| `AWS_REGION` | If an `aws_iam` or `aws_federation` integration is enabled | — | Signing region for the AWS SDK's IAM calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | If neither machine IAM role nor any other credential source is available | — | Standard AWS SDK env vars, **not read by auth**. The SDK's default credential chain (used by the `aws_iam` and `aws_federation` provisioners) picks these up if set. **Prefer a machine IAM role** — EC2 instance profile, ECS task role, EKS IRSA, or IAM Roles Anywhere — over static keys for production. The federation flow (`/portal/aws`, `/aws/credentials`) does NOT need any AWS credentials at all; only the IAM-creates-users provisioner and the federation revocation provisioner do. |
+| `AWS_REGION` | If an `aws_federation` revocation integration is enabled | — | Signing region for the AWS SDK's IAM role-policy calls (IAM is global but the SDK requires a region; `us-east-1` is canonical). Not read by auth itself — consumed by the AWS SDK Go default credential chain. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | If neither machine IAM role nor any other credential source is available | — | Standard AWS SDK env vars, **not read by auth**. The SDK's default credential chain (used by the `aws_federation` revocation provisioner) picks these up if set. **Prefer a machine IAM role** — EC2 instance profile, ECS task role, EKS IRSA, or IAM Roles Anywhere — over static keys for production. The federation flow (`/portal/aws`, `/aws/credentials`) does NOT need any AWS credentials at all; only the optional federation revocation provisioner does. |
 
 ### Cert rotation
 
@@ -338,7 +338,7 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 | `POST` | `/portal/admin/aws/roles/{id}/delete` | Delete |
 | `POST` | `/portal/admin/aws/assignments/new` | Add a group → role assignment |
 | `POST` | `/portal/admin/aws/assignments/{id}/delete` | Delete |
-| `GET` | `/portal/admin/integrations` | List app integrations (Vault SCIM, AWS IAM, …) |
+| `GET` | `/portal/admin/integrations` | List app integrations (SCIM provisioning, AWS federation revocation) |
 | `GET/POST` | `/portal/admin/integrations/new` | Add a new integration |
 | `GET/POST` | `/portal/admin/integrations/{id}/edit` | Edit integration; rotate token |
 | `POST` | `/portal/admin/integrations/{id}/delete` | Remove integration |
@@ -349,7 +349,7 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 **Role assignment:** Two layers of role management are available:
 
 - **Portal admin flag** — toggle the "Administrator" checkbox on any user's edit page. Grants access to `/portal/admin/*`. Effective on next portal login.
-- **Application roles via groups** — create groups under `/portal/admin/groups`, assign users, and the same group is fanned out to every enabled integration as a SCIM `Group` (or AWS IAM group via the integration's group map). Saving the group triggers an immediate downstream sync.
+- **Application roles via groups** — create groups under `/portal/admin/groups`, assign users, and the same group is fanned out to every enabled SCIM integration as a SCIM `Group`. AWS federation uses these groups for role assignments. Saving the group triggers an immediate downstream sync.
 
 ### Health
 
@@ -547,40 +547,6 @@ auth-sso/
 > **Upgrading from a previous version that used `~/.config/auth-aws-creds/`?** Just run `auth-aws-creds login` once — the helper writes to the new location and ignores the old cache. You can `rm -rf ~/.config/auth-aws-creds` at your leisure.
 
 **Programmatic endpoint**: the helper talks to `POST /aws/credentials` (bearer-auth, form body `role=<slug>`; `audience=<slug>` accepted as a deprecated alias). The response shape matches AWS CLI v2's `credential_process` JSON so a passthrough helper requires no marshalling.
-
-## AWS IAM Users (legacy)
-
-> **Deprecated for human access.** Use [AWS OIDC Federation](#aws-oidc-federation-console-sso-without-iam-users) above for console and CLI access. This section covers the older `aws_iam` provisioner that creates an IAM user per workforce member; keep it around for the narrow set of cases below, not as the default human-access path.
-
-The `aws_iam` provisioner creates one IAM user per active auth user, tags them `ManagedBy=tokyo3-auth`, syncs SCIM-group → IAM-group memberships, and revokes access keys + group memberships on deactivation. It does **not** set a console password or generate access keys — those are operator-controlled lifecycle events outside auth's scope.
-
-### When to enable
-
-Only when you have a concrete dependency on a stable per-user IAM ARN:
-
-- **CodeCommit Git credentials** — generated per IAM user via `iam:CreateServiceSpecificCredential` or `iam:UploadSSHPublicKey`. No federated equivalent exists. (AWS stopped accepting new CodeCommit customers in 2024; existing setups may still depend on this.)
-- **SES SMTP credentials** — derived from an IAM user's access keys; SES's SMTP endpoint does not accept STS sessions. The SES *API* works fine with federated credentials, so this only matters when you're stuck on SMTP.
-- **Resource policies that hardcode** `arn:aws:iam::ACCOUNT:user/<name>` as `Principal`. Greenfield environments don't have these; long-running AWS accounts often do. Audit with: `grep -rE 'arn:aws:iam::[0-9]+:user/' <terraform-state>`.
-- **Third-party SaaS that only documents IAM user setup** for its AWS integration. Almost all support role-based access today; check the vendor's "advanced" / "production" docs before assuming IAM users are required.
-
-For everything else — and especially for human workforce access — use federation. Federation gives you short-lived STS credentials, no per-user IAM rows, no long-lived keys, no `~/.aws/credentials` to leak.
-
-### Setup
-
-Add an `aws_iam` integration at `/portal/admin/integrations/new` (the admin form shows a deprecation banner with the same guidance as this section). The integration's `Group mapping` field maps SCIM group display names to IAM group names — when a user is added to a SCIM group, they're added to the corresponding IAM group automatically.
-
-Credentials come from the AWS SDK default credential chain on the host running authd. Use a machine IAM role (EC2 instance profile, ECS task role, EKS IRSA, IAM Roles Anywhere); avoid static `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in production. The role needs: `iam:CreateUser`, `iam:TagUser`, `iam:DeleteUser`, `iam:CreateGroup`, `iam:AddUserToGroup`, `iam:RemoveUserFromGroup`, `iam:ListGroupsForUser`, `iam:ListAccessKeys`, `iam:DeleteAccessKey`.
-
-### What the provisioner does NOT do
-
-To set realistic expectations:
-
-- **No console password** is set — `iam:CreateLoginProfile` is never called. Use `aws iam create-login-profile` out-of-band after provisioning if console access is desired.
-- **No access keys** are minted — `iam:CreateAccessKey` is never called. Operators mint keys for the specific service integrations that need them.
-- **No MFA enrollment** — IAM MFA is independent of auth's MFA.
-- **Username collision risk**: usernames are derived as the email's local part (`alice@example.com` → `alice`). Two users with the same local part collide; auth logs the conflict but doesn't surface it elsewhere.
-
-These omissions are deliberate — credentials are policy decisions, not provisioning decisions — but they mean the IAM provisioner is not a "create a fully-usable IAM user" feature. Pair it with whatever credential-issuance tooling your org uses.
 
 ## SSH access via `auth-ssh-creds`
 

@@ -147,8 +147,8 @@ services:
       AUTHD_AWS_AUDIENCE:        ${AUTHD_AWS_AUDIENCE:-}
 
       # Standard AWS SDK credential env vars — consumed by the SDK's
-      # default credential chain inside the IAM provisioner and the
-      # federation revocation provisioner. Empty values let the chain
+      # default credential chain inside the federation revocation
+      # provisioner. Empty values let the chain
       # fall through to a machine IAM role (EC2 instance profile, ECS
       # task role, EKS IRSA, IAM Roles Anywhere), which is the
       # recommended production path. The federation flow itself needs

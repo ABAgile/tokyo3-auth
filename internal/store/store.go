@@ -152,7 +152,7 @@ type SigningKeyStore interface {
 }
 
 // ExternalIDStore caches each user's identity in downstream provisioning targets
-// (vault, AWS IAM, etc.). It is a best-effort cache: outbound provisioners write
+// (vault and other SCIM targets). It is a best-effort cache: outbound provisioners write
 // the downstream UUID on first create and read it back to avoid a filter lookup
 // per update. Callers MUST be prepared for ErrNotFound on Get and treat it as a
 // cache miss (re-resolve via the downstream's filter, then SetExternalID).
@@ -163,7 +163,7 @@ type ExternalIDStore interface {
 }
 
 // IntegrationStore manages outbound provisioner configurations (Vault SCIM,
-// AWS IAM, etc.). Tokens are encrypted/decrypted in the handler layer via
+// AWS federation). Tokens are encrypted/decrypted in the handler layer via
 // bcrypto.EncryptEnvelope; the store is intentionally oblivious to the KEK.
 type IntegrationStore interface {
 	CreateIntegration(ctx context.Context, i *model.AppIntegration) error

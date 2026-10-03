@@ -25,7 +25,6 @@
           <select id="provider" name="provider" onchange="document.querySelectorAll('[data-provider]').forEach(el=>el.style.display=el.dataset.provider===this.value?'':'none')">
             <option value="scim" {{if eq .Integration.Provider "scim"}}selected{{end}}>SCIM 2.0 (Vault, Okta, Azure AD)</option>
             <option value="aws_federation" {{if eq .Integration.Provider "aws_federation"}}selected{{end}}>AWS OIDC federation (session revocation)</option>
-            <option value="aws_iam" {{if eq .Integration.Provider "aws_iam"}}selected{{end}}>AWS IAM users (legacy)</option>
           </select>
           {{else}}
           <input type="text" value="{{.Integration.Provider}}" readonly disabled>
@@ -36,7 +35,7 @@
 
         <div class="form-group">
           <div class="checkbox-row">
-            <input type="checkbox" id="enabled" name="enabled" value="1" {{if .Integration.Enabled}}checked{{end}}>
+            <input type="checkbox" id="enabled" name="enabled" value="1" {{if .Integration.Enabled}}checked{{end}} {{if and (not .IsNew) (ne .Integration.Provider "scim") (ne .Integration.Provider "aws_federation")}}disabled{{end}}>
             <label for="enabled">Enable provisioning to this target</label>
           </div>
           <p class="field-help">When enabled, user and group changes fan out to this integration.</p>
@@ -89,20 +88,8 @@
           </div>
         </div>
 
-        <div data-provider="aws_iam" class="provider-section" {{if ne .Integration.Provider "aws_iam"}}style="display:none"{{end}}>
-          <h2 class="section-heading">Legacy AWS IAM users</h2>
-          <div class="alert alert-warning">
-            <strong>Deprecated for human access.</strong> Prefer <a href="/portal/admin/aws">AWS OIDC federation</a>. Use IAM users only for narrow cases requiring stable IAM user identities or user-derived credentials.
-          </div>
-          <div class="form-group">
-            <label for="group_map">Group mapping</label>
-            <textarea id="group_map" name="group_map" rows="4" placeholder="engineers=eng-iam-grp">{{.GroupMapStr}}</textarea>
-            <p class="field-help">Enter one <code>scimGroup=iamGroup</code> mapping per line. Credentials come from the AWS SDK default chain.</p>
-          </div>
-        </div>
-
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary">{{if .IsNew}}Create integration{{else}}Save changes{{end}}</button>
+          {{if or .IsNew (eq .Integration.Provider "scim") (eq .Integration.Provider "aws_federation")}}<button type="submit" class="btn btn-primary">{{if .IsNew}}Create integration{{else}}Save changes{{end}}</button>{{end}}
           <a href="/portal/admin/integrations" class="btn btn-secondary">Cancel</a>
         </div>
       </form>

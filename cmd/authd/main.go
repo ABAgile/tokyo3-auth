@@ -153,7 +153,6 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/provision/awsfed"
-	"github.com/abagile/tokyo3-auth/internal/provision/iam"
 	scimprov "github.com/abagile/tokyo3-auth/internal/provision/scim"
 	"github.com/abagile/tokyo3-auth/internal/store/postgres"
 	"github.com/abagile/tokyo3-base/applog"
@@ -768,8 +767,6 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			return nil, fmt.Errorf("scim integration %q unsupported auth_mode %q", i.Name, authMode)
 		}
 		return scimprov.New(cfg), nil
-	case model.AppIntegrationProviderIAM:
-		return iam.New(ctx, i.Name, i.Config.GroupMap, log)
 	case model.AppIntegrationProviderAWSFederation:
 		// Federation provisioner only does session-revocation on
 		// OpDeactivate/OpDelete. Role catalog itself lives in the

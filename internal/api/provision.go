@@ -8,7 +8,7 @@ import (
 )
 
 // provisionUser fans out a user lifecycle event to every registered downstream
-// provisioner (AWS IAM, vault SCIM, etc.). Errors are logged inside Set; the
+// provisioner (SCIM, AWS federation). Errors are logged inside Set; the
 // originating request is never blocked by a downstream failure.
 func (s *Server) provisionUser(r *http.Request, op provision.Op, user *model.User, groups []string) {
 	s.provReg.User(r.Context(), op, user, groups)

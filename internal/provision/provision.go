@@ -41,7 +41,7 @@ func (o Op) String() string {
 }
 
 // Provisioner fans out user and group lifecycle events to a downstream system
-// (AWS IAM, vault SCIM, etc.). Name() identifies the target in audit + logs.
+// (SCIM, AWS federation). Name() identifies the target in audit + logs.
 type Provisioner interface {
 	Name() string
 	User(ctx context.Context, op Op, u *model.User, groups []string) error
