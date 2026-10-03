@@ -109,8 +109,6 @@ services:
       - "--ping.entryPoint=ping"
       - "--providers.file.filename=/shared/traefik/dynamic.yml"
       - "--providers.file.watch=true"
-      - "--experimental.plugins.rewriteResponseHeaders.moduleName=github.com/jamesmcroft/traefik-plugin-rewrite-response-headers"
-      - "--experimental.plugins.rewriteResponseHeaders.version=v1.1.2"
       - "--log.level=INFO"
     volumes:
       - shared_data:/shared:ro
@@ -126,36 +124,6 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-  teleport:
-    image: ${TELEPORT_IMAGE:-public.ecr.aws/gravitational/teleport-distroless:18.8.0}
-    depends_on:
-      authd:
-        condition: service_healthy
-    networks:
-      - tokyo3_idp
-    extra_hosts:
-      - "github.com:host-gateway"
-      - "api.github.com:host-gateway"
-    environment:
-      <<: *default-environment
-      SSL_CERT_FILE: /shared/certs/traefik-ca.crt
-    volumes:
-      - shared_data:/shared:ro
-      - teleport_data:/var/lib/teleport
-    entrypoint:
-      - /usr/bin/dumb-init
-      - /usr/local/bin/teleport
-      - start
-      - -c
-      - /shared/teleport/teleport.yml
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/tctl", "-c", "/shared/teleport/teleport.yml", "status"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-
 volumes:
   shared_data:
     external: true
@@ -163,7 +131,6 @@ volumes:
   tokyo3_shared_data:
     external: true
     name: ${TOKYO3_SHARED_VOLUME:-tokyo3_shared_data}
-  teleport_data:
 
 networks:
   tokyo3_backplane:

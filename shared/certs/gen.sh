@@ -3,7 +3,7 @@
 #
 # Workload mTLS material is CA-managed by cert-agentd on the tokyo3 mesh. This
 # script only mints the host-facing Traefik edge certificate used by the local
-# browser/Teleport development flow.
+# browser development flow.
 
 set -euo pipefail
 
@@ -34,7 +34,7 @@ ok
 
 step "traefik (server cert)"
 mkcert -cert-file "$OUT/traefik.crt" -key-file "$OUT/traefik.key" \
-  auth.localhost teleport.localhost github.com api.github.com traefik.localhost localhost 127.0.0.1 >/dev/null 2>&1
+  auth.localhost traefik.localhost localhost 127.0.0.1 >/dev/null 2>&1
 ok
 
 echo ""

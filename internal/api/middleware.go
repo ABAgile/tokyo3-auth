@@ -65,24 +65,17 @@ func sessionFromCtx(r *http.Request) *model.Session {
 	return s
 }
 
-// extractBearerToken returns the access token from the Authorization header,
-// accepting both `Bearer <token>` (RFC 6750) and `token <token>` (GitHub's
-// legacy v3 scheme). Teleport's github connector uses the `token` form when
-// calling our github-compat /user endpoints; OIDC clients use `Bearer`.
+// extractBearerToken returns the RFC 6750 bearer access token from the
+// Authorization header.
 func extractBearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if raw, ok := strings.CutPrefix(h, "Bearer "); ok {
-		return raw
-	}
-	if raw, ok := strings.CutPrefix(h, "token "); ok {
 		return raw
 	}
 	return ""
 }
 
 // bearerAuth validates the bearer token and injects the session into context.
-// Accepts both RFC 6750 `Bearer <token>` and GitHub's legacy `token <token>`
-// scheme; see extractBearerToken.
 func (s *Server) bearerAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := extractBearerToken(r)

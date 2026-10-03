@@ -9,7 +9,7 @@
 # idempotent pattern as ../ca): sibling stacks (e.g. vault) reach
 # https://auth.localhost via this Traefik's tokyo3_idp alias, and authd
 # reaches their edges (e.g. https://vault.localhost) for back-channel logout
-# and SCIM. Backend services (postgres, nats, natsbox, teleport) stay on the
+# and SCIM. Backend services (postgres, nats, natsbox) stay on the
 # project-default network only — their names never leak onto the shared
 # network, so parallel stacks can't collide.
 
@@ -185,8 +185,6 @@ services:
       - "--ping.entryPoint=ping"
       - "--providers.file.filename=/shared/traefik/dynamic.yml"
       - "--providers.file.watch=true"
-      - "--experimental.plugins.rewriteResponseHeaders.moduleName=github.com/jamesmcroft/traefik-plugin-rewrite-response-headers"
-      - "--experimental.plugins.rewriteResponseHeaders.version=v1.1.2"
       - "--log.level=INFO"
     volumes:
       - shared_data:/shared:ro
@@ -207,49 +205,12 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-  # ── Teleport ──────────────────────────────────────────────────────────────
-  # Runs auth + proxy in the same process (proxy_listener_mode: multiplex).
-  # Fronted by Traefik at https://teleport.localhost — no host port mapping
-  # needed.
-  teleport:
-    image: ${TELEPORT_IMAGE:-public.ecr.aws/gravitational/teleport-distroless:18.8.0}
-    depends_on:
-      authd:
-        condition: service_healthy
-    extra_hosts:
-      - "github.com:host-gateway"
-      - "api.github.com:host-gateway"
-    environment:
-      <<: *default-environment
-      SSL_CERT_FILE: /shared/certs/traefik-ca.crt
-    volumes:
-      - shared_data:/shared:ro
-      - teleport_data:/var/lib/teleport
-    # Override the image default config path with the shared volume config.
-    entrypoint:
-      - /usr/bin/dumb-init
-      - /usr/local/bin/teleport
-      - start
-      - -c
-      - /shared/teleport/teleport.yml
-    restart: unless-stopped
-    healthcheck:
-      # tctl status exits 0 once the local auth API is reachable. CMD form
-      # (no shell wrapper) — the distroless image has neither sh nor wget.
-      # tctl finds the admin identity in /var/lib/teleport so no creds needed.
-      test: ["CMD", "/usr/local/bin/tctl", "-c", "/shared/teleport/teleport.yml", "status"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-
 volumes:
   shared_data:
     external: true
     name: ${COMPOSE_PROJECT_NAME:-tokyo3_auth}_shared_data
   db_data:
   nats_data:
-  teleport_data:
 
 networks:
   # Shared with the vault/ca stacks; pre-created by `make docker-up` (and by

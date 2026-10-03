@@ -13,7 +13,7 @@ A minimal self-hosted Identity Provider (IdP) for internal applications.
 `auth` acts as an OAuth2/OIDC authorization server with four pillars:
 
 1. **OAuth2/OIDC** — Authorization Code + PKCE (S256), ID tokens (RS256), JWKS rotation, UserInfo, token revocation.
-2. **GitHub OAuth compatibility** — Drop-in replacement for GitHub OAuth so existing integrations work without code changes.
+2. **AWS OIDC federation** — Short-lived console and CLI credentials through AWS roles, with group assignments, step-up MFA, and optional session revocation.
 3. **Outbound provisioning** — auth pushes user/group lifecycle events to downstream systems via SCIM 2.0 (Vault, Okta-as-target, custom REST) and the AWS IAM SDK. Per-integration auth is bearer token *or* mTLS (mutually exclusive).
 4. **PCI-DSS v4.0.1 policy engine** — Pluggable rule engine enforcing password complexity, MFA, lockout, session timeout, and audit logging.
 
@@ -86,7 +86,7 @@ Authoritative user/group mutations (admin API, portal admin actions, self-regist
 - Auth state cookies (login→MFA flow): AES-256-GCM with master key directly (short-lived, no rotation needed).
 
 ### Process robustness
-The IdP is on the critical path for every production access surface — AWS console SSO, SSH-proxy sessions, vault, every GitHub-OAuth-compatible RP — so a single panic must not take down the process. Three concentric guards:
+The IdP is on the critical path for every production access surface — AWS console SSO, SSH-proxy sessions, vault, every OIDC relying party — so a single panic must not take down the process. Three concentric guards:
 
 - **HTTP recover middleware** wraps the whole mux. Per-request panics turn into a structured log line (method, path, remote, stack) and a `500 server_error` to the client. `http.ErrAbortHandler` is re-panicked so net/http's documented "abort without logging" sentinel still works.
 - **Background-goroutine recover** wraps every long-lived spawn — periodic provision sync, AWS-federation revocation reaper, device-grant reaper, and per-RP back-channel-logout pushes. Each reaper's per-tick body is wrapped separately so a single bad tick doesn't kill the loop.
@@ -246,22 +246,6 @@ AUTHD_MASTER_KEY="$(./authd keygen)" \
 | `GET` | `/userinfo` | UserInfo endpoint (Bearer token required) |
 | `POST` | `/revoke` | Token revocation (RFC 7009) |
 
-### GitHub OAuth Compatibility
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/login/oauth/authorize` | GitHub-style authorization redirect |
-| `POST` | `/login/oauth/access_token` | Token exchange (JSON or form-encoded, per `Accept` header) |
-| `GET` | `/api/v3/user` | User info in GitHub API v3 shape |
-| `GET` | `/api/v3/user/emails` | User emails list |
-| `GET` | `/api/v3/user/orgs` | Synthetic single-org list (login derived from issuer host) — required by Teleport's `github` connector |
-| `GET` | `/api/v3/user/teams` | User's SCIM groups projected as teams under the synthetic org |
-
-To use an existing GitHub OAuth app with this IdP:
-1. Set the app's Authorization callback URL to `https://your-app/github/callback`
-2. Set the app's Homepage URL to your application
-3. Point `GITHUB_API_URL` / equivalent in your app to this IdP's base URL
-
 ### MFA
 
 | Method | Path | Auth | Description |
@@ -373,25 +357,9 @@ The portal is a server-rendered web UI for user self-service and admin managemen
 GET /health  →  200 OK
 ```
 
-## GitHub OAuth Compatibility
-
-Point existing GitHub OAuth integrations at this IdP by setting the authorization and token endpoints:
-
-```
-Authorization URL: https://id.example.com/login/oauth/authorize
-Token URL:         https://id.example.com/login/oauth/access_token
-API base URL:      https://id.example.com/api/v3
-```
-
-The GitHub-compatible user object maps:
-- `id` — stable integer derived from user UUID (FNV-64a hash)
-- `login` — local part of email address
-- `name` — user display name
-- `email` — primary email
-
 ## Application Portal
 
-The portal home page (`/portal`) opens with the user-facing tile grid that aggregates every app the signed-in user can launch — OAuth2 clients (Vault, GitHub-compatible apps, internal apps) and AWS federation roles, all in one place — followed by a compact account summary. It replaces the earlier separate `/portal/apps` page and the AWS-only `/portal/aws` page; both URLs now redirect here.
+The portal home page (`/portal`) opens with the user-facing tile grid that aggregates every app the signed-in user can launch — OAuth2/OIDC clients (Vault and internal apps) and AWS federation roles, all in one place — followed by a compact account summary. It replaces the earlier separate `/portal/apps` page and the AWS-only `/portal/aws` page; both URLs now redirect here.
 
 ### Making an OAuth client visible
 

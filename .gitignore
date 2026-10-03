@@ -31,7 +31,6 @@ go.work.sum
 shared/certs/*.crt
 shared/certs/*.key
 shared/certs/*.srl
-shared/teleport/*.yml
 shared/secrets/*
 
 # Editor/IDE

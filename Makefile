@@ -135,14 +135,6 @@ docker-push: docker-build
 
 # Prepare shared Docker material.
 _sync-shared: gen-certs
-	@if [ ! -f shared/teleport/bootstrap.yml ]; then \
-	    cp shared/teleport/bootstrap.yml.sample shared/teleport/bootstrap.yml; \
-	    echo "  copied shared/teleport/bootstrap.yml.sample → bootstrap.yml"; \
-	fi
-	@if [ ! -f shared/teleport/teleport.yml ]; then \
-	    cp shared/teleport/teleport.yml.sample shared/teleport/teleport.yml; \
-	    echo "  copied shared/teleport/teleport.yml.sample → teleport.yml"; \
-	fi
 	@if [ ! -f shared/secrets/authd-master.key ]; then \
 	    umask 077; \
 	    mkdir -p shared/secrets; \
@@ -167,30 +159,10 @@ gen-certs:
 docker-up: _sync-shared
 	@docker network create $(TOKYO3_IDP_NETWORK) >/dev/null 2>&1 || true
 	docker compose up -d --build --wait --remove-orphans
-	@if [ -f shared/teleport/bootstrap.yml ] && ! grep -q 'CHANGE_ME_' shared/teleport/bootstrap.yml; then \
-	    echo "  applying shared/teleport/bootstrap.yml (github connector)…"; \
-	    docker compose exec -T teleport \
-	        /usr/local/bin/tctl -c /shared/teleport/teleport.yml create --force -f /shared/teleport/bootstrap.yml; \
-	    echo "  github connector applied — sign in at https://teleport.localhost"; \
-	else \
-	    echo ""; \
-	    echo "  ⚠ shared/teleport/bootstrap.yml still has placeholder client credentials."; \
-	    echo "    Create the Teleport OAuth client in auth, edit bootstrap.yml, then re-run 'make docker-up'."; \
-	fi
 
 ## docker-up-mesh: Bring up auth against the CA-owned tokyo3 mesh.
 docker-up-mesh: _sync-shared
 	docker compose -f docker-compose.mesh.yml up -d --build --wait --remove-orphans
-	@if [ -f shared/teleport/bootstrap.yml ] && ! grep -q 'CHANGE_ME_' shared/teleport/bootstrap.yml; then \
-	    echo "  applying shared/teleport/bootstrap.yml (github connector)…"; \
-	    docker compose -f docker-compose.mesh.yml exec -T teleport \
-	        /usr/local/bin/tctl -c /shared/teleport/teleport.yml create --force -f /shared/teleport/bootstrap.yml; \
-	    echo "  github connector applied — sign in at https://teleport.localhost"; \
-	else \
-	    echo ""; \
-	    echo "  ⚠ shared/teleport/bootstrap.yml still has placeholder client credentials."; \
-	    echo "    Create the Teleport OAuth client in auth, edit bootstrap.yml, then re-run 'make docker-up-mesh'."; \
-	fi
 
 ## docker-down: Stop all compose services (safe to run in any mode)
 docker-down:
