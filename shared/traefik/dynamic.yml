@@ -1,33 +1,33 @@
 # Static Traefik dynamic configuration loaded via --providers.file.filename.
 #
 # Routing summary:
-#   - auth.localhost                    -> authd:8443 (HTTPS upstream)
-#   - traefik.localhost                 -> Traefik dashboard/API.
+#   - auth.dev.localhost                -> authd:8443 (HTTPS upstream)
+#   - traefik.dev.localhost             -> Traefik dashboard/API.
 #
-# TLS terminates at Traefik using the mkcert-issued edge cert. Upstream
-# connections use insecureSkipVerify because the docker service-name SNI
-# (`authd`) doesn't match the cert — adequate for a dev rig.
+# TLS terminates at Traefik using the mkcert-issued dev.localhost wildcard cert.
+# Upstream connections use insecureSkipVerify because the docker service-name
+# SNI (`authd`) doesn't match the cert — adequate for a dev rig.
 
 tls:
   stores:
     default:
       defaultCertificate:
-        certFile: /shared/certs/traefik.crt
-        keyFile: /shared/certs/traefik.key
+        certFile: /shared/certs/dev.localhost.crt
+        keyFile: /shared/certs/dev.localhost.key
   certificates:
-    - certFile: /shared/certs/traefik.crt
-      keyFile: /shared/certs/traefik.key
+    - certFile: /shared/certs/dev.localhost.crt
+      keyFile: /shared/certs/dev.localhost.key
 
 http:
   routers:
     authd:
-      rule: "Host(`auth.localhost`)"
+      rule: "Host(`auth.dev.localhost`)"
       entryPoints: [websecure]
       service: authd
       tls: {}
 
     traefik-dashboard:
-      rule: "Host(`traefik.localhost`)"
+      rule: "Host(`traefik.dev.localhost`)"
       entryPoints: [websecure]
       service: api@internal
       tls: {}

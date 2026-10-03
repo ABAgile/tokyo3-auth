@@ -133,6 +133,29 @@ Both images are multi-arch (`linux/amd64`, `linux/arm64`). Tags follow semver (`
 
 The SSH-cert counterpart, `auth-ssh-creds`, lives in the [tokyo3-ca](https://github.com/abagile/tokyo3-ca) repo because its wire shape tracks certd's `/api/v1/ssh/sign-user` endpoint (SSO is the prerequisite, not the contract it has to stay in sync with). Its CLI image is `ghcr.io/abagile/tokyo3-ca-cli`; both helpers read the same shared `~/.config/auth-sso/` SSO cache, so one `auth-aws-creds login` (or `auth-ssh-creds login`) populates the cache for both.
 
+### Local development
+
+```bash
+make docker-up       # Standalone Postgres/NATS stack (compose.yml)
+# Or, after starting ../ca:
+make docker-up-mesh  # CA-owned mesh (compose.mesh.yml)
+```
+
+The IdP and portal are served at `https://auth.dev.localhost`; the Traefik
+dashboard is at `https://traefik.dev.localhost`. Both use port 443 by default
+(`TRAEFIK_HTTPS_PORT` overrides the host port). Use the same IdP URL in local
+relying-party configuration; sibling services should use names such as
+`vault.dev.localhost` on the shared `tokyo3_idp` network.
+
+`make gen-certs` installs the local mkcert root and generates
+`shared/certs/dev.localhost.crt` / `dev.localhost.key` for `*.dev.localhost`,
+`localhost`, and `127.0.0.1` only when either file is missing or empty. An
+existing pair is reused, so the same local-development certificate can be copied in from
+another mesh service. `traefik-ca.crt` remains the mkcert root trust anchor.
+Standalone authd and Traefik use the wildcard pair; in mesh mode authd keeps
+its CA-managed workload certificate. `make clean-all` removes generated
+certificates along with the local stack data.
+
 ### Database setup
 
 ```bash

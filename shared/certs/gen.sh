@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Generate dev TLS material for the auth docker-compose rig.
+# Generate dev TLS material for the auth Compose rig.
 #
 # Workload mTLS material is CA-managed by cert-agentd on the tokyo3 mesh. This
-# script only mints the host-facing Traefik edge certificate used by the local
-# browser development flow.
+# script reuses or mints a wildcard dev.localhost certificate for local HTTPS
+# services; it does not replace CA-managed workload identities.
 
 set -euo pipefail
 
@@ -21,23 +21,26 @@ if ! command -v mkcert >/dev/null 2>&1; then
   ok
 fi
 
-step "mkcert -install"
-mkcert -install >/dev/null 2>&1
-ok
-
 CAROOT="$(mkcert -CAROOT)"
+
+step "mkcert -install"
+doas env CAROOT=$CAROOT `command -v mkcert` -install >/dev/null
+ok
 
 step "traefik-ca.crt (mkcert root)"
 rm -f "$OUT/ca.crt"
 cp "$CAROOT/rootCA.pem" "$OUT/traefik-ca.crt"
 ok
 
-step "traefik (server cert)"
-mkcert -cert-file "$OUT/traefik.crt" -key-file "$OUT/traefik.key" \
-  auth.localhost traefik.localhost localhost 127.0.0.1 >/dev/null 2>&1
+step "dev.localhost (wildcard cert)"
+if [[ ! -s "$OUT/dev.localhost.crt" || ! -s "$OUT/dev.localhost.key" ]]; then
+  mkcert -cert-file "$OUT/dev.localhost.crt" -key-file "$OUT/dev.localhost.key" \
+    '*.dev.localhost' localhost 127.0.0.1 >/dev/null
+fi
 ok
 
 echo ""
 echo "dev TLS material written to shared/certs/"
-echo "CA: $CAROOT/rootCA.pem (mkcert root, trusted via mkcert -install)"
+echo "CA: $OUT/traefik-ca.crt (mkcert root, trusted via mkcert -install)"
+echo "cert: $OUT/dev.localhost.crt"
 echo "next: make docker-up"

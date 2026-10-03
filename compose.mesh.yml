@@ -1,4 +1,4 @@
-# docker-compose.mesh.yml — authd on the CA-owned tokyo3 mesh.
+# compose.mesh.yml — authd on the CA-owned tokyo3 mesh.
 # Requires `cd ../ca && make docker-up` first.
 
 name: ${COMPOSE_PROJECT_NAME:-tokyo3_auth}
@@ -52,7 +52,7 @@ services:
       <<: *default-environment
       AUTHD_MASTER_KEY: file:/shared/secrets/authd-master.key
       AUTHD_ADDR: ":8443"
-      AUTHD_ISSUER: https://auth.localhost
+      AUTHD_ISSUER: https://auth.dev.localhost
       AUTHD_API_CERT: /tokyo3/workloads/authd.crt
       AUTHD_API_KEY: /tokyo3/workloads/authd.key
       AUTHD_ALLOW_REGISTRATION: ${AUTHD_ALLOW_REGISTRATION:-false}
@@ -115,7 +115,7 @@ services:
     networks:
       tokyo3_idp:
         aliases:
-          - auth.localhost
+          - auth.dev.localhost
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/ping"]
       interval: 5s

@@ -1,6 +1,6 @@
 .git
 .gitignore
 *.md
-docker-compose*.yml
+compose*.yml
 Dockerfile*
 .env*

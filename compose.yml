@@ -1,4 +1,4 @@
-# docker-compose.yml — standalone auth development stack.
+# compose.yml — standalone auth development stack.
 #
 # Use `make docker-up` for the local Postgres/NATS stack, or
 # `make docker-up-mesh` after `cd ../ca && make docker-up` to run authd on the
@@ -7,8 +7,8 @@
 # Even in standalone mode, the workload service (authd) and its Traefik edge
 # join the shared tokyo3_idp network (pre-created by `make docker-up`, same
 # idempotent pattern as ../ca): sibling stacks (e.g. vault) reach
-# https://auth.localhost via this Traefik's tokyo3_idp alias, and authd
-# reaches their edges (e.g. https://vault.localhost) for back-channel logout
+# https://auth.dev.localhost via this Traefik's tokyo3_idp alias, and authd
+# reaches their edges (e.g. https://vault.dev.localhost) for back-channel logout
 # and SCIM. Backend services (postgres, nats, natsbox) stay on the
 # project-default network only — their names never leak onto the shared
 # network, so parallel stacks can't collide.
@@ -99,7 +99,7 @@ services:
     restart: unless-stopped
 
   # ── authd server ────────────────────────────────────────────────────────────
-  # Reached via Traefik at https://auth.localhost (host:443).
+  # Reached via Traefik at https://auth.dev.localhost (host:443).
   # No host port mapping: all browser and issuer traffic goes through Traefik.
   authd:
     build:
@@ -118,15 +118,15 @@ services:
     networks:
       default: {}
       # Shared IdP network: lets authd dial sibling workloads' edges (e.g.
-      # https://vault.localhost) for back-channel logout / SCIM.
+      # https://vault.dev.localhost) for back-channel logout / SCIM.
       tokyo3_idp: {}
     environment:
       <<: *default-environment
       AUTHD_MASTER_KEY:          file:/shared/secrets/authd-master.key
       AUTHD_ADDR:                ":8443"
-      AUTHD_ISSUER:              https://auth.localhost
-      AUTHD_API_CERT:            /shared/certs/traefik.crt
-      AUTHD_API_KEY:             /shared/certs/traefik.key
+      AUTHD_ISSUER:              https://auth.dev.localhost
+      AUTHD_API_CERT:            /shared/certs/dev.localhost.crt
+      AUTHD_API_KEY:             /shared/certs/dev.localhost.key
       AUTHD_ALLOW_REGISTRATION:  ${AUTHD_ALLOW_REGISTRATION:-false}
       AUTHD_WEBAUTHN_ORIGINS:    ${AUTHD_WEBAUTHN_ORIGINS:-}
       AUTHD_WEBAUTHN_RPID:       ${AUTHD_WEBAUTHN_RPID:-}
@@ -191,12 +191,12 @@ services:
     networks:
       default:
         aliases:
-          - auth.localhost
-      # Alias auth.localhost on the shared IdP network too, so sibling
+          - auth.dev.localhost
+      # Alias auth.dev.localhost on the shared IdP network too, so sibling
       # stacks' OIDC clients (e.g. vaultd) resolve the issuer here.
       tokyo3_idp:
         aliases:
-          - auth.localhost
+          - auth.dev.localhost
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/ping"]
       interval: 5s

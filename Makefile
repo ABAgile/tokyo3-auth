@@ -149,25 +149,25 @@ _sync-shared: gen-certs
 keygen: build
 	@$(AUTHD_BIN) keygen
 
-## gen-certs: Generate Traefik edge cert material in shared/certs/
+## gen-certs: Ensure wildcard dev.localhost cert material in shared/certs/
 gen-certs:
 	@bash shared/certs/gen.sh
 
 ## docker-up: Bring up the standalone Docker stack.
 # Pre-creates the shared tokyo3_idp network (idempotent, same pattern as
-# ../ca) so sibling stacks can reach auth.localhost when this rig is up.
+# ../ca) so sibling stacks can reach auth.dev.localhost when this rig is up.
 docker-up: _sync-shared
 	@docker network create $(TOKYO3_IDP_NETWORK) >/dev/null 2>&1 || true
 	docker compose up -d --build --wait --remove-orphans
 
 ## docker-up-mesh: Bring up auth against the CA-owned tokyo3 mesh.
 docker-up-mesh: _sync-shared
-	docker compose -f docker-compose.mesh.yml up -d --build --wait --remove-orphans
+	docker compose -f compose.mesh.yml up -d --build --wait --remove-orphans
 
 ## docker-down: Stop all compose services (safe to run in any mode)
 docker-down:
 	docker compose down
-	docker compose -f docker-compose.mesh.yml down 2>/dev/null || true
+	docker compose -f compose.mesh.yml down 2>/dev/null || true
 
 # ── Install / Clean ───────────────────────────────────────────────────────────
 
@@ -188,8 +188,9 @@ clean:
 ## clean-all: Stop compose stacks, remove volumes, binaries, and generated edge certs
 clean-all: clean
 	docker compose down --remove-orphans -v 2>/dev/null || true
-	docker compose -f docker-compose.mesh.yml down --remove-orphans -v 2>/dev/null || true
+	docker compose -f compose.mesh.yml down --remove-orphans -v 2>/dev/null || true
 	docker volume rm $(SHARED_VOLUME) 2>/dev/null || true
+	rm -f shared/certs/dev.localhost.crt shared/certs/dev.localhost.key
 	rm -f shared/certs/traefik*.crt shared/certs/traefik*.key shared/certs/ca.crt
 	rm -f shared/secrets/authd-master.key
 	@echo "  removed compose stacks, volumes, and generated Traefik edge certs"
