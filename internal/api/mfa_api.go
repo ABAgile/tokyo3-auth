@@ -45,7 +45,10 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, true); err != nil {
 		s.log.Error("enable mfa", "err", err)
 	}
-	s.logAudit(r, ActionMFATOTPEnrolled, &sess.UserID, nil, nil)
+	if err := s.logAudit(r, ActionMFATOTPEnrolled, &sess.UserID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -73,7 +76,10 @@ func (s *Server) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, false)
-	s.logAudit(r, ActionMFATOTPDeleted, &sess.UserID, nil, nil)
+	if err := s.logAudit(r, ActionMFATOTPDeleted, &sess.UserID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -119,7 +125,10 @@ func (s *Server) handleWebAuthnRegisterFinish(w http.ResponseWriter, r *http.Req
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, true)
-	s.logAudit(r, ActionMFAWebAuthnEnrolled, &sess.UserID, nil, logMeta("credential_id", cred.ID))
+	if err := s.logAudit(r, ActionMFAWebAuthnEnrolled, &sess.UserID, nil, logMeta("credential_id", cred.ID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"id":          cred.ID,
 		"device_name": cred.DeviceName,
@@ -178,7 +187,10 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, http.StatusUnauthorized, "invalid_request", "WebAuthn verification failed")
 		return
 	}
-	s.logAudit(r, ActionLoginMFA, &user.ID, nil, logMeta("method", "webauthn"))
+	if err := s.logAudit(r, ActionLoginMFA, &user.ID, nil, logMeta("method", "webauthn")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]bool{"verified": true})
 }
 
@@ -204,6 +216,9 @@ func (s *Server) handleWebAuthnDelete(w http.ResponseWriter, r *http.Request) {
 	if len(creds) == 0 && totpErr != nil {
 		_ = s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, false)
 	}
-	s.logAudit(r, ActionMFAWebAuthnDeleted, &sess.UserID, nil, logMeta("credential_id", credID))
+	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &sess.UserID, nil, logMeta("credential_id", credID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

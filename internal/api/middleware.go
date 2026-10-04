@@ -12,6 +12,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	creds "github.com/abagile/tokyo3-base/auth/creds"
+	"github.com/google/uuid"
 )
 
 // recoverMiddleware catches any panic from a handler, logs the panic with
@@ -128,6 +129,22 @@ func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 		if !sessionTokenLive(sess) {
 			s.writeError(w, http.StatusUnauthorized, "invalid_token", "access token expired")
 			return
+		}
+		// A scope string alone is not authorization: user-bound sessions must
+		// belong to a currently active admin. User-less sessions come from
+		// client_credentials, whose scopes are limited to the client's
+		// registration (see unregisteredScope).
+		if sess.UserID != uuid.Nil {
+			user, err := s.store.GetUserByID(r.Context(), sess.UserID)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				s.log.Error("admin auth user lookup", "err", err)
+				s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
+				return
+			}
+			if err != nil || !user.Active || !user.IsAdmin {
+				s.writeError(w, http.StatusForbidden, "insufficient_scope", "admin privileges required")
+				return
+			}
 		}
 		ctx := context.WithValue(r.Context(), ctxSession, sess)
 		next(w, r.WithContext(ctx))

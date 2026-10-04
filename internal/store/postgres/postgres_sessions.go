@@ -83,11 +83,15 @@ func (s *DB) ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry ti
 	return err
 }
 
-func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET refresh_token_hash = $2, access_expires_at = $3, refresh_expires_at = $4 WHERE id = $1`,
-		id, newRefreshHash, newAccessExpiry, newRefreshExpiry)
-	return err
+func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET access_token_hash = $3, refresh_token_hash = $4, access_expires_at = $5, refresh_expires_at = $6
+		 WHERE id = $1 AND refresh_token_hash = $2`,
+		id, oldRefreshHash, newAccessHash, newRefreshHash, newAccessExpiry, newRefreshExpiry)
+	if err != nil {
+		return err
+	}
+	return requireOneRow(res)
 }
 
 func (s *DB) DeleteSession(ctx context.Context, id uuid.UUID) error {

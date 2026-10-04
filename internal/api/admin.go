@@ -64,7 +64,10 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
 		return
 	}
-	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", req.Email, "admin", req.Admin))
+	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", req.Email, "admin", req.Admin)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.provisionUser(r, provision.OpCreate, user, nil)
 	s.writeJSON(w, http.StatusCreated, toUserView(user))
 }
@@ -98,11 +101,15 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Active != nil {
 		active = *req.Active
 	}
+	// Audit before mutating: a deactivation must not land unrecorded.
+	if err := s.logAudit(r, ActionUserUpdated, &user.ID, nil, logMeta("name", name, "active", active)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.UpdateUser(r.Context(), user.ID, name, active); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "update failed")
 		return
 	}
-	s.logAudit(r, ActionUserUpdated, &user.ID, nil, logMeta("name", name, "active", active))
 	user, _ = s.store.GetUserByID(r.Context(), user.ID)
 	op := provision.OpUpdate
 	if !active {
@@ -117,6 +124,11 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Audit before any destructive step so a journal outage refuses the delete.
+	if err := s.logAudit(r, ActionUserDeleted, &user.ID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	// User-scoped back-channel logout: notify every RP that holds a
 	// session for this user so RP-side state goes with the user record.
 	// Must run BEFORE DeleteSessionsByUserID — broadcastLogout's first
@@ -128,7 +140,6 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
 	}
-	s.logAudit(r, ActionUserDeleted, &user.ID, nil, nil)
 	s.provisionUser(r, provision.OpDelete, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -205,7 +216,10 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "create failed")
 		return
 	}
-	s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("name", req.Name))
+	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("name", req.Name)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	resp := toClientView(client)
 	if rawSecret != "" {
 		resp["client_secret"] = rawSecret // shown once
@@ -226,11 +240,14 @@ func (s *Server) handleAdminDeleteClient(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if err := s.logAudit(r, ActionClientDeleted, nil, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteClient(r.Context(), client.ID); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
 	}
-	s.logAudit(r, ActionClientDeleted, nil, &client.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -248,11 +265,14 @@ func (s *Server) handleAdminRotateClientSecret(w http.ResponseWriter, r *http.Re
 		s.writeError(w, http.StatusInternalServerError, "server_error", "generation failed")
 		return
 	}
+	if err := s.logAudit(r, ActionClientSecretRotated, nil, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.UpdateClientSecret(r.Context(), client.ID, creds.HashToken(rawSecret)); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "update failed")
 		return
 	}
-	s.logAudit(r, ActionClientSecretRotated, nil, &client.ID, nil)
 	s.writeJSON(w, http.StatusOK, map[string]string{
 		"client_id":     client.ClientID,
 		"client_secret": rawSecret,

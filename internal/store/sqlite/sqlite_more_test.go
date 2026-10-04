@@ -44,6 +44,8 @@ func TestGrantRoundTrip(t *testing.T) {
 		RedirectURI:   "https://app.example/cb",
 		ExpiresAt:     time.Now().Add(time.Minute).UTC().Truncate(time.Second),
 	}
+	mfaAt := time.Now().UTC().Truncate(time.Second)
+	g.MFAVerifiedAt = &mfaAt
 	if err := db.CreateGrant(ctx, g); err != nil {
 		t.Fatalf("CreateGrant: %v", err)
 	}
@@ -51,6 +53,9 @@ func TestGrantRoundTrip(t *testing.T) {
 	got, err := db.GetGrantByCodeHash(ctx, "code-hash-1")
 	if err != nil {
 		t.Fatalf("GetGrantByCodeHash: %v", err)
+	}
+	if got.MFAVerifiedAt == nil || !got.MFAVerifiedAt.Equal(mfaAt) {
+		t.Errorf("MFAVerifiedAt round-trip: got %v, want %v", got.MFAVerifiedAt, mfaAt)
 	}
 	if got.UsedAt != nil {
 		t.Errorf("UsedAt: want nil, got %v", *got.UsedAt)
@@ -68,6 +73,10 @@ func TestGrantRoundTrip(t *testing.T) {
 	}
 	if got.UsedAt == nil {
 		t.Error("UsedAt: want set after MarkGrantUsed, got nil")
+	}
+	// A second redemption must lose: the code is single-use.
+	if err := db.MarkGrantUsed(ctx, g.ID); err != store.ErrNotFound {
+		t.Errorf("second MarkGrantUsed: want ErrNotFound, got %v", err)
 	}
 
 	if _, err := db.GetGrantByCodeHash(ctx, "missing"); err != store.ErrNotFound {
@@ -167,8 +176,18 @@ func TestSessionLifecycle(t *testing.T) {
 	// Rotate refresh.
 	newAcc := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	newRef := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
-	if err := db.RotateRefreshToken(ctx, sess.ID, "rh-2", newAcc, newRef); err != nil {
+	if err := db.RotateRefreshToken(ctx, sess.ID, "rh-1", "ah-2", "rh-2", newAcc, newRef); err != nil {
 		t.Fatalf("RotateRefreshToken: %v", err)
+	}
+	// Replaying the old refresh hash must fail (guarded rotation).
+	if err := db.RotateRefreshToken(ctx, sess.ID, "rh-1", "ah-3", "rh-3", newAcc, newRef); err != store.ErrNotFound {
+		t.Errorf("replayed rotate: want ErrNotFound, got %v", err)
+	}
+	if _, err := db.GetSessionByAccessTokenHash(ctx, "ah-2"); err != nil {
+		t.Errorf("new access hash should resolve: %v", err)
+	}
+	if _, err := db.GetSessionByAccessTokenHash(ctx, "ah-1"); err != store.ErrNotFound {
+		t.Errorf("old access hash should be gone: got %v", err)
 	}
 	if _, err := db.GetSessionByRefreshTokenHash(ctx, "rh-1"); err != store.ErrNotFound {
 		t.Errorf("old refresh hash should be gone: got %v", err)

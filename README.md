@@ -96,7 +96,7 @@ Slowloris defense via `ReadHeaderTimeout=10s`, `ReadTimeout=60s`, `IdleTimeout=1
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.26.5+
 - PostgreSQL 15+
 - (Optional) AWS credentials for IAM provisioning
 

@@ -81,6 +81,8 @@ type ClientStore interface {
 type GrantStore interface {
 	CreateGrant(ctx context.Context, g *model.Grant) error
 	GetGrantByCodeHash(ctx context.Context, codeHash string) (*model.Grant, error)
+	// MarkGrantUsed atomically consumes the code. It returns ErrNotFound when
+	// the grant is already used, so concurrent redemptions have one winner.
 	MarkGrantUsed(ctx context.Context, id uuid.UUID) error
 	DeleteExpiredGrants(ctx context.Context) error
 }
@@ -98,8 +100,10 @@ type SessionStore interface {
 	// expiry windows in one atomic UPDATE. Called by the refresh_token grant
 	// at the OIDC /token endpoint — clients hand us an old refresh, we mint a
 	// new access + refresh pair and slide the row. The caller is responsible
-	// for capping both expiries at the absolute session lifetime.
-	RotateRefreshToken(ctx context.Context, id uuid.UUID, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
+	// for capping both expiries at the absolute session lifetime. The update
+	// is guarded by oldRefreshHash and swaps the access hash too; it returns
+	// ErrNotFound if the refresh token was already rotated.
+	RotateRefreshToken(ctx context.Context, id uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
 	// MarkSessionMFA bumps mfa_verified_at (and mfa_verified) on an
 	// existing session row. Used by the step-up MFA flow so that a
 	// freshly proven challenge resets the freshness window without

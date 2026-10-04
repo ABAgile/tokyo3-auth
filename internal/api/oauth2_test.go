@@ -531,6 +531,9 @@ func seedAdminSession(t *testing.T, r *testRig) string {
 		c = seedTestClient(t, r.store, "admin-client", "https://x/cb", "sec", []string{"admin"})
 	}
 	u := seedTestUser(t, r.store, "admin@example.com", "AdminPass!1")
+	if err := r.store.SetUserAdmin(context.Background(), u.ID, true); err != nil {
+		t.Fatalf("SetUserAdmin: %v", err)
+	}
 	rawAccess, _ := creds.GenerateRawToken()
 	rawRefresh, _ := creds.GenerateRawToken()
 	sess := &model.Session{

@@ -97,7 +97,10 @@ const (
 // equivalent) and never proceed with side effects beyond what already happened
 // before this call. The action ordering rule across handlers therefore is:
 // "audit last", so an audit failure surfaces as a failed response rather than
-// a successful response with no audit row.
+// a successful response with no audit row. Exception: destructive or
+// privilege-reducing admin actions (user update/delete, client delete, secret
+// rotation) audit FIRST, so a journal outage refuses the change itself rather
+// than leaving it applied but unrecorded.
 func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) error {
 	var uID, uEmail, uName, cID, cName, metaJSON string
 	if userID != nil {

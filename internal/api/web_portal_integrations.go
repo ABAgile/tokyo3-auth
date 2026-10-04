@@ -101,8 +101,11 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 		showErr("Create failed.")
 		return
 	}
-	s.logAudit(r, ActionIntegrationCreated, &pc.User.ID, nil,
-		logMeta("name", row.Name, "provider", row.Provider))
+	if err := s.logAudit(r, ActionIntegrationCreated, &pc.User.ID, nil,
+		logMeta("name", row.Name, "provider", row.Provider)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.reloadProvisioners(r.Context())
 	http.Redirect(w, r, "/portal/admin/integrations?success=Integration+created.", http.StatusFound)
 }
@@ -184,8 +187,11 @@ func (s *Server) handlePortalAdminIntegrationEdit(w http.ResponseWriter, r *http
 		showErr("Update failed.")
 		return
 	}
-	s.logAudit(r, ActionIntegrationUpdated, &pc.User.ID, nil,
-		logMeta("name", form.row.Name, "provider", form.row.Provider, "rotated_token", updateToken))
+	if err := s.logAudit(r, ActionIntegrationUpdated, &pc.User.ID, nil,
+		logMeta("name", form.row.Name, "provider", form.row.Provider, "rotated_token", updateToken)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.reloadProvisioners(r.Context())
 	http.Redirect(w, r, "/portal/admin/integrations?success=Integration+updated.", http.StatusFound)
 }
@@ -206,8 +212,11 @@ func (s *Server) handlePortalAdminIntegrationDelete(w http.ResponseWriter, r *ht
 		http.Redirect(w, r, "/portal/admin/integrations?error=delete+failed", http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionIntegrationDeleted, &pc.User.ID, nil,
-		logMeta("name", existing.Name, "provider", existing.Provider))
+	if err := s.logAudit(r, ActionIntegrationDeleted, &pc.User.ID, nil,
+		logMeta("name", existing.Name, "provider", existing.Provider)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.reloadProvisioners(r.Context())
 	http.Redirect(w, r, "/portal/admin/integrations?success=Integration+deleted.", http.StatusFound)
 }
@@ -233,13 +242,19 @@ func (s *Server) handlePortalAdminIntegrationTest(w http.ResponseWriter, r *http
 	}
 	status, body, err := s.scimServiceProviderConfig(r.Context(), row)
 	if err != nil {
-		s.logAudit(r, ActionIntegrationTested, &pc.User.ID, nil,
-			logMeta("name", row.Name, "ok", false, "err", err.Error()))
+		if aerr := s.logAudit(r, ActionIntegrationTested, &pc.User.ID, nil,
+			logMeta("name", row.Name, "ok", false, "err", err.Error())); aerr != nil {
+			s.auditFail(w, aerr)
+			return
+		}
 		http.Redirect(w, r, "/portal/admin/integrations?error="+url.QueryEscape("Test failed: "+err.Error()), http.StatusFound)
 		return
 	}
-	s.logAudit(r, ActionIntegrationTested, &pc.User.ID, nil,
-		logMeta("name", row.Name, "ok", true, "status", status))
+	if err := s.logAudit(r, ActionIntegrationTested, &pc.User.ID, nil,
+		logMeta("name", row.Name, "ok", true, "status", status)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	msg := "Connection OK (HTTP " + strconv.Itoa(status) + ")"
 	if body != "" {
 		msg += " " + body
@@ -326,12 +341,15 @@ func (s *Server) handlePortalAdminIntegrationSync(w http.ResponseWriter, r *http
 		return
 	}
 	userOK, userFail, groupOK, groupFail := provision.SyncAll(r.Context(), s.store, prov, s.log)
-	s.logAudit(r, ActionIntegrationSynced, &pc.User.ID, nil, logMeta(
+	if err := s.logAudit(r, ActionIntegrationSynced, &pc.User.ID, nil, logMeta(
 		"name", row.Name,
 		"users_ok", userOK, "users_failed", userFail,
 		"groups_ok", groupOK, "groups_failed", groupFail,
 		"trigger", "manual",
-	))
+	)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	msg := fmt.Sprintf("Sync %s done: users %d ok / %d failed; groups %d ok / %d failed", row.Name, userOK, userFail, groupOK, groupFail)
 	flashKey := "success"
 	if userFail+groupFail > 0 {

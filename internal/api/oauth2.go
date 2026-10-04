@@ -85,6 +85,10 @@ func (s *Server) handleAuthorizeGET(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
+	if bad := unregisteredScope(client, splitScopes(q.Get("scope"))); bad != "" {
+		redirectWithOIDCError(w, r, redirectURI, "invalid_scope", q.Get("state"))
+		return
+	}
 
 	// OIDC §3.1.2.1 — prompt: "login" forces re-auth, "none" forbids any UI.
 	// Anything else (or absent) means: silently re-use an existing session if
@@ -149,7 +153,16 @@ func (s *Server) trySilentSSO(w http.ResponseWriter, r *http.Request, client *mo
 		return true
 	}
 	scopes := splitScopes(q.Get("scope"))
-	s.issueCodeAndRedirect(w, r, user, client, scopes, q.Get("state"), q.Get("nonce"), q.Get("code_challenge"), q.Get("redirect_uri"))
+	// Carry the portal session's MFA provenance, never assume it.
+	var mfaAt *time.Time
+	if sess.MFAVerified {
+		mfaAt = sess.MFAVerifiedAt
+		if mfaAt == nil {
+			t := sess.CreatedAt
+			mfaAt = &t
+		}
+	}
+	s.issueCodeAndRedirect(w, r, user, client, scopes, q.Get("state"), q.Get("nonce"), q.Get("code_challenge"), q.Get("redirect_uri"), mfaAt)
 	return true
 }
 
@@ -189,6 +202,11 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	client, err := s.store.GetClientByClientID(r.Context(), clientID)
 	if err != nil || !validRedirectURI(client, redirectURI) {
 		http.Error(w, "invalid client", http.StatusBadRequest)
+		return
+	}
+
+	if bad := unregisteredScope(client, splitScopes(scope)); bad != "" {
+		http.Error(w, "invalid_scope: "+bad, http.StatusBadRequest)
 		return
 	}
 
@@ -259,7 +277,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	// visits to /portal/* and silent SSO at /authorize should both find a
 	// live OP session without a second login.
 	s.ensurePortalCookie(w, r, user)
-	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI)
+	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI, nil)
 }
 
 // handleMFATOTPPost handles POST /authorize/mfa/totp.
@@ -307,12 +325,13 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 	}
 	// Seat the auth_portal cookie too (post-MFA branch of /authorize success).
 	s.ensurePortalCookie(w, r, user)
-	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI)
+	mfaAt := time.Now().UTC()
+	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI, &mfaAt)
 }
 
 func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	user *model.User, client *model.Client,
-	scopes []string, state, nonce, codeChallenge, redirectURI string,
+	scopes []string, state, nonce, codeChallenge, redirectURI string, mfaVerifiedAt *time.Time,
 ) {
 	rawCode, err := creds.GenerateRawToken()
 	if err != nil {
@@ -329,6 +348,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		Scopes:        scopes,
 		RedirectURI:   redirectURI,
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
+		MFAVerifiedAt: mfaVerifiedAt,
 	}
 	if err := s.store.CreateGrant(r.Context(), g); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -402,7 +422,16 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
-	_ = s.store.MarkGrantUsed(r.Context(), grant.ID)
+	// Atomic single-use: only one concurrent redemption wins.
+	if err := s.store.MarkGrantUsed(r.Context(), grant.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.writeError(w, http.StatusBadRequest, "invalid_grant", "code not found or already used")
+			return
+		}
+		s.log.Error("mark grant used", "err", err)
+		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
+		return
+	}
 
 	user, err := s.store.GetUserByID(r.Context(), grant.UserID)
 	if err != nil {
@@ -410,7 +439,7 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.mintTokenResponse(r, user, client, grant.Scopes, true, grant.Nonce)
+	resp, err := s.mintTokenResponseWithMFAAt(r, user, client, grant.Scopes, grant.MFAVerifiedAt != nil, grant.MFAVerifiedAt, grant.Nonce)
 	if err != nil {
 		s.log.Error("mint tokens", "err", err)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
@@ -474,7 +503,12 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	newAccessExp := capByAbsolute(now.Add(accessTokenTTL), sess.CreatedAt)
 	newRefreshExp := capByAbsolute(now.Add(refreshTokenTTL), sess.CreatedAt)
-	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, creds.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
+	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, creds.HashToken(rawRefresh), creds.HashToken(newAccess), creds.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Lost a concurrent rotation (or replayed an already-rotated token).
+			s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
@@ -533,6 +567,10 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 	}
 	rawRefresh, _ := creds.GenerateRawToken() // internal placeholder, not exposed
 	scopes := splitScopes(r.FormValue("scope"))
+	if bad := unregisteredScope(client, scopes); bad != "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_scope", "scope not registered for this client: "+bad)
+		return
+	}
 	now := time.Now()
 	sess := &model.Session{
 		ID: uuid.New(), ClientID: client.ID,
@@ -610,15 +648,10 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func (s *Server) mintTokenResponse(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, nonce string) (map[string]any, error) {
-	return s.mintTokenResponseWithMFAAt(r, user, client, scopes, mfaVerified, nil, nonce)
-}
-
-// mintTokenResponseWithMFAAt is the same as mintTokenResponse but lets
-// the caller stamp the session's mfa_verified_at to a specific time
-// rather than leaving it nil. Used by the device-code grant to carry
-// forward the approver's MFA freshness onto the bearer session so
-// step-up gates continue to see it as verified.
+// mintTokenResponseWithMFAAt creates the session and token response, stamping
+// the session's mfa_verified_at with the caller-supplied time (nil = no MFA).
+// Used by the code and device-code grants to carry forward the real MFA
+// provenance and freshness onto the bearer session so step-up gates see it.
 func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, mfaVerifiedAt *time.Time, nonce string) (map[string]any, error) {
 	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
@@ -768,6 +801,17 @@ func verifyPKCE(challenge, verifier string) bool {
 	}
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
+}
+
+// unregisteredScope returns the first requested scope the client is not
+// registered for, or "" when every scope is allowed.
+func unregisteredScope(client *model.Client, scopes []string) string {
+	for _, sc := range scopes {
+		if !containsStr(client.Scopes, sc) {
+			return sc
+		}
+	}
+	return ""
 }
 
 func splitScopes(scope string) []string {

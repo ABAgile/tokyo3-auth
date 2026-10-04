@@ -127,7 +127,10 @@ func (s *Server) handleRegisterPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.promoteIfFirstUser(r.Context(), user)
-	s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "via", "self-registration"))
+	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "via", "self-registration")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	s.provisionUser(r, provision.OpCreate, user, nil)
 
 	// After registration, continue the OAuth2 flow by redirecting to /authorize.
@@ -211,8 +214,14 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 	}
 
 	clearCookie(w, authStateCookie)
-	s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, logMeta("method", "webauthn"))
-	s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil)
+	if err := s.logAudit(r, ActionLoginMFA, &user.ID, &client.ID, logMeta("method", "webauthn")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	if err := s.logAudit(r, ActionLogin, &user.ID, &client.ID, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	// Seat the auth_portal cookie too (post-WebAuthn-MFA branch of /authorize
 	// success) so the user is also logged into auth's own portal.
 	s.ensurePortalCookie(w, r, user)
@@ -222,6 +231,7 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
+	mfaAt := time.Now().UTC()
 	g := &model.Grant{
 		ID:            uuid.New(),
 		UserID:        user.ID,
@@ -232,6 +242,7 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 		Scopes:        st.Scopes,
 		RedirectURI:   st.RedirectURI,
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
+		MFAVerifiedAt: &mfaAt,
 	}
 	if err := s.store.CreateGrant(r.Context(), g); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")

@@ -76,6 +76,9 @@ type Grant struct {
 	RedirectURI   string
 	ExpiresAt     time.Time
 	UsedAt        *time.Time
+	// MFAVerifiedAt is when the user completed an MFA challenge while
+	// authenticating for this code; nil means password-only.
+	MFAVerifiedAt *time.Time
 }
 
 // Session backs both portal cookies and OIDC bearer credentials. The two
