@@ -17,7 +17,16 @@
 //	                               subcommands).
 //	AUTHD_ADDR                     HTTPS listen address (default: :8443).
 //	AUTHD_ALLOW_REGISTRATION       Set to "true" to enable self-registration
-//	                               at /register.
+//	                               at /register. Strict boolean: other
+//	                               unparseable values fail startup.
+//	AUTHD_AUTH_RATE_PER_MIN        Per-IP requests/minute on interactive
+//	                               credential endpoints (default: 20).
+//	AUTHD_TOKEN_RATE_PER_MIN       Per-IP requests/minute on /token,
+//	                               /revoke, /device_authorization
+//	                               (default: 120).
+//	AUTHD_TRUSTED_PROXIES          Extra CIDRs whose X-Forwarded-For is
+//	                               trusted for rate-limit keying, appended
+//	                               to the built-in private ranges.
 //	AUTHD_PROVISION_SYNC_INTERVAL  Period for the background full-sync
 //	                               goroutine that re-pushes every user/group
 //	                               to every enabled integration (defaults to
@@ -228,11 +237,16 @@ func runServe(ctx context.Context) error {
 	log, ctx := rt.Log, rt.Ctx
 	log.Info("authd starting", "version", version.Resolve(Version))
 
-	issuer := envutil.MustEnv("AUTHD_ISSUER")
+	// Parse and validate all configuration before opening NATS, databases or
+	// workers, so a bad value fails fast with the variable named.
+	cfg, err := loadServeConfig()
+	if err != nil {
+		return err
+	}
+	issuer, addr := cfg.Issuer, cfg.Addr
 	if rt.DB.URL == "" {
 		return fmt.Errorf("AUTHD_DATABASE_URL is required")
 	}
-	addr := envutil.Or("AUTHD_ADDR", ":8443")
 
 	masterKey, err := masterKeyFromEnv()
 	if err != nil {
@@ -254,6 +268,10 @@ func runServe(ctx context.Context) error {
 	backchannelTLS, err := backchannelTLSFromEnv()
 	if err != nil {
 		return fmt.Errorf("backchannel TLS: %w", err)
+	}
+	tlsCfg, err := buildServerTLS(log)
+	if err != nil {
+		return fmt.Errorf("server TLS: %w", err)
 	}
 	// Audit publisher + reader share rt.NATS material; cli.AuditSink/Source
 	// hot-reload the workload cert per handshake and the CA pool on mtime
@@ -324,19 +342,17 @@ func runServe(ctx context.Context) error {
 		Audit:             auditSink,
 		AuditSource:       auditSource,
 		Issuer:            issuer,
-		AWSAudience:       os.Getenv("AUTHD_AWS_AUDIENCE"),
-		StepUpMFATTL:      parseDurationEnv("AUTHD_STEP_UP_MFA_TTL"),
+		AWSAudience:       cfg.AWSAudience,
+		StepUpMFATTL:      cfg.StepUpMFATTL,
 		MasterKey:         masterKey,
 		Log:               log,
-		AllowRegistration: strings.EqualFold(os.Getenv("AUTHD_ALLOW_REGISTRATION"), "true"),
+		AllowRegistration: cfg.AllowRegistration,
+		AuthRatePerMin:    cfg.AuthRatePerMin,
+		TokenRatePerMin:   cfg.TokenRatePerMin,
+		TrustedProxies:    cfg.TrustedProxies,
 	})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
-	}
-
-	tlsCfg, err := buildServerTLS(log)
-	if err != nil {
-		return fmt.Errorf("server TLS: %w", err)
 	}
 
 	httpSrv := &http.Server{
@@ -376,12 +392,12 @@ func runServe(ctx context.Context) error {
 	// goroutine so it can be joined.
 	var workers sync.WaitGroup
 
-	if interval := provisionSyncInterval(log); interval > 0 {
+	if interval := cfg.ProvisionSyncInterval; interval > 0 {
 		workers.Go(guard.Guarded(log, "provision-sync", func() {
 			runPeriodicProvisionSync(ctx, db, provReg, interval, log)
 		}))
 	}
-	if interval := awsFedReapInterval(log); interval > 0 {
+	if interval := cfg.AWSFedReapInterval; interval > 0 {
 		workers.Go(guard.Guarded(log, "awsfed-reaper", func() {
 			runAWSFedReaper(ctx, provReg, interval, log)
 		}))
@@ -561,12 +577,6 @@ func runAdminSync(target string) error {
 	return nil
 }
 
-// parseDurationEnv reads key from the environment and parses it as a
-// time.Duration. Returns 0 when unset or unparseable so the caller can
-// fall back to its own default — keeps env-var validation centralised
-// without forcing callers to thread a logger or error path through.
-func parseDurationEnv(key string) time.Duration { d, _ := envutil.Duration(key); return d }
-
 // runDeviceGrantReaper deletes expired device_grants rows on a fixed
 // tick. Cheap query, runs every minute by default; long-lived pending
 // or terminal rows just sit in the table until expires_at passes.
@@ -590,22 +600,6 @@ func runDeviceGrantReaper(ctx context.Context, db *postgres.DB, interval time.Du
 			})
 		}
 	}
-}
-
-// provisionSyncInterval returns the parsed AUTHD_PROVISION_SYNC_INTERVAL or the
-// default of 1 hour. A zero/negative value disables the background sync.
-func provisionSyncInterval(log *slog.Logger) time.Duration {
-	v := strings.TrimSpace(os.Getenv("AUTHD_PROVISION_SYNC_INTERVAL"))
-	if v == "" {
-		return time.Hour
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		log.Warn("AUTHD_PROVISION_SYNC_INTERVAL is not a valid duration; periodic sync disabled",
-			"value", v, "err", err)
-		return 0
-	}
-	return d
 }
 
 // runPeriodicProvisionSync runs a full sync against every live provisioner on
@@ -653,25 +647,6 @@ func runPeriodicProvisionSync(ctx context.Context, db *postgres.DB, reg *provisi
 
 func syncOneTarget(ctx context.Context, db *postgres.DB, prov provision.Provisioner, log *slog.Logger) (userOK, userFail, groupOK, groupFail int) {
 	return provision.SyncAll(ctx, db, prov, log)
-}
-
-// awsFedReapInterval returns the parsed AUTHD_AWSFED_REAP_INTERVAL or the
-// default of 6 hours. A zero/negative value disables the reaper. The reaper
-// trims aws_revoked_users entries past the role's MaxSessionDurationSec —
-// 6h is conservative for a typical 1h role lifetime and bounds the inline
-// policy growth without thrashing AWS.
-func awsFedReapInterval(log *slog.Logger) time.Duration {
-	v := strings.TrimSpace(os.Getenv("AUTHD_AWSFED_REAP_INTERVAL"))
-	if v == "" {
-		return 6 * time.Hour
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		log.Warn("AUTHD_AWSFED_REAP_INTERVAL is not a valid duration; reaper disabled",
-			"value", v, "err", err)
-		return 0
-	}
-	return d
 }
 
 // runAWSFedReaper periodically prunes expired entries from each federation

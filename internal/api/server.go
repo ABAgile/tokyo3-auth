@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/store"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
+	"github.com/abagile/tokyo3-base/ratelimit"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -50,6 +52,11 @@ type Server struct {
 	ssoTmpl      *tmplManager
 	portalTmpl   *tmplManager
 	allowReg     bool
+	// authLimiter / tokenLimiter are per-IP limiters applied per route (see
+	// ratelimit.go). Never nil once built by New: ratePerMin <= 0 selects the
+	// default, so limiting cannot be disabled by a zero value.
+	authLimiter  *ratelimit.Limiter
+	tokenLimiter *ratelimit.Limiter
 }
 
 // Config holds server constructor options.
@@ -73,6 +80,14 @@ type Config struct {
 	MasterKey         []byte
 	Log               *slog.Logger
 	AllowRegistration bool
+	// AuthRatePerMin and TokenRatePerMin cap requests per minute per client
+	// IP on interactive credential endpoints and on machine token endpoints.
+	// Zero or negative selects defaultAuthRatePerMin / defaultTokenRatePerMin.
+	AuthRatePerMin  int
+	TokenRatePerMin int
+	// TrustedProxies are extra reverse-proxy CIDRs (beyond the built-in
+	// private ranges) whose X-Forwarded-For is trusted for limiter keying.
+	TrustedProxies []*net.IPNet
 }
 
 // defaultStepUpMFATTL is the fallback freshness window applied when
@@ -103,6 +118,11 @@ func New(cfg Config) (*Server, error) {
 	if stepUpTTL <= 0 {
 		stepUpTTL = defaultStepUpMFATTL
 	}
+	log := cfg.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	proxies := mergeProxies(cfg.TrustedProxies)
 	return &Server{
 		store:          cfg.Store,
 		signer:         cfg.Signer,
@@ -118,7 +138,9 @@ func New(cfg Config) (*Server, error) {
 		awsAudience:    cfg.AWSAudience,
 		stepUpMFATTL:   stepUpTTL,
 		masterKey:      cfg.MasterKey,
-		log:            cfg.Log,
+		log:            log,
+		authLimiter:    newLimiter(cfg.AuthRatePerMin, defaultAuthRatePerMin, proxies, log),
+		tokenLimiter:   newLimiter(cfg.TokenRatePerMin, defaultTokenRatePerMin, proxies, log),
 		ssoTmpl:        ssoTmpl,
 		portalTmpl:     portalTmpl,
 		allowReg:       cfg.AllowRegistration,
@@ -147,24 +169,24 @@ func (s *Server) Routes() http.Handler {
 
 	// OAuth2 / OIDC
 	mux.HandleFunc("GET /authorize", s.handleAuthorizeGET)
-	mux.HandleFunc("POST /authorize", s.handleAuthorizePost)
-	mux.HandleFunc("POST /authorize/mfa/totp", s.handleMFATOTPPost)
+	mux.HandleFunc("POST /authorize", s.limitAuth(s.handleAuthorizePost))
+	mux.HandleFunc("POST /authorize/mfa/totp", s.limitAuth(s.handleMFATOTPPost))
 	mux.HandleFunc("GET /authorize/mfa/webauthn", s.handleSSOWebAuthnPage)
-	mux.HandleFunc("POST /authorize/mfa/webauthn/begin", s.handleSSOWebAuthnBegin)
-	mux.HandleFunc("POST /authorize/mfa/webauthn/finish", s.handleSSOWebAuthnFinish)
-	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /authorize/mfa/webauthn/begin", s.limitAuth(s.handleSSOWebAuthnBegin))
+	mux.HandleFunc("POST /authorize/mfa/webauthn/finish", s.limitAuth(s.handleSSOWebAuthnFinish))
+	mux.HandleFunc("POST /token", s.limitToken(s.handleToken))
 	mux.HandleFunc("GET /userinfo", s.bearerAuth(s.handleUserInfo))
-	mux.HandleFunc("POST /revoke", s.handleRevoke)
+	mux.HandleFunc("POST /revoke", s.limitToken(s.handleRevoke))
 
 	// RFC 8628 — device authorization grant. /device_authorization is
 	// public (the device has no user yet); /device and /device/confirm
 	// wrap in portalAuth so the approver's identity drives the issued
 	// session. The /token endpoint above gates the new grant_type
 	// internally.
-	mux.HandleFunc("POST /device_authorization", s.handleDeviceAuthorization)
+	mux.HandleFunc("POST /device_authorization", s.limitToken(s.handleDeviceAuthorization))
 	mux.HandleFunc("GET /device", s.portalAuth(s.handleDevice))
-	mux.HandleFunc("POST /device", s.portalAuth(s.handleDevice))
-	mux.HandleFunc("POST /device/confirm", s.portalAuth(s.handleDeviceConfirm))
+	mux.HandleFunc("POST /device", s.limitAuth(s.portalAuth(s.handleDevice)))
+	mux.HandleFunc("POST /device/confirm", s.limitAuth(s.portalAuth(s.handleDeviceConfirm)))
 
 	// AWS OIDC federation — programmatic credentials issuance for the
 	// auth-aws-creds CLI helper (boto3 credential_process).
@@ -172,19 +194,19 @@ func (s *Server) Routes() http.Handler {
 
 	// Self-registration (optional)
 	mux.HandleFunc("GET /register", s.handleRegisterGET)
-	mux.HandleFunc("POST /register", s.handleRegisterPOST)
+	mux.HandleFunc("POST /register", s.limitAuth(s.handleRegisterPOST))
 
 	// MFA — TOTP
 	mux.HandleFunc("POST /mfa/totp/enroll", s.bearerAuth(s.handleTOTPEnroll))
 	mux.HandleFunc("POST /mfa/totp/confirm", s.bearerAuth(s.handleTOTPConfirm))
-	mux.HandleFunc("POST /mfa/totp/verify", s.bearerAuth(s.handleTOTPVerify))
+	mux.HandleFunc("POST /mfa/totp/verify", s.limitAuth(s.bearerAuth(s.handleTOTPVerify)))
 	mux.HandleFunc("DELETE /mfa/totp", s.bearerAuth(s.handleTOTPDelete))
 
 	// MFA — WebAuthn (API, bearer auth)
 	mux.HandleFunc("POST /mfa/webauthn/register/begin", s.bearerAuth(s.handleWebAuthnRegisterBegin))
 	mux.HandleFunc("POST /mfa/webauthn/register/finish", s.bearerAuth(s.handleWebAuthnRegisterFinish))
-	mux.HandleFunc("POST /mfa/webauthn/login/begin", s.handleWebAuthnLoginBegin)
-	mux.HandleFunc("POST /mfa/webauthn/login/finish", s.handleWebAuthnLoginFinish)
+	mux.HandleFunc("POST /mfa/webauthn/login/begin", s.limitAuth(s.handleWebAuthnLoginBegin))
+	mux.HandleFunc("POST /mfa/webauthn/login/finish", s.limitAuth(s.handleWebAuthnLoginFinish))
 	mux.HandleFunc("DELETE /mfa/webauthn/{id}", s.bearerAuth(s.handleWebAuthnDelete))
 
 	// Admin API (bearer token, admin scope)
@@ -201,16 +223,16 @@ func (s *Server) Routes() http.Handler {
 
 	// Portal — login / logout / register
 	mux.HandleFunc("GET /portal/login", s.handlePortalLoginGET)
-	mux.HandleFunc("POST /portal/login", s.handlePortalLoginPOST)
+	mux.HandleFunc("POST /portal/login", s.limitAuth(s.handlePortalLoginPOST))
 	mux.HandleFunc("GET /portal/login/mfa", s.handlePortalLoginMFA)
-	mux.HandleFunc("POST /portal/login/mfa", s.handlePortalLoginMFA)
+	mux.HandleFunc("POST /portal/login/mfa", s.limitAuth(s.handlePortalLoginMFA))
 	mux.HandleFunc("GET /portal/login/change-password", s.handlePortalChangePassword)
-	mux.HandleFunc("POST /portal/login/change-password", s.handlePortalChangePassword)
-	mux.HandleFunc("POST /portal/login/mfa/webauthn/begin", s.handlePortalLoginMFAWebAuthnBegin)
-	mux.HandleFunc("POST /portal/login/mfa/webauthn/finish", s.handlePortalLoginMFAWebAuthnFinish)
+	mux.HandleFunc("POST /portal/login/change-password", s.limitAuth(s.handlePortalChangePassword))
+	mux.HandleFunc("POST /portal/login/mfa/webauthn/begin", s.limitAuth(s.handlePortalLoginMFAWebAuthnBegin))
+	mux.HandleFunc("POST /portal/login/mfa/webauthn/finish", s.limitAuth(s.handlePortalLoginMFAWebAuthnFinish))
 	mux.HandleFunc("POST /portal/logout", s.portalAuth(s.handlePortalLogout))
 	mux.HandleFunc("GET /portal/register", s.handlePortalRegisterGET)
-	mux.HandleFunc("POST /portal/register", s.handlePortalRegisterPOST)
+	mux.HandleFunc("POST /portal/register", s.limitAuth(s.handlePortalRegisterPOST))
 
 	// Portal — the application launcher lives on the portal home page.
 	// /portal/apps and the older /portal/aws redirect there for one
@@ -231,15 +253,15 @@ func (s *Server) Routes() http.Handler {
 	// stale); the `next` dispatch table extends to additional targets
 	// as they come online.
 	mux.HandleFunc("GET /portal/step-up", s.portalAuth(s.handlePortalStepUp))
-	mux.HandleFunc("POST /portal/step-up", s.portalAuth(s.handlePortalStepUp))
-	mux.HandleFunc("POST /portal/step-up/webauthn/begin", s.portalAuth(s.handlePortalStepUpWebAuthnBegin))
-	mux.HandleFunc("POST /portal/step-up/webauthn/finish", s.portalAuth(s.handlePortalStepUpWebAuthnFinish))
+	mux.HandleFunc("POST /portal/step-up", s.limitAuth(s.portalAuth(s.handlePortalStepUp)))
+	mux.HandleFunc("POST /portal/step-up/webauthn/begin", s.limitAuth(s.portalAuth(s.handlePortalStepUpWebAuthnBegin)))
+	mux.HandleFunc("POST /portal/step-up/webauthn/finish", s.limitAuth(s.portalAuth(s.handlePortalStepUpWebAuthnFinish)))
 
 	// Portal — account (requires portal session)
 	mux.HandleFunc("GET /portal", s.portalAuth(s.handlePortalHome))
 	mux.HandleFunc("GET /portal/account", s.portalAuth(s.handlePortalAccount))
 	mux.HandleFunc("POST /portal/account/profile", s.portalAuth(s.handlePortalAccountProfile))
-	mux.HandleFunc("POST /portal/account/password", s.portalAuth(s.handlePortalAccountPassword))
+	mux.HandleFunc("POST /portal/account/password", s.limitAuth(s.portalAuth(s.handlePortalAccountPassword)))
 	mux.HandleFunc("POST /portal/mfa/totp/enroll", s.portalAuth(s.handlePortalMFATOTPEnroll))
 	mux.HandleFunc("POST /portal/mfa/totp/confirm", s.portalAuth(s.handlePortalMFATOTPConfirm))
 	mux.HandleFunc("POST /portal/mfa/totp/delete", s.portalAuth(s.handlePortalMFATOTPDelete))
