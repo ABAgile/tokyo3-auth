@@ -192,7 +192,7 @@ func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
 		UserCode:   userCode,
 		ClientName: client.Name,
 		Scopes:     grant.Scopes,
-		ApproverIP: clientIP(r),
+		ApproverIP: s.clientIP(r),
 	})
 }
 
@@ -206,7 +206,7 @@ func (s *Server) handleDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 			"invalid+grant", http.StatusFound)
 		return
 	}
-	approverIP := clientIP(r)
+	approverIP := s.clientIP(r)
 	action := r.FormValue("action")
 
 	switch action {

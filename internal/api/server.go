@@ -15,6 +15,7 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	"github.com/abagile/tokyo3-base/clientip"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
 	"github.com/abagile/tokyo3-base/ratelimit"
@@ -57,6 +58,9 @@ type Server struct {
 	// default, so limiting cannot be disabled by a zero value.
 	authLimiter  *ratelimit.Limiter
 	tokenLimiter *ratelimit.Limiter
+	// ipExtractor resolves the client address for audit records using the
+	// same trusted-proxy set as the limiters, so both key on one source.
+	ipExtractor *clientip.Extractor
 }
 
 // Config holds server constructor options.
@@ -141,6 +145,7 @@ func New(cfg Config) (*Server, error) {
 		log:            log,
 		authLimiter:    newLimiter(cfg.AuthRatePerMin, defaultAuthRatePerMin, proxies, log),
 		tokenLimiter:   newLimiter(cfg.TokenRatePerMin, defaultTokenRatePerMin, proxies, log),
+		ipExtractor:    clientip.New(proxies),
 		ssoTmpl:        ssoTmpl,
 		portalTmpl:     portalTmpl,
 		allowReg:       cfg.AllowRegistration,

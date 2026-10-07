@@ -3,9 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/audit"
@@ -132,7 +130,7 @@ func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid
 		UserName:   uName,
 		ClientID:   cID,
 		ClientName: cName,
-		IP:         clientIP(r),
+		IP:         s.clientIP(r),
 		UserAgent:  r.Header.Get("User-Agent"),
 		Metadata:   metaJSON,
 		OccurredAt: time.Now().UTC(),
@@ -158,12 +156,12 @@ func (s *Server) auditFail(w http.ResponseWriter, err error) {
 // errors.Is, even when the helper itself doesn't surface the responseWriter.
 var errAuditUnavailable = errors.New("audit unavailable")
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return ip
+// clientIP is the request's real client address for audit records. It shares
+// the rate limiter's trusted-proxy set: X-Forwarded-For is honoured only when
+// the immediate peer is a trusted proxy, so a client cannot forge the address
+// written to the audit log (or the device-grant approver_ip) with a header.
+func (s *Server) clientIP(r *http.Request) string {
+	return s.ipExtractor.FromRequest(r)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
