@@ -3,7 +3,6 @@
 [![Release](https://img.shields.io/github/v/release/abagile/tokyo3-auth?sort=semver&logo=Go&color=%23007D9C)](https://github.com/abagile/tokyo3-auth/releases)
 [![Test](https://github.com/abagile/tokyo3-auth/actions/workflows/test.yml/badge.svg)](https://github.com/abagile/tokyo3-auth/actions/workflows/test.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/abagile/tokyo3-auth.svg)](https://pkg.go.dev/github.com/abagile/tokyo3-auth)
-[![Go Report Card](https://goreportcard.com/badge/github.com/abagile/tokyo3-auth)](https://goreportcard.com/report/github.com/abagile/tokyo3-auth)
 [![codecov](https://codecov.io/gh/abagile/tokyo3-auth/branch/main/graph/badge.svg)](https://codecov.io/gh/abagile/tokyo3-auth)
 
 A minimal self-hosted Identity Provider (IdP) for internal applications.
