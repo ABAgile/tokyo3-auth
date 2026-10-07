@@ -736,6 +736,13 @@ await fetch(`/mfa/webauthn/register/finish?session_id=${session_id}&device_name=
 });
 ```
 
+## Upgrading
+
+See [docs/upgrade-checklist.md](docs/upgrade-checklist.md) before deploying a
+new build: stricter config validation, scope enforcement, MFA assurance,
+fail-closed auditing, retired GitHub/IAM features, and issuer/WebAuthn RP-ID
+changes.
+
 ## Development
 
 ### Running locally
