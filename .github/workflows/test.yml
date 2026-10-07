@@ -8,33 +8,53 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # Real PostgreSQL for the store contract tests (internal/store/storetest).
+    # Each test creates and drops its own authtest_* database.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      AUTHD_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
+
     steps:
       - uses: actions/checkout@v5
 
+      # Caches the module cache and the build cache. Dev tools are pinned in
+      # tools/go.mod and run with `go tool`; their binaries live in the build
+      # cache, keyed by both go.sum files and the Go version.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
-      - uses: actions/cache@v5
-        with:
-          path: ~/go/bin
-          key: go-tools-${{ hashFiles('go.mod') }}
-
-      - run: |
-          which staticcheck || go install honnef.co/go/tools/cmd/staticcheck@latest
-          which gopls       || go install golang.org/x/tools/gopls@latest
-          which govulncheck || go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - run: go vet ./...
-      - run: staticcheck ./...
-      - run: find . -type f -name "*.go" -print0 | xargs -0 -n 100 gopls check -severity=hint
-      - run: govulncheck ./...
-
-      - run: go test ./... -coverprofile=coverage.out
+      # Every step is a Makefile target, so `make check CI=true` reproduces
+      # this job locally. GitHub sets CI=true: fmt/tidy verify instead of
+      # rewrite, and test adds -race and coverage.
+      - run: make check-fmt
+      - run: make check-tidy
+      - run: make check-test
 
       - uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
           slug: ABAgile/tokyo3-auth
+
+      - run: make check-vet
+      - run: make check-lint
+      - run: make check-gopls
+      - run: make check-vuln
+      - run: make check-deadcode

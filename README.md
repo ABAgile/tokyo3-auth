@@ -750,14 +750,26 @@ make docker-up-mesh
 
 ### Code quality
 
-```bash
-gofmt -s -w .
-go test ./...
-go vet ./...
-staticcheck ./...
-find . -type f -name "*.go" -print0 | xargs -0 -n 100 gopls check -severity=hint
-govulncheck ./...
-```
+`make check` runs the full quality sequence locally, serially: `check-fmt`,
+`check-tidy`, `check-test`, `check-vet`, `check-lint` (staticcheck),
+`check-gopls`, `check-vuln` (govulncheck) and `check-deadcode`. Each step is
+also a target you can run alone (`make help` lists them). `check-fmt` and
+`check-tidy` rewrite files locally.
+
+GitHub Actions sets `CI=true`, which switches `check-fmt` and `check-tidy` from
+rewriting files to failing on drift and adds `-race` and coverage to
+`check-test`. CI runs each step as its own job step, and `make check CI=true`
+reproduces it locally.
+
+The analyzers (staticcheck, gopls, govulncheck, deadcode) are pinned in
+`tools/go.mod` and run through `go tool -modfile=tools/go.mod <tool>`, so there
+is nothing to install and local runs match CI. Their binaries are built into
+Go's build cache on first use.
+
+gopls only compiles against the `golang.org/x/tools` snapshot it ships with, so
+the tools must be bumped together, gopls first, whenever the Go version is
+updated. The rules are in the header of `tools/go.mod`; `make check-tidy` runs
+`go build tool` in `tools/` to fail fast on a misaligned set.
 
 ### PostgreSQL store tests
 
