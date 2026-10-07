@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"context"
@@ -10,19 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-func freshDB(t *testing.T) *DB {
-	t.Helper()
-	db, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
-
-func TestAWSAccountCRUD(t *testing.T) {
+func testAWSAccountCRUD(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 	a := &model.AWSAccount{AccountID: "111111111111", Alias: "prod", OIDCProviderARN: "arn:aws:iam::111:oidc-provider/id.example.com"}
 	if err := db.CreateAWSAccount(ctx, a); err != nil {
 		t.Fatalf("CreateAWSAccount: %v", err)
@@ -50,9 +40,9 @@ func TestAWSAccountCRUD(t *testing.T) {
 	}
 }
 
-func TestAWSRoleCRUD_AndCascadeOnAccount(t *testing.T) {
+func testAWSRoleCRUD_AndCascadeOnAccount(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 	acct := &model.AWSAccount{AccountID: "222222222222", OIDCProviderARN: "arn:aws:iam::222:oidc-provider/id.example.com"}
 	if err := db.CreateAWSAccount(ctx, acct); err != nil {
 		t.Fatalf("CreateAWSAccount: %v", err)
@@ -80,9 +70,9 @@ func TestAWSRoleCRUD_AndCascadeOnAccount(t *testing.T) {
 
 // TestListAWSRolesForUser exercises the group-membership join used by the
 // portal tile page.
-func TestListAWSRolesForUser(t *testing.T) {
+func testListAWSRolesForUser(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 
 	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	user, err := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
@@ -115,9 +105,9 @@ func TestListAWSRolesForUser(t *testing.T) {
 	}
 }
 
-func TestAWSRevokedUsers_AddIsIdempotent_ListAndReap(t *testing.T) {
+func testAWSRevokedUsers_AddIsIdempotent_ListAndReap(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 	acct := &model.AWSAccount{AccountID: "444444444444", OIDCProviderARN: "arn:aws:iam::444:oidc-provider/id.example.com"}
 	_ = db.CreateAWSAccount(ctx, acct)
 	role := &model.AWSRole{AccountID: acct.ID, RoleARN: "arn:aws:iam::444:role/R", Slug: "role-r", DisplayName: "R"}
@@ -135,27 +125,28 @@ func TestAWSRevokedUsers_AddIsIdempotent_ListAndReap(t *testing.T) {
 		t.Fatalf("expected 1 row after idempotent re-add, got %d", len(rows))
 	}
 
-	// Synthesise a second, older row by direct INSERT with backdated time.
-	// Uses the same canonical timestamp format the store layer writes so
-	// julianday() comparisons work consistently.
-	old := time.Now().Add(-24 * time.Hour)
-	_, err := db.db.ExecContext(ctx,
-		`INSERT INTO aws_revoked_users (role_id, sub_uuid, revoked_at) VALUES (?, ?, ?)`,
-		role.ID, "bob-uuid", dt(old))
+	// Only the interface is available here, so age is controlled via the
+	// cutoff: a cutoff in the future covers the row, one in the past doesn't.
+	if err := db.AddAWSRevokedUser(ctx, role.ID, "bob-uuid"); err != nil {
+		t.Fatalf("AddAWSRevokedUser bob: %v", err)
+	}
+	past, err := db.ListAWSRevokedUsersOlderThan(ctx, time.Now().Add(-time.Hour))
 	if err != nil {
-		t.Fatalf("backdate insert: %v", err)
+		t.Fatalf("ListAWSRevokedUsersOlderThan(past): %v", err)
 	}
-	cutoff := time.Now().Add(-1 * time.Hour)
-	old1, err := db.ListAWSRevokedUsersOlderThan(ctx, cutoff)
+	if len(past) != 0 {
+		t.Errorf("fresh rows reported older than 1h ago: %v", past)
+	}
+	future, err := db.ListAWSRevokedUsersOlderThan(ctx, time.Now().Add(time.Hour))
 	if err != nil {
-		t.Fatalf("ListAWSRevokedUsersOlderThan: %v", err)
+		t.Fatalf("ListAWSRevokedUsersOlderThan(future): %v", err)
 	}
-	var subs []string
-	for _, r := range old1 {
-		subs = append(subs, r.SubUUID)
+	subs := map[string]bool{}
+	for _, r := range future {
+		subs[r.SubUUID] = true
 	}
-	if len(old1) != 1 || old1[0].SubUUID != "bob-uuid" {
-		t.Errorf("expected only bob-uuid older than cutoff, got %v", subs)
+	if len(future) != 2 || !subs["alice-uuid"] || !subs["bob-uuid"] {
+		t.Errorf("expected alice and bob older than a future cutoff, got %v", subs)
 	}
 	if err := db.DeleteAWSRevokedUser(ctx, role.ID, "bob-uuid"); err != nil {
 		t.Fatalf("DeleteAWSRevokedUser: %v", err)

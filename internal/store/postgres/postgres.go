@@ -137,8 +137,10 @@ type stringArray []string
 
 // Value encodes as a PostgreSQL array literal: {"a","b",...}
 func (a stringArray) Value() (driver.Value, error) {
+	// A nil slice is an empty array, not NULL: every TEXT[] column is NOT NULL
+	// (e.g. a token request with no scope yields nil scopes).
 	if a == nil {
-		return nil, nil
+		return "{}", nil
 	}
 	var b strings.Builder
 	b.WriteByte('{')

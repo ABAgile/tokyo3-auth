@@ -1,11 +1,9 @@
-package sqlite
+package storetest
 
 import (
 	"context"
-	"slices"
 	"testing"
 
-	"github.com/abagile/tokyo3-auth/internal/model"
 	creds "github.com/abagile/tokyo3-base/auth/creds"
 	"github.com/google/uuid"
 )
@@ -15,9 +13,9 @@ import (
 // visible-to-all override. The query's correctness is the load-bearing
 // guarantee for the /portal/apps page's authorization model, so each
 // case lives as its own assertion.
-func TestListPortalClientsForUser(t *testing.T) {
+func testListPortalClientsForUser(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 
 	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	alice, err := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
@@ -103,9 +101,9 @@ func TestListPortalClientsForUser(t *testing.T) {
 // TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch guards
 // the DISTINCT in the join query: a user in two groups that both link
 // to the same client must see one tile, not two.
-func TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T) {
+func testListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 
 	hash, _ := creds.HashPassword("pw0rd-very-strong-123!")
 	u, _ := db.CreateUser(ctx, "alice@example.com", hash, "Alice")
@@ -137,9 +135,9 @@ func TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T)
 // TestReplaceClientVisibility_RemovesPriorRows asserts that the
 // "replace" semantics actually replace — passing a shorter list shrinks
 // the visibility set rather than additively unioning.
-func TestReplaceClientVisibility_RemovesPriorRows(t *testing.T) {
+func testReplaceClientVisibility_RemovesPriorRows(t *testing.T, newStore Factory) {
 	ctx := context.Background()
-	db := freshDB(t)
+	db := newStore(t)
 	c, _ := db.CreateClient(ctx, "test-cid", creds.HashToken("sec"), "test",
 		[]string{"http://localhost/cb"}, []string{"openid"}, false, nil)
 	g1, _ := db.CreateGroup(ctx, "g1")
@@ -155,16 +153,4 @@ func TestReplaceClientVisibility_RemovesPriorRows(t *testing.T) {
 	if len(got) != 1 || got[0] != g1.ID {
 		t.Errorf("after shrink: got %v, want [%s]", got, g1.ID)
 	}
-}
-
-func tileIDs(cs []*model.Client) []uuid.UUID {
-	out := make([]uuid.UUID, len(cs))
-	for i, c := range cs {
-		out[i] = c.ID
-	}
-	return out
-}
-
-func contains(ids []uuid.UUID, target uuid.UUID) bool {
-	return slices.Contains(ids, target)
 }

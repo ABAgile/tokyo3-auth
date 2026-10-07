@@ -1,4 +1,4 @@
-package sqlite
+package storetest
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 )
 
 // Helper to create a user + client pair every "operational" test needs.
-func newUserAndClient(t *testing.T, db *DB) (*model.User, *model.Client) {
+func newUserAndClient(t *testing.T, db store.Store) (*model.User, *model.Client) {
 	t.Helper()
 	ctx := context.Background()
 	u, err := db.CreateUser(ctx, t.Name()+"@example.com", "hash", t.Name())
@@ -28,8 +28,8 @@ func newUserAndClient(t *testing.T, db *DB) (*model.User, *model.Client) {
 
 // ── Grants ────────────────────────────────────────────────────────────────────
 
-func TestGrantRoundTrip(t *testing.T) {
-	db := openTestDB(t)
+func testGrantRoundTrip(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, c := newUserAndClient(t, db)
 
@@ -84,8 +84,8 @@ func TestGrantRoundTrip(t *testing.T) {
 	}
 }
 
-func TestGrantDeleteExpired(t *testing.T) {
-	db := openTestDB(t)
+func testGrantDeleteExpired(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, c := newUserAndClient(t, db)
 
@@ -116,8 +116,8 @@ func TestGrantDeleteExpired(t *testing.T) {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
-func TestSessionLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testSessionLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, c := newUserAndClient(t, db)
 
@@ -214,8 +214,8 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
-func TestSessionsByUserBulkDelete(t *testing.T) {
-	db := openTestDB(t)
+func testSessionsByUserBulkDelete(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, c := newUserAndClient(t, db)
 
@@ -241,8 +241,8 @@ func TestSessionsByUserBulkDelete(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteExpired(t *testing.T) {
-	db := openTestDB(t)
+func testSessionDeleteExpired(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, c := newUserAndClient(t, db)
 
@@ -280,8 +280,8 @@ func TestSessionDeleteExpired(t *testing.T) {
 
 // ── TOTP ──────────────────────────────────────────────────────────────────────
 
-func TestTOTPLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testTOTPLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 
@@ -325,8 +325,8 @@ func TestTOTPLifecycle(t *testing.T) {
 
 // ── WebAuthn ──────────────────────────────────────────────────────────────────
 
-func TestWebAuthnCredentialLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 
@@ -400,8 +400,8 @@ func TestWebAuthnCredentialLifecycle(t *testing.T) {
 	}
 }
 
-func TestWebAuthnSessionLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testWebAuthnSessionLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 
@@ -438,8 +438,8 @@ func TestWebAuthnSessionLifecycle(t *testing.T) {
 
 // ── Signing keys ──────────────────────────────────────────────────────────────
 
-func TestSigningKeyLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testSigningKeyLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 
 	if _, err := db.GetActiveSigningKey(ctx); err != store.ErrNotFound {
@@ -489,8 +489,8 @@ func TestSigningKeyLifecycle(t *testing.T) {
 
 // ── Integrations ──────────────────────────────────────────────────────────────
 
-func TestIntegrationLifecycle(t *testing.T) {
-	db := openTestDB(t)
+func testIntegrationLifecycle(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 
 	i := &model.AppIntegration{
@@ -580,8 +580,8 @@ func TestIntegrationLifecycle(t *testing.T) {
 
 // ── External IDs ──────────────────────────────────────────────────────────────
 
-func TestExternalIDDelete(t *testing.T) {
-	db := openTestDB(t)
+func testExternalIDDelete(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 
@@ -598,8 +598,8 @@ func TestExternalIDDelete(t *testing.T) {
 
 // ── Users — uncovered update paths ────────────────────────────────────────────
 
-func TestUserUpdatePaths(t *testing.T) {
-	db := openTestDB(t)
+func testUserUpdatePaths(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 
@@ -659,8 +659,8 @@ func TestUserUpdatePaths(t *testing.T) {
 
 // ── Clients — uncovered paths ─────────────────────────────────────────────────
 
-func TestClientUpdateSecretAndDelete(t *testing.T) {
-	db := openTestDB(t)
+func testClientUpdateSecretAndDelete(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	_, c := newUserAndClient(t, db)
 
@@ -690,8 +690,8 @@ func TestClientUpdateSecretAndDelete(t *testing.T) {
 
 // ── Groups — uncovered paths ──────────────────────────────────────────────────
 
-func TestGroupUpdateAndRemove(t *testing.T) {
-	db := openTestDB(t)
+func testGroupUpdateAndRemove(t *testing.T, newStore Factory) {
+	db := newStore(t)
 	ctx := context.Background()
 	u, _ := newUserAndClient(t, db)
 

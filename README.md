@@ -758,3 +758,26 @@ staticcheck ./...
 find . -type f -name "*.go" -print0 | xargs -0 -n 100 gopls check -severity=hint
 govulncheck ./...
 ```
+
+### PostgreSQL store tests
+
+`internal/store/storetest` is a behavioural contract that every `store.Store`
+implementation must pass; it always runs against in-memory SQLite. The same
+contract (plus migration and TEXT[] encoding tests) also runs against a real
+PostgreSQL server whenever one is configured, so `go test ./...` and
+`make check` pick it up automatically. The first of these variables that is
+set to a Postgres DSN is used:
+
+1. `AUTHD_TEST_POSTGRES_URL` (test-specific; takes precedence)
+2. `AUTHD_ADMIN_DATABASE_URL`
+3. `AUTHD_DATABASE_URL` (`sqlite:` values are ignored)
+
+```bash
+AUTHD_TEST_POSTGRES_URL=postgres://postgres@postgres/postgres make check
+```
+
+Each test creates its own uniquely named `authtest_*` database, migrates it,
+and drops it on cleanup, so existing data is never touched. The role needs
+`CREATEDB`: if a DSN picked up from the authd variables belongs to a role
+without it, the Postgres tests are skipped with a message (set
+`AUTHD_TEST_POSTGRES_URL` to override). With no variable set, they are skipped.
