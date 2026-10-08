@@ -195,15 +195,15 @@ func (s *Server) Routes() http.Handler {
 
 	// AWS OIDC federation — programmatic credentials issuance for the
 	// auth-aws-creds CLI helper (boto3 credential_process).
-	mux.HandleFunc("POST /aws/credentials", s.bearerAuth(s.handleAWSCredentials))
+	mux.HandleFunc("POST /aws/credentials", s.limitToken(s.bearerAuth(s.handleAWSCredentials)))
 
 	// Self-registration (optional)
 	mux.HandleFunc("GET /register", s.handleRegisterGET)
 	mux.HandleFunc("POST /register", s.limitAuth(s.handleRegisterPOST))
 
 	// MFA — TOTP
-	mux.HandleFunc("POST /mfa/totp/enroll", s.bearerAuth(s.handleTOTPEnroll))
-	mux.HandleFunc("POST /mfa/totp/confirm", s.bearerAuth(s.handleTOTPConfirm))
+	mux.HandleFunc("POST /mfa/totp/enroll", s.limitAuth(s.bearerAuth(s.handleTOTPEnroll)))
+	mux.HandleFunc("POST /mfa/totp/confirm", s.limitAuth(s.bearerAuth(s.handleTOTPConfirm)))
 	mux.HandleFunc("POST /mfa/totp/verify", s.limitAuth(s.bearerAuth(s.handleTOTPVerify)))
 	mux.HandleFunc("DELETE /mfa/totp", s.bearerAuth(s.handleTOTPDelete))
 

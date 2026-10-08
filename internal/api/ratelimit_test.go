@@ -99,3 +99,33 @@ func TestRateLimit_KeysOnForwardedClientBehindTrustedProxy(t *testing.T) {
 		t.Fatal("client B throttled by client A's usage")
 	}
 }
+
+// The remaining bearer endpoints that guess secrets or call AWS are limited.
+func TestRateLimit_BearerEndpoints(t *testing.T) {
+	cases := []struct {
+		name, path string
+		auth       bool // true: interactive budget, false: machine budget
+	}{
+		{"totp confirm", "/mfa/totp/confirm", true},
+		{"totp enroll", "/mfa/totp/enroll", true},
+		{"aws credentials", "/aws/credentials", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRig(t)
+			a, tk := 100, 100
+			if tc.auth {
+				a = 2
+			} else {
+				tk = 2
+			}
+			srv := limitedServer(t, r, a, tk)
+			for range 2 {
+				post(t, srv.URL+tc.path, "{}", map[string]string{"Authorization": "Bearer nope"})
+			}
+			if got := post(t, srv.URL+tc.path, "{}", map[string]string{"Authorization": "Bearer nope"}).StatusCode; got != http.StatusTooManyRequests {
+				t.Errorf("status = %d, want 429 after the budget", got)
+			}
+		})
+	}
+}

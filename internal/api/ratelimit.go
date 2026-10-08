@@ -15,10 +15,15 @@ import (
 // user-code entry) get a tight budget: legitimate users need a handful of
 // requests, while credential stuffing and code guessing need many.
 //
-// Machine endpoints (/token, /revoke, /device_authorization) get a larger
-// one: relying-party backends exchange codes for every user from a single
-// egress IP, so a tight limit would throttle legitimate sign-ins while still
-// bounding client-secret guessing.
+// Machine endpoints (/token, /revoke, /device_authorization, and
+// /aws/credentials, which makes STS calls) get a larger one: relying-party
+// backends exchange codes for every user from a single egress IP, so a tight
+// limit would throttle legitimate sign-ins while still bounding client-secret
+// guessing.
+//
+// /userinfo is deliberately not limited: bearer tokens are 256-bit random
+// values (not guessable) and the lookup is one indexed read, while relying
+// parties call it from shared egress IPs and would eat the /token budget.
 const (
 	defaultAuthRatePerMin  = 20
 	defaultTokenRatePerMin = 120
