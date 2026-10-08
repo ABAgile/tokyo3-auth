@@ -1,14 +1,15 @@
 # Upgrade checklist
 
 Work through this before deploying a build that includes migrations
-`020` and `021`, or any later release. Items marked **breaking** can make
+`020` to `022`, or any later release. Items marked **breaking** can make
 a previously working deployment fail at startup or reject requests that used
 to succeed.
 
 ## 1. Before you deploy
 
-- [ ] **Back up the database.** Migration `021` adds a column to `grants`;
-      migration `020` updates `app_integrations`. Both are additive/benign, but
+- [ ] **Back up the database.** Migration `022` adds `auth_time` to `grants`
+      and `sessions` and a `retired_refresh_tokens` table, `021` adds a column
+      to `grants`, and `020` updates `app_integrations`. All are additive, but
       migrations run automatically on `authd serve` and `authd migrate`.
 - [ ] **Run migrations with the admin DSN.** `AUTHD_ADMIN_DATABASE_URL`
       (falls back to `AUTHD_DATABASE_URL`). The runtime role stays DML-only.
@@ -35,8 +36,8 @@ New optional variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AUTHD_AUTH_RATE_PER_MIN` | `20` | per-IP budget for interactive credential endpoints |
-| `AUTHD_TOKEN_RATE_PER_MIN` | `120` | per-IP budget for `/token`, `/revoke`, `/device_authorization` |
+| `AUTHD_AUTH_RATE_PER_MIN` | `20` | per-IP budget for interactive credential endpoints (including `/mfa/totp/enroll` and `/confirm`) |
+| `AUTHD_TOKEN_RATE_PER_MIN` | `120` | per-IP budget for `/token`, `/revoke`, `/device_authorization`, `/aws/credentials` |
 | `AUTHD_TRUSTED_PROXIES` | _(none)_ | extra CIDRs whose `X-Forwarded-For` is trusted |
 
 - [ ] **Check your reverse proxy address.** `X-Forwarded-For` is trusted only
@@ -73,11 +74,30 @@ New optional variables:
       `admin` scope.
 - [ ] **Refresh tokens rotate atomically.** A refresh issues a new access
       token that is now actually stored (previously the returned access token
-      was rejected by `/userinfo`) and retires the old one. Replaying a
-      refresh token returns `400 invalid_grant`. Clients that retry a refresh
-      after a timeout must use the newest token pair they received.
+      was rejected by `/userinfo`) and retires the old one.
+- [ ] **Refresh-token replay revokes the session.** Presenting a refresh
+      token that was already rotated away (RFC 9700 §4.14: the token was
+      copied) returns `400 invalid_grant`, **deletes that session**, and
+      records an `auth.token.refresh_reuse` audit event; the tokens the
+      legitimate holder just received stop working too, so they must sign in
+      again. Two concurrent refreshes with the same token count as a replay.
+      Clients must serialise refreshes and persist the newest pair before
+      using it, and must not blindly retry a refresh whose response they
+      lost. The shared SSO helpers (`auth-aws-creds`, `auth-ssh-creds`)
+      already take an advisory file lock on Unix; on other platforms
+      concurrent helper invocations can trigger a revocation. Add an alert on
+      `auth.token.refresh_reuse`: repeated events for one user suggest theft
+      (or a misbehaving client).
 - [ ] **Authorization codes are strictly single-use**, including under
       concurrent redemption.
+- [ ] **`auth_time` is the real login time.** It was the moment the token was
+      minted. It now carries the time the user authenticated (the password
+      step, even when MFA followed), is stored on the session (migration
+      `022`; existing sessions use their creation time), and is unchanged in
+      refreshed ID tokens. Relying parties that enforce `max_age` or
+      re-authentication windows from `auth_time` will now see older values
+      for long-lived sessions, which is the correct behaviour; device-grant
+      tokens do not record it and still report the issuance time.
 
 ## 4. MFA assurance (**breaking for step-up users**)
 
@@ -170,7 +190,8 @@ Only if you are changing `AUTHD_ISSUER`, its hostname, or `AUTHD_WEBAUTHN_RPID`:
 - [ ] `GET /.well-known/openid-configuration` reports the expected issuer.
 - [ ] A password-only login yields an ID token **without** `acr`; an MFA login
       yields it.
-- [ ] A refresh returns a new access token that `/userinfo` accepts.
+- [ ] A refresh returns a new access token that `/userinfo` accepts, and
+      replaying the old refresh token returns `400` and kills that session.
 - [ ] One relying party completes a full login (scopes accepted).
 - [ ] Stop NATS briefly in staging: admin writes return `503` and the data is
       unchanged.

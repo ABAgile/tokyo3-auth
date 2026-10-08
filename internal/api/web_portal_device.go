@@ -322,7 +322,7 @@ func (s *Server) handleTokenDeviceCode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp, err := s.mintTokenResponseWithMFAAt(r, user, client, grant.Scopes,
-			grant.MFAVerified, grant.MFAVerifiedAt, "")
+			grant.MFAVerified, grant.MFAVerifiedAt, time.Time{}, "")
 		if err != nil {
 			s.log.Error("device token mint", "err", err)
 			s.writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")

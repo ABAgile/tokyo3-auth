@@ -50,6 +50,8 @@ func Run(t *testing.T, newStore Factory) {
 		"AWSRoleCRUDAndCascade":                testAWSRoleCRUD_AndCascadeOnAccount,
 		"ListAWSRolesForUser":                  testListAWSRolesForUser,
 		"AWSRevokedUsersIdempotentListAndReap": testAWSRevokedUsers_AddIsIdempotent_ListAndReap,
+		"RetiredRefreshTokens":                 testRetiredRefreshTokens,
+		"AuthTimeRoundTrip":                    testAuthTimeRoundTrip,
 		"EmptyScopesRoundTrip":                 testEmptyScopesRoundTrip,
 		"DeviceGrantLifecycle":                 testDeviceGrantLifecycle,
 	} {

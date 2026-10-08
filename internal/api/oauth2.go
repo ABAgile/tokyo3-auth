@@ -162,7 +162,9 @@ func (s *Server) trySilentSSO(w http.ResponseWriter, r *http.Request, client *mo
 			mfaAt = &t
 		}
 	}
-	s.issueCodeAndRedirect(w, r, user, client, scopes, q.Get("state"), q.Get("nonce"), q.Get("code_challenge"), q.Get("redirect_uri"), mfaAt)
+	// The user authenticated when the portal session was created; sliding the
+	// session cookie does not change CreatedAt.
+	s.issueCodeAndRedirect(w, r, user, client, scopes, q.Get("state"), q.Get("nonce"), q.Get("code_challenge"), q.Get("redirect_uri"), mfaAt, sess.CreatedAt)
 	return true
 }
 
@@ -277,7 +279,7 @@ func (s *Server) handleAuthorizePost(w http.ResponseWriter, r *http.Request) {
 	// visits to /portal/* and silent SSO at /authorize should both find a
 	// live OP session without a second login.
 	s.ensurePortalCookie(w, r, user)
-	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI, nil)
+	s.issueCodeAndRedirect(w, r, user, client, scopes, state, nonce, codeChallenge, redirectURI, nil, authTime)
 }
 
 // handleMFATOTPPost handles POST /authorize/mfa/totp.
@@ -326,12 +328,13 @@ func (s *Server) handleMFATOTPPost(w http.ResponseWriter, r *http.Request) {
 	// Seat the auth_portal cookie too (post-MFA branch of /authorize success).
 	s.ensurePortalCookie(w, r, user)
 	mfaAt := time.Now().UTC()
-	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI, &mfaAt)
+	// auth_time is when the password step happened, not the MFA completion.
+	s.issueCodeAndRedirect(w, r, user, client, st.Scopes, st.State, st.Nonce, st.CodeChallenge, st.RedirectURI, &mfaAt, st.AuthTime)
 }
 
 func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	user *model.User, client *model.Client,
-	scopes []string, state, nonce, codeChallenge, redirectURI string, mfaVerifiedAt *time.Time,
+	scopes []string, state, nonce, codeChallenge, redirectURI string, mfaVerifiedAt *time.Time, authTime time.Time,
 ) {
 	rawCode, err := creds.GenerateRawToken()
 	if err != nil {
@@ -349,6 +352,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		RedirectURI:   redirectURI,
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
 		MFAVerifiedAt: mfaVerifiedAt,
+		AuthTime:      authTime,
 	}
 	if err := s.store.CreateGrant(r.Context(), g); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -439,7 +443,7 @@ func (s *Server) handleTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.mintTokenResponseWithMFAAt(r, user, client, grant.Scopes, grant.MFAVerifiedAt != nil, grant.MFAVerifiedAt, grant.Nonce)
+	resp, err := s.mintTokenResponseWithMFAAt(r, user, client, grant.Scopes, grant.MFAVerifiedAt != nil, grant.MFAVerifiedAt, grant.AuthTime, grant.Nonce)
 	if err != nil {
 		s.log.Error("mint tokens", "err", err)
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
@@ -461,7 +465,9 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.store.GetSessionByRefreshTokenHash(r.Context(), creds.HashToken(rawRefresh))
 	if errors.Is(err, store.ErrNotFound) {
-		s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+		if !s.revokeOnRefreshReuse(w, r, client, rawRefresh) {
+			s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+		}
 		return
 	}
 	if err != nil {
@@ -505,8 +511,10 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	newRefreshExp := capByAbsolute(now.Add(refreshTokenTTL), sess.CreatedAt)
 	if err := s.store.RotateRefreshToken(r.Context(), sess.ID, creds.HashToken(rawRefresh), creds.HashToken(newAccess), creds.HashToken(newRefresh), newAccessExp, newRefreshExp); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			// Lost a concurrent rotation (or replayed an already-rotated token).
-			s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+			// Lost a concurrent rotation: the same token was presented twice.
+			if !s.revokeOnRefreshReuse(w, r, client, rawRefresh) {
+				s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+			}
 			return
 		}
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
@@ -523,7 +531,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		idToken, err = s.signer.MintIDToken(
 			sess.UserID.String(), client.ClientID,
-			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, time.Now(), sess.ID.String(),
+			user.Email, user.Name, "", sess.Scopes, sess.MFAVerified, nil, sessionAuthTime(sess), sess.ID.String(),
 			groups,
 		)
 		if err != nil {
@@ -652,7 +660,9 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 // the session's mfa_verified_at with the caller-supplied time (nil = no MFA).
 // Used by the code and device-code grants to carry forward the real MFA
 // provenance and freshness onto the bearer session so step-up gates see it.
-func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, mfaVerifiedAt *time.Time, nonce string) (map[string]any, error) {
+// authTime is when the user authenticated; zero (device grants, which do not
+// record it) is reported as the issuance time and stored as unknown.
+func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, client *model.Client, scopes []string, mfaVerified bool, mfaVerifiedAt *time.Time, authTime time.Time, nonce string) (map[string]any, error) {
 	rawAccess, err := creds.GenerateRawToken()
 	if err != nil {
 		return nil, err
@@ -673,6 +683,7 @@ func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, c
 		RefreshExpiresAt: now.Add(refreshTokenTTL),
 		MFAVerified:      mfaVerified,
 		MFAVerifiedAt:    mfaVerifiedAt,
+		AuthTime:         authTime,
 	}
 	if err := s.store.CreateSession(r.Context(), sess); err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
@@ -695,7 +706,7 @@ func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, c
 		}
 		idToken, err := s.signer.MintIDToken(
 			user.ID.String(), client.ClientID,
-			user.Email, user.Name, nonce, scopes, mfaVerified, nil, time.Now(), sess.ID.String(),
+			user.Email, user.Name, nonce, scopes, mfaVerified, nil, sessionAuthTime(sess), sess.ID.String(),
 			groups,
 		)
 		if err != nil {
@@ -704,6 +715,54 @@ func (s *Server) mintTokenResponseWithMFAAt(r *http.Request, user *model.User, c
 		resp["id_token"] = idToken
 	}
 	return resp, nil
+}
+
+// sessionAuthTime is the auth_time to report for sess: the recorded
+// authentication time, else the session's creation time, else now.
+func sessionAuthTime(sess *model.Session) time.Time {
+	switch {
+	case !sess.AuthTime.IsZero():
+		return sess.AuthTime
+	case !sess.CreatedAt.IsZero():
+		return sess.CreatedAt
+	}
+	return time.Now()
+}
+
+// revokeOnRefreshReuse handles a refresh token that no longer matches any
+// live session. If it is one the authenticated client's session already
+// rotated away from, it is being replayed (RFC 9700 §4.14): the token was
+// copied, so the session is revoked and the event audited. It reports whether
+// it wrote the response (revocation or a server error); false means the token
+// is simply unknown and the caller should answer invalid_grant.
+func (s *Server) revokeOnRefreshReuse(w http.ResponseWriter, r *http.Request, client *model.Client, rawRefresh string) bool {
+	sess, err := s.store.GetSessionByRetiredRefreshTokenHash(r.Context(), creds.HashToken(rawRefresh))
+	if errors.Is(err, store.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		s.log.Error("retired refresh lookup", "err", err)
+		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
+		return true
+	}
+	if sess.ClientID != client.ID {
+		return false // another client's token: do not signal or revoke
+	}
+	if err := s.store.DeleteSession(r.Context(), sess.ID); err != nil {
+		s.log.Error("revoke session on refresh reuse", "err", err)
+		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
+		return true
+	}
+	var userID *uuid.UUID
+	if sess.UserID != uuid.Nil {
+		userID = &sess.UserID
+	}
+	if err := s.logAudit(r, ActionTokenReuseDetected, userID, &client.ID, logMeta("session_id", sess.ID.String())); err != nil {
+		s.auditFail(w, err)
+		return true
+	}
+	s.writeError(w, http.StatusBadRequest, "invalid_grant", "refresh token not found")
+	return true
 }
 
 func (s *Server) authenticateClient(r *http.Request) (*model.Client, error) {

@@ -79,6 +79,8 @@ type Grant struct {
 	// MFAVerifiedAt is when the user completed an MFA challenge while
 	// authenticating for this code; nil means password-only.
 	MFAVerifiedAt *time.Time
+	// AuthTime is when the user authenticated for this code; zero = unknown.
+	AuthTime time.Time
 }
 
 // Session backs both portal cookies and OIDC bearer credentials. The two
@@ -110,7 +112,11 @@ type Session struct {
 	// gates that demand a freshly proven MFA. Nil for sessions that
 	// never saw an MFA prompt (e.g. user has MFA disabled).
 	MFAVerifiedAt *time.Time
-	CreatedAt     time.Time
+	// AuthTime is when the user authenticated to obtain this session (OIDC
+	// auth_time). Zero means unknown (machine sessions, or rows from before
+	// the column existed).
+	AuthTime  time.Time
+	CreatedAt time.Time
 }
 
 type TOTPCredential struct {

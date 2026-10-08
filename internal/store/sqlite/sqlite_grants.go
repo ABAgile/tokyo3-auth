@@ -10,15 +10,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const grantCols = `id, user_id, client_id, code_hash, code_challenge, nonce, scopes, redirect_uri, expires_at, used_at, mfa_verified_at`
+const grantCols = `id, user_id, client_id, code_hash, code_challenge, nonce, scopes, redirect_uri, expires_at, used_at, mfa_verified_at, auth_time`
 
 func scanGrant(row interface{ Scan(...any) error }) (*model.Grant, error) {
 	g := &model.Grant{}
-	var usedAt, mfaAt sql.NullTime
+	var usedAt, mfaAt, authAt sql.NullTime
 	err := row.Scan(
 		&g.ID, &g.UserID, &g.ClientID, &g.CodeHash, &g.CodeChallenge,
 		&g.Nonce, (*stringArray)(&g.Scopes), &g.RedirectURI,
-		&g.ExpiresAt, &usedAt, &mfaAt,
+		&g.ExpiresAt, &usedAt, &mfaAt, &authAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -34,15 +34,22 @@ func scanGrant(row interface{ Scan(...any) error }) (*model.Grant, error) {
 		t := mfaAt.Time
 		g.MFAVerifiedAt = &t
 	}
+	if authAt.Valid {
+		g.AuthTime = authAt.Time
+	}
 	return g, nil
 }
 
 func (s *DB) CreateGrant(ctx context.Context, g *model.Grant) error {
+	var authAt any
+	if !g.AuthTime.IsZero() {
+		authAt = g.AuthTime
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO grants (id, user_id, client_id, code_hash, code_challenge, nonce, scopes, redirect_uri, expires_at, mfa_verified_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO grants (id, user_id, client_id, code_hash, code_challenge, nonce, scopes, redirect_uri, expires_at, mfa_verified_at, auth_time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		g.ID, g.UserID, g.ClientID, g.CodeHash, g.CodeChallenge,
-		g.Nonce, stringArray(g.Scopes), g.RedirectURI, g.ExpiresAt, g.MFAVerifiedAt)
+		g.Nonce, stringArray(g.Scopes), g.RedirectURI, g.ExpiresAt, g.MFAVerifiedAt, authAt)
 	return err
 }
 

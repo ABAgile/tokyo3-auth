@@ -11,16 +11,16 @@ import (
 	"github.com/google/uuid"
 )
 
-const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, last_activity_at, mfa_verified, mfa_verified_at, created_at`
+const sessionCols = `id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, last_activity_at, mfa_verified, mfa_verified_at, auth_time, created_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 	s := &model.Session{}
 	var nullUser sql.Null[uuid.UUID]
-	var mfaAt sql.NullTime
+	var mfaAt, authAt sql.NullTime
 	err := row.Scan(
 		&s.ID, &nullUser, &s.ClientID, &s.AccessTokenHash, &s.RefreshTokenHash,
 		(*stringArray)(&s.Scopes), &s.AccessExpiresAt, &s.RefreshExpiresAt, &s.LastActivityAt,
-		&s.MFAVerified, &mfaAt, &s.CreatedAt,
+		&s.MFAVerified, &mfaAt, &authAt, &s.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
@@ -31,6 +31,9 @@ func scanSession(row interface{ Scan(...any) error }) (*model.Session, error) {
 	if mfaAt.Valid {
 		t := mfaAt.Time
 		s.MFAVerifiedAt = &t
+	}
+	if authAt.Valid {
+		s.AuthTime = authAt.Time
 	}
 	return s, err
 }
@@ -47,11 +50,15 @@ func (s *DB) CreateSession(ctx context.Context, sess *model.Session) error {
 	if sess.MFAVerifiedAt != nil {
 		mfaAt = *sess.MFAVerifiedAt
 	}
+	var authAt any
+	if !sess.AuthTime.IsZero() {
+		authAt = sess.AuthTime
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified, mfa_verified_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		INSERT INTO sessions (id, user_id, client_id, access_token_hash, refresh_token_hash, scopes, access_expires_at, refresh_expires_at, mfa_verified, mfa_verified_at, auth_time)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		sess.ID, userArg, sess.ClientID, sess.AccessTokenHash, sess.RefreshTokenHash,
-		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified, mfaAt)
+		stringArray(sess.Scopes), sess.AccessExpiresAt, sess.RefreshExpiresAt, sess.MFAVerified, mfaAt, authAt)
 	return err
 }
 
@@ -84,14 +91,33 @@ func (s *DB) ExtendSessionExpiry(ctx context.Context, id uuid.UUID, newExpiry ti
 }
 
 func (s *DB) RotateRefreshToken(ctx context.Context, id uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET access_token_hash = $3, refresh_token_hash = $4, access_expires_at = $5, refresh_expires_at = $6
 		 WHERE id = $1 AND refresh_token_hash = $2`,
 		id, oldRefreshHash, newAccessHash, newRefreshHash, newAccessExpiry, newRefreshExpiry)
 	if err != nil {
 		return err
 	}
-	return requireOneRow(res)
+	if err := requireOneRow(res); err != nil {
+		return err
+	}
+	// Remember the retired token so a later replay is recognisable.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO retired_refresh_tokens (token_hash, session_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		oldRefreshHash, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *DB) GetSessionByRetiredRefreshTokenHash(ctx context.Context, hash string) (*model.Session, error) {
+	return scanSession(s.db.QueryRowContext(ctx,
+		`SELECT `+sessionCols+` FROM sessions WHERE id = (SELECT session_id FROM retired_refresh_tokens WHERE token_hash = $1)`, hash))
 }
 
 func (s *DB) DeleteSession(ctx context.Context, id uuid.UUID) error {

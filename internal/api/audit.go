@@ -19,6 +19,9 @@ const (
 	ActionTokenIssued    = "auth.token.issued"
 	ActionTokenRevoked   = "auth.token.revoked"
 	ActionTokenRefreshed = "auth.token.refreshed"
+	// ActionTokenReuseDetected records a replayed (already rotated) refresh
+	// token; the session it belonged to is revoked.
+	ActionTokenReuseDetected = "auth.token.refresh_reuse"
 	// ActionBackchannelLogout records each OIDC Back-Channel Logout 1.0
 	// notification auth POSTs to an RP's backchannel_logout_uri. One entry
 	// per RP per notification; failures (HTTP non-2xx, dial errors) are

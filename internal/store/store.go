@@ -104,6 +104,11 @@ type SessionStore interface {
 	// is guarded by oldRefreshHash and swaps the access hash too; it returns
 	// ErrNotFound if the refresh token was already rotated.
 	RotateRefreshToken(ctx context.Context, id uuid.UUID, oldRefreshHash, newAccessHash, newRefreshHash string, newAccessExpiry, newRefreshExpiry time.Time) error
+	// GetSessionByRetiredRefreshTokenHash finds the session that already
+	// rotated away from this refresh token (recorded by RotateRefreshToken
+	// in the same transaction), or ErrNotFound. A hit means the token is
+	// being replayed.
+	GetSessionByRetiredRefreshTokenHash(ctx context.Context, hash string) (*model.Session, error)
 	// MarkSessionMFA bumps mfa_verified_at (and mfa_verified) on an
 	// existing session row. Used by the step-up MFA flow so that a
 	// freshly proven challenge resets the freshness window without

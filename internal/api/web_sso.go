@@ -243,6 +243,7 @@ func (s *Server) handleSSOWebAuthnFinish(w http.ResponseWriter, r *http.Request)
 		RedirectURI:   st.RedirectURI,
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
 		MFAVerifiedAt: &mfaAt,
+		AuthTime:      st.AuthTime,
 	}
 	if err := s.store.CreateGrant(r.Context(), g); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "internal error")
