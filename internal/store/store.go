@@ -1,3 +1,6 @@
+// Package store defines the persistence contract (Store) implemented by the
+// postgres and sqlite packages and verified by storetest, plus the sentinel
+// errors handlers branch on.
 package store
 
 import (

@@ -11,6 +11,9 @@ to succeed.
       and `sessions` and a `retired_refresh_tokens` table, `021` adds a column
       to `grants`, and `020` updates `app_integrations`. All are additive, but
       migrations run automatically on `authd serve` and `authd migrate`.
+- [ ] **Building from source needs Go 1.27** (`go.mod` pins the 1.27.2
+      toolchain) and the server image is built from `golang:1.27-alpine`; the
+      pre-built images and binaries are unaffected.
 - [ ] **Run migrations with the admin DSN.** `AUTHD_ADMIN_DATABASE_URL`
       (falls back to `AUTHD_DATABASE_URL`). The runtime role stays DML-only.
 - [ ] **Validate configuration on a staging copy first** (see §2). `authd serve`

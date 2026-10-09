@@ -1,3 +1,6 @@
+// Package model holds the domain types shared by the store and the API:
+// users, OAuth clients, grants, sessions, MFA credentials, groups, AWS
+// federation records and outbound-provisioning integrations.
 package model
 
 import (

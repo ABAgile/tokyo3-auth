@@ -172,7 +172,8 @@ func (s *DB) ListClientVisibility(ctx context.Context, clientID uuid.UUID) ([]uu
 	return out, rows.Err()
 }
 
-// ListPortalClientsForUser: see postgres equivalent for design notes.
+// ListPortalClientsForUser returns the portal tiles visible to userID; see
+// the postgres equivalent for design notes.
 // SQLite needs `c.` prefixes hand-written rather than the prefixCols
 // helper used in postgres, because the column list interpolation
 // happens at compile time of the SQL string and SQLite's parser is

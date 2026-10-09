@@ -23,19 +23,10 @@ GO      := go
 GOFLAGS :=
 
 # Developer tools (staticcheck, gopls, govulncheck, deadcode) are pinned in
-# tools/go.mod and run via `go tool`, so local runs and CI use identical
-# versions with nothing to install. See the header of tools/go.mod before
+# _tools/go.mod and run via `go tool`, so local runs and CI use identical
+# versions with nothing to install. See the header of _tools/go.mod before
 # bumping them.
-TOOL := $(GO) tool -modfile=tools/go.mod
-
-# GitHub Actions sets CI=true. In CI the quality targets verify instead of
-# rewrite (fmt, tidy) and tests add -race and coverage. Reproduce CI locally
-# with `make check CI=true`.
-ifeq ($(CI),true)
-TEST_FLAGS := -race -coverprofile=coverage.out
-else
-TEST_FLAGS :=
-endif
+TOOL := $(GO) tool -modfile=_tools/go.mod
 
 IMAGE_NAME ?= abagile/tokyo3-auth
 IMAGE_TAG  ?= $(VERSION)
@@ -88,45 +79,38 @@ build-darwin: $(BIN_DIR)
 	@echo "  built authd-darwin-arm64 + auth-aws-creds-darwin-arm64"
 
 # ── Quality ───────────────────────────────────────────────────────────────────
-# Each check-* target runs alone (CI calls them one by one for per-step
-# reporting); `check` runs them all in order. Execution is deliberately serial
-# (.NOTPARALLEL): fmt and tidy rewrite files the other steps read.
+# Local pre-commit sequence. It mirrors .github/workflows/test.yml step for
+# step (CI additionally verifies instead of rewriting, and adds -race and
+# coverage); keep the two in step. Each check-* target also runs alone.
 # Postgres contract tests run when AUTHD_TEST_POSTGRES_URL (or
 # AUTHD_[ADMIN_]DATABASE_URL) is set.
 
 .NOTPARALLEL:
 
-## check: Full pre-commit sequence (all check-* targets, serial); CI=true verifies instead of rewriting
+## check: Full pre-commit sequence (all check-* targets, serial)
 check: check-fmt check-tidy check-test check-vet check-lint check-gopls check-vuln check-deadcode
 
-## check-fmt: gofmt -s -w (CI=true: fail if any file needs formatting)
+## check-fmt: gofmt -s -w
 check-fmt:
-ifeq ($(CI),true)
-	@out=$$(gofmt -s -l .); if [ -n "$$out" ]; then echo "$$out"; echo "gofmt: files need formatting (above); run gofmt -s -w ."; exit 1; fi
-else
 	gofmt -s -w .
-endif
 
-## check-tidy: go mod tidy for app + tools modules, and build every pinned tool (CI=true: fail on drift)
+## check-tidy: go mod tidy for the app and _tools modules, and build every pinned tool
 check-tidy:
 	$(GO) mod tidy
-	cd tools && $(GO) mod tidy
-	cd tools && $(GO) build tool
-ifeq ($(CI),true)
-	@git diff --exit-code -- go.mod go.sum tools/go.mod tools/go.sum || { echo "go mod tidy changed module files; commit the result"; exit 1; }
-endif
+	$(GO) -C _tools mod tidy
+	$(GO) -C _tools build tool
 
-## check-test: Run all tests (CI=true: -race and coverage.out)
+## check-test: Run all tests
 check-test:
-	$(GO) test ./... -count=1 $(TEST_FLAGS)
+	$(GO) test ./... -count=1
 
 ## check-vet: go vet
 check-vet:
 	$(GO) vet ./...
 
-## check-lint: staticcheck
+## check-lint: staticcheck with every check enabled
 check-lint:
-	$(TOOL) staticcheck ./...
+	$(TOOL) staticcheck -checks all ./...
 
 ## check-gopls: gopls check at hint severity
 check-gopls:

@@ -95,7 +95,7 @@ Slowloris defense via `ReadHeaderTimeout=10s`, `ReadTimeout=60s`, `IdleTimeout=1
 
 ## Requirements
 
-- Go 1.26.5+
+- Go 1.27+ (`go.mod` pins the 1.27.2 toolchain)
 - PostgreSQL 15+
 - (Optional) AWS credentials for IAM provisioning
 
@@ -756,26 +756,27 @@ make docker-up-mesh
 
 ### Code quality
 
-`make check` runs the full quality sequence locally, serially: `check-fmt`,
-`check-tidy`, `check-test`, `check-vet`, `check-lint` (staticcheck),
-`check-gopls`, `check-vuln` (govulncheck) and `check-deadcode`. Each step is
-also a target you can run alone (`make help` lists them). `check-fmt` and
-`check-tidy` rewrite files locally.
+`make check` runs the quality sequence locally, serially: `check-fmt`,
+`check-tidy`, `check-test`, `check-vet`, `check-lint` (staticcheck with every
+check enabled), `check-gopls`, `check-vuln` (govulncheck) and `check-deadcode`.
+Each is also a target you can run alone (`make help` lists them).
+`check-fmt` and `check-tidy` rewrite files.
 
-GitHub Actions sets `CI=true`, which switches `check-fmt` and `check-tidy` from
-rewriting files to failing on drift and adds `-race` and coverage to
-`check-test`. CI runs each step as its own job step, and `make check CI=true`
-reproduces it locally.
+CI (`.github/workflows/test.yml`) runs the same commands as individual steps,
+but verifies instead of rewriting (gofmt and `go mod tidy` drift fail the
+build) and adds `-race` and coverage. The Makefile mirrors the workflow; keep
+the two in step when adding a check.
 
 The analyzers (staticcheck, gopls, govulncheck, deadcode) are pinned in
-`tools/go.mod` and run through `go tool -modfile=tools/go.mod <tool>`, so there
-is nothing to install and local runs match CI. Their binaries are built into
-Go's build cache on first use.
+`_tools/go.mod` and run through `go tool -modfile=_tools/go.mod <tool>`, so
+there is nothing to install and local runs match CI. Their binaries are built
+into Go's build cache on first use. The pins mirror `tokyo3-base/_tools` (plus
+deadcode, which a library doesn't need).
 
 gopls only compiles against the `golang.org/x/tools` snapshot it ships with, so
 the tools must be bumped together, gopls first, whenever the Go version is
-updated. The rules are in the header of `tools/go.mod`; `make check-tidy` runs
-`go build tool` in `tools/` to fail fast on a misaligned set.
+updated. The rules are in the header of `_tools/go.mod`; the tidy step runs
+`go build tool` in `_tools/` to fail fast on a misaligned set.
 
 ### PostgreSQL store tests
 

@@ -101,7 +101,7 @@ func testListPortalClientsForUser(t *testing.T, newStore Factory) {
 // TestListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch guards
 // the DISTINCT in the join query: a user in two groups that both link
 // to the same client must see one tile, not two.
-func testListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T, newStore Factory) {
+func testListPortalClientsForUserNoDuplicatesOnMultipleGroupMatch(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	db := newStore(t)
 
@@ -135,7 +135,7 @@ func testListPortalClientsForUser_NoDuplicatesOnMultipleGroupMatch(t *testing.T,
 // TestReplaceClientVisibility_RemovesPriorRows asserts that the
 // "replace" semantics actually replace — passing a shorter list shrinks
 // the visibility set rather than additively unioning.
-func testReplaceClientVisibility_RemovesPriorRows(t *testing.T, newStore Factory) {
+func testReplaceClientVisibilityRemovesPriorRows(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	db := newStore(t)
 	c, _ := db.CreateClient(ctx, "test-cid", creds.HashToken("sec"), "test",

@@ -8,13 +8,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # Real PostgreSQL for the store contract tests (internal/store/storetest).
-    # Each test creates and drops its own authtest_* database.
+    # Real PostgreSQL for the store contract tests (internal/store/storetest,
+    # run by internal/store/postgres). Password auth (scram-sha-256, the image
+    # default when a password is set) exercises the real login path. Each test
+    # creates and drops its own authtest_* database; the container is
+    # ephemeral.
     services:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PASSWORD: fixture-password
         ports:
           - 5432:5432
         options: >-
@@ -23,29 +26,44 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+    # The Postgres tests skip unless a DSN is set (see internal/store/postgres).
     env:
-      AUTHD_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres
+      AUTHD_TEST_POSTGRES_URL: postgres://postgres:fixture-password@127.0.0.1:5432/postgres?sslmode=disable
 
     steps:
       - uses: actions/checkout@v5
 
       # Caches the module cache and the build cache. Dev tools are pinned in
-      # tools/go.mod and run with `go tool`; their binaries live in the build
-      # cache, keyed by both go.sum files and the Go version.
+      # _tools/go.mod and run with `go tool`; their binaries live in the
+      # build cache, keyed by both go.sum files and the Go version.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # go.mod's toolchain line pins the patch release. setup-go reads it;
+          # when its version manifest lags, setup-go downloads that release from
+          # go.dev. Bump the toolchain line with each Go patch release.
           cache: true
           cache-dependency-path: |
             go.sum
-            tools/go.sum
+            _tools/go.sum
 
-      # Every step is a Makefile target, so `make check CI=true` reproduces
-      # this job locally. GitHub sets CI=true: fmt/tidy verify instead of
-      # rewrite, and test adds -race and coverage.
-      - run: make check-fmt
-      - run: make check-tidy
-      - run: make check-test
+      # Each step below is the command to run locally (`make check` runs the
+      # same sequence, rewriting instead of verifying). The tool commands use
+      # `go tool -modfile=_tools/go.mod` so local runs and CI use identical
+      # versions (see _tools/go.mod before bumping them).
+      - name: Check formatting
+        run: |
+          out=$(gofmt -s -l .)
+          if [ -n "$out" ]; then echo "$out"; echo "gofmt: files need formatting (above); run gofmt -s -w ."; exit 1; fi
+
+      - name: Check go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          go -C _tools mod tidy
+          go -C _tools build tool
+          git diff --exit-code -- go.mod go.sum _tools/go.mod _tools/go.sum || { echo "go mod tidy changed module files; commit the result"; exit 1; }
+
+      - run: go test ./... -count=1 -race -coverprofile=coverage.out
 
       - uses: codecov/codecov-action@v6
         with:
@@ -53,8 +71,11 @@ jobs:
           files: coverage.out
           slug: ABAgile/tokyo3-auth
 
-      - run: make check-vet
-      - run: make check-lint
-      - run: make check-gopls
-      - run: make check-vuln
-      - run: make check-deadcode
+      - run: go vet ./...
+      - run: go tool -modfile=_tools/go.mod staticcheck -checks all ./...
+      - run: find . -type f -name "*.go" -print0 | xargs -0 -n 100 go tool -modfile=_tools/go.mod gopls check -severity=hint
+      - run: go tool -modfile=_tools/go.mod govulncheck ./...
+      - name: deadcode
+        run: |
+          out=$(go tool -modfile=_tools/go.mod deadcode -test ./...)
+          if [ -n "$out" ]; then echo "$out"; echo "deadcode: unreachable functions found (above)"; exit 1; fi

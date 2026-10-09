@@ -40,7 +40,7 @@ func testAWSAccountCRUD(t *testing.T, newStore Factory) {
 	}
 }
 
-func testAWSRoleCRUD_AndCascadeOnAccount(t *testing.T, newStore Factory) {
+func testAWSRoleCRUDAndCascadeOnAccount(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	db := newStore(t)
 	acct := &model.AWSAccount{AccountID: "222222222222", OIDCProviderARN: "arn:aws:iam::222:oidc-provider/id.example.com"}
@@ -105,7 +105,7 @@ func testListAWSRolesForUser(t *testing.T, newStore Factory) {
 	}
 }
 
-func testAWSRevokedUsers_AddIsIdempotent_ListAndReap(t *testing.T, newStore Factory) {
+func testAWSRevokedUsersAddIsIdempotentListAndReap(t *testing.T, newStore Factory) {
 	ctx := context.Background()
 	db := newStore(t)
 	acct := &model.AWSAccount{AccountID: "444444444444", OIDCProviderARN: "arn:aws:iam::444:oidc-provider/id.example.com"}
