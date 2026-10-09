@@ -34,10 +34,25 @@ type DB struct {
 	db *sql.DB
 }
 
+// withUTCTimes appends the driver's _timezone=UTC option to a DSN or path.
+func withUTCTimes(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_timezone=UTC"
+}
+
 // Open opens (or creates) the SQLite database at path and runs migrations.
 // SQLite is single-writer; one connection avoids locking contention.
+//
+// The driver writes a time.Time as text in the value's own zone (for example
+// "2026-01-01 10:00:00 +0800 CST"), while expiry queries compare columns with
+// CURRENT_TIMESTAMP, which is UTC text. Compared as strings those only agree
+// when both are UTC, so the connection is told to write every time in UTC
+// (_timezone=UTC) and reaping/expiry no longer depends on the host zone.
 func Open(path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", withUTCTimes(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

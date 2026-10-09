@@ -156,7 +156,7 @@ func testDeviceGrantLifecycle(t *testing.T, newStore Factory) {
 	mk := func(dev, usr string, exp time.Time) *model.DeviceGrant {
 		g := &model.DeviceGrant{
 			DeviceCodeHash: dev, UserCodeHash: usr, ClientID: c.ID,
-			Scopes: []string{"openid", "profile"}, ExpiresAt: exp.UTC(),
+			Scopes: []string{"openid", "profile"}, ExpiresAt: exp,
 		}
 		if err := db.CreateDeviceGrant(ctx, g); err != nil {
 			t.Fatalf("CreateDeviceGrant %s: %v", dev, err)
@@ -284,5 +284,71 @@ func testEmptyScopesRoundTrip(t *testing.T, newStore Factory) {
 	}
 	if got, err := db.GetClientByID(ctx, noScopes.ID); err != nil || len(got.Scopes) != 0 || len(got.RedirectURIs) != 0 {
 		t.Errorf("client arrays = %+v, %v; want empty", got, err)
+	}
+}
+
+// testExpiryIgnoresLocalZone: expiry reaping must not depend on the zone a
+// time.Time carries. At the extreme offsets a zone-blind text comparison with
+// the database clock misjudges rows by up to 14 hours in either direction.
+func testExpiryIgnoresLocalZone(t *testing.T, newStore Factory) {
+	for _, loc := range []*time.Location{
+		time.FixedZone("UTC+14", 14*3600),
+		time.FixedZone("UTC-12", -12*3600),
+	} {
+		t.Run(loc.String(), func(t *testing.T) {
+			db := newStore(t)
+			ctx := context.Background()
+			u, c := newUserAndClient(t, db)
+			stale := time.Now().Add(-time.Hour).In(loc)
+			fresh := time.Now().Add(time.Hour).In(loc)
+
+			for name, exp := range map[string]time.Time{"stale": stale, "fresh": fresh} {
+				if err := db.CreateGrant(ctx, &model.Grant{
+					ID: uuid.New(), UserID: u.ID, ClientID: c.ID, CodeHash: "g-" + name,
+					RedirectURI: "https://app.example/cb", ExpiresAt: exp,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CreateSession(ctx, &model.Session{
+					ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
+					AccessTokenHash: "a-" + name, RefreshTokenHash: "r-" + name,
+					AccessExpiresAt: exp, RefreshExpiresAt: exp,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CreateDeviceGrant(ctx, &model.DeviceGrant{
+					DeviceCodeHash: "d-" + name, UserCodeHash: "u-" + name, ClientID: c.ID, ExpiresAt: exp,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := db.DeleteExpiredGrants(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.DeleteExpiredSessions(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := db.DeleteExpiredDeviceGrants(ctx); err != nil || n != 1 {
+				t.Fatalf("DeleteExpiredDeviceGrants = %d, %v; want 1", n, err)
+			}
+
+			gone := func(err error) bool { return errors.Is(err, store.ErrNotFound) }
+			_, e1 := db.GetGrantByCodeHash(ctx, "g-stale")
+			_, e2 := db.GetGrantByCodeHash(ctx, "g-fresh")
+			if !gone(e1) || e2 != nil {
+				t.Errorf("grants: stale err=%v (want not found), fresh err=%v (want nil)", e1, e2)
+			}
+			_, e1 = db.GetSessionByRefreshTokenHash(ctx, "r-stale")
+			_, e2 = db.GetSessionByRefreshTokenHash(ctx, "r-fresh")
+			if !gone(e1) || e2 != nil {
+				t.Errorf("sessions: stale err=%v (want not found), fresh err=%v (want nil)", e1, e2)
+			}
+			_, e1 = db.GetDeviceGrantByDeviceCodeHash(ctx, "d-stale")
+			_, e2 = db.GetDeviceGrantByDeviceCodeHash(ctx, "d-fresh")
+			if !gone(e1) || e2 != nil {
+				t.Errorf("device grants: stale err=%v (want not found), fresh err=%v (want nil)", e1, e2)
+			}
+		})
 	}
 }

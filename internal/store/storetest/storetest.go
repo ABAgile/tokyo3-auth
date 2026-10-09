@@ -52,6 +52,7 @@ func Run(t *testing.T, newStore Factory) {
 		"AWSRevokedUsersIdempotentListAndReap": testAWSRevokedUsers_AddIsIdempotent_ListAndReap,
 		"RetiredRefreshTokens":                 testRetiredRefreshTokens,
 		"AuthTimeRoundTrip":                    testAuthTimeRoundTrip,
+		"ExpiryIgnoresLocalZone":               testExpiryIgnoresLocalZone,
 		"EmptyScopesRoundTrip":                 testEmptyScopesRoundTrip,
 		"DeviceGrantLifecycle":                 testDeviceGrantLifecycle,
 	} {

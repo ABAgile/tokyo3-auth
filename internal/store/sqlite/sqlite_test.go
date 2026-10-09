@@ -53,3 +53,15 @@ func TestMigrationsApply(t *testing.T) {
 func TestStoreContract(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) store.Store { return openTestDB(t) })
 }
+
+func TestWithUTCTimes(t *testing.T) {
+	for in, want := range map[string]string{
+		":memory:":               ":memory:?_timezone=UTC",
+		"/var/lib/auth/auth.db":  "/var/lib/auth/auth.db?_timezone=UTC",
+		"file:x.db?cache=shared": "file:x.db?cache=shared&_timezone=UTC",
+	} {
+		if got := withUTCTimes(in); got != want {
+			t.Errorf("withUTCTimes(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
