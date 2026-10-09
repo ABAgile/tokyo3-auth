@@ -147,8 +147,8 @@ func TestSigninFedURLForRegion(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := signinFedURLForRegion(tc.region); got != tc.want {
-				t.Errorf("signinFedURLForRegion(%q) = %q, want %q", tc.region, got, tc.want)
+			if got := doorFor(tc.region).signinFed; got != tc.want {
+				t.Errorf("signinFed(%q) = %q, want %q", tc.region, got, tc.want)
 			}
 		})
 	}
@@ -165,8 +165,8 @@ func TestConsoleHomeURLForRegion(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := consoleHomeURLForRegion(tc.region); got != tc.want {
-				t.Errorf("consoleHomeURLForRegion(%q) = %q, want %q", tc.region, got, tc.want)
+			if got := doorFor(tc.region).consoleHome; got != tc.want {
+				t.Errorf("consoleHome(%q) = %q, want %q", tc.region, got, tc.want)
 			}
 		})
 	}
@@ -194,13 +194,12 @@ func TestSTSClientForRegion(t *testing.T) {
 	r := newTestRig(t)
 
 	tests := []struct {
-		name          string
-		region        string
-		wantEndpoint  string
-		wantSDKRegion string
+		name         string
+		region       string
+		wantEndpoint string
 	}{
-		{"empty region keeps the global STS endpoint", "", "https://sts.amazonaws.com", "us-east-1"},
-		{"opt-in region gets its own STS endpoint", "ap-east-2", "https://sts.ap-east-2.amazonaws.com", "ap-east-2"},
+		{"empty region keeps the global STS endpoint", "", "https://sts.amazonaws.com"},
+		{"opt-in region gets its own STS endpoint", "ap-east-2", "https://sts.ap-east-2.amazonaws.com"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,11 +208,12 @@ func TestSTSClientForRegion(t *testing.T) {
 				t.Fatalf("stsClientForRegion(%q) did not return a *sts.Client", tc.region)
 			}
 			opts := client.Options()
-			if got := aws.ToString(opts.BaseEndpoint); got != tc.wantEndpoint {
-				t.Errorf("BaseEndpoint = %q, want %q", got, tc.wantEndpoint)
+			ep, err := opts.EndpointResolverV2.ResolveEndpoint(context.Background(), sts.EndpointParameters{Region: aws.String(opts.Region)})
+			if err != nil {
+				t.Fatalf("ResolveEndpoint: %v", err)
 			}
-			if opts.Region != tc.wantSDKRegion {
-				t.Errorf("Region = %q, want %q", opts.Region, tc.wantSDKRegion)
+			if got := ep.URI.String(); got != tc.wantEndpoint {
+				t.Errorf("resolved endpoint = %q, want %q", got, tc.wantEndpoint)
 			}
 		})
 	}

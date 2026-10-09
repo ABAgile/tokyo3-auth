@@ -32,32 +32,34 @@ var errFederationUnconfigured = errors.New("AUTHD_AWS_AUDIENCE is not set; aws f
 // post unauthenticated requests against them — the user's id_token is the
 // authentication for STS, and the resulting STS session is the
 // authentication for getSigninToken.
-const (
-	awsSTSEndpoint     = "https://sts.amazonaws.com"
-	awsSigninFedURL    = "https://signin.aws.amazon.com/federation"
-	awsConsoleHomeURL  = "https://console.aws.amazon.com/"
-	federationTokenTTL = 15 * time.Minute
-)
+const federationTokenTTL = 15 * time.Minute
 
-// signinFedURLForRegion returns the federation endpoint to use for
-// getSigninToken/login. Opt-in regions (not enabled by default on the
-// account) have their own signin domain and reject a session minted
-// against the global one. Empty region keeps today's global endpoint.
-func signinFedURLForRegion(region string) string {
-	if region == "" {
-		return awsSigninFedURL
-	}
-	return fmt.Sprintf("https://%s.signin.aws.amazon.com/federation", region)
+// awsDoor is one way into the AWS console: the STS region that mints the
+// credentials, and the signin/console hosts that trade them. The default
+// (empty region) is the global door; an opt-in region gets its own. Every
+// caller goes through doorFor, so the two paths share one code path.
+type awsDoor struct {
+	stsRegion   string // SDK region: "aws-global" maps to sts.amazonaws.com
+	signinFed   string
+	consoleHome string
 }
 
-// consoleHomeURLForRegion returns the console landing page (the
-// "Destination" federation parameter) for region. Empty region keeps
-// today's global console home.
-func consoleHomeURLForRegion(region string) string {
+// doorFor resolves region (already sanitized) to its awsDoor. Opt-in
+// regions are not enabled by default and reject sessions minted at the
+// global endpoints, so they need their own STS, signin and console hosts.
+func doorFor(region string) awsDoor {
 	if region == "" {
-		return awsConsoleHomeURL
+		return awsDoor{
+			stsRegion:   "aws-global",
+			signinFed:   "https://signin.aws.amazon.com/federation",
+			consoleHome: "https://console.aws.amazon.com/",
+		}
 	}
-	return fmt.Sprintf("https://%s.console.aws.amazon.com/console/home?region=%s", region, region)
+	return awsDoor{
+		stsRegion:   region,
+		signinFed:   fmt.Sprintf("https://%s.signin.aws.amazon.com/federation", region),
+		consoleHome: fmt.Sprintf("https://%s.console.aws.amazon.com/console/home?region=%s", region, region),
+	}
 }
 
 // awsRegionPattern matches a syntactically safe AWS region name:
@@ -65,13 +67,13 @@ func consoleHomeURLForRegion(region string) string {
 var awsRegionPattern = regexp.MustCompile(`^[a-z0-9-]{1,20}$`)
 
 // sanitizeAWSRegion is applied to the `region` request parameter before
-// it is spliced into the signin/console hostnames (signinFedURLForRegion,
-// consoleHomeURLForRegion). It comes straight from the browser (which
-// button the user clicked), so it must not be trusted as-is: a value
-// containing e.g. "/" or "@" could change which host authd's own
-// server-side HTTP call in exchangeSigninToken actually dials. Returns
-// region unchanged when it is empty (meaning: use the global domains) or
-// matches the safe pattern, and "" — the same safe fallback — otherwise.
+// it is spliced into the signin/console hostnames (doorFor). It comes
+// straight from the browser (which button the user clicked), so it must
+// not be trusted as-is: a value containing e.g. "/" or "@" could
+// change which host authd's own server-side HTTP call in
+// exchangeSigninToken actually dials. Returns region unchanged when it is
+// empty (meaning: use the global domains) or matches the safe pattern, and
+// "" — the same safe fallback — otherwise.
 func sanitizeAWSRegion(region string) string {
 	if region == "" || awsRegionPattern.MatchString(region) {
 		return region
@@ -196,11 +198,12 @@ func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.
 		"role_id": {role.ID.String()},
 		"region":  {region},
 	}.Encode()
+	d := doorFor(region)
 	consoleURL := buildConsoleLoginURL(
 		signinToken,
 		refreshURL,
-		consoleHomeURLForRegion(region),
-		signinFedURLForRegion(region),
+		d.consoleHome,
+		d.signinFed,
 	)
 	// mfa_authenticated and step_up together let auditors distinguish
 	// "MFA required and present" from "MFA optional but present" from
@@ -380,24 +383,15 @@ func (s *Server) groupNamesForUser(ctx context.Context, userID uuid.UUID) ([]str
 // endpoint tokens are valid everywhere, so using region's own endpoint
 // here fixes that for both default and opt-in regions.
 func (s *Server) stsClientForRegion(region string) stsAPI {
-	endpoint := awsSTSEndpoint
-	sdkRegion := "us-east-1" // STS global endpoint is region-bound for SDK purposes; us-east-1 is canonical
-	if region != "" {
-		endpoint = fmt.Sprintf("https://sts.%s.amazonaws.com", region)
-		sdkRegion = region
-	}
-	cfg := aws.Config{
-		Region:      sdkRegion,
+	return sts.NewFromConfig(aws.Config{
+		Region:      doorFor(region).stsRegion,
 		Credentials: aws.AnonymousCredentials{},
-	}
-	return sts.NewFromConfig(cfg, func(o *sts.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
 	})
 }
 
 // exchangeSigninToken trades STS session credentials for a single-use
 // SigninToken at the federation endpoint for region (global when empty —
-// see signinFedURLForRegion). The request is authenticated by the session
+// see doorFor). The request is authenticated by the session
 // JSON it carries — no SigV4 needed.
 func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleWithWebIdentityOutput, region string) (string, error) {
 	if creds == nil || creds.Credentials == nil {
@@ -419,7 +413,7 @@ func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleW
 	q := url.Values{}
 	q.Set("Action", "getSigninToken")
 	q.Set("Session", string(b))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signinFedURLForRegion(region)+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, doorFor(region).signinFed+"?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -449,7 +443,7 @@ func (s *Server) exchangeSigninToken(ctx context.Context, creds *sts.AssumeRoleW
 // into the AWS Console. Issuer is the URL AWS bounces back to when the
 // console session expires — we point it at /portal/aws/refresh so the
 // re-federation is transparent. fedURL must be the same signin domain the
-// SigninToken in signinToken was minted against (signinFedURLForRegion) —
+// SigninToken in signinToken was minted against (doorFor) —
 // an opt-in region's door won't honour a token minted at the global one.
 func buildConsoleLoginURL(signinToken, issuerURL, destination, fedURL string) string {
 	q := url.Values{}
