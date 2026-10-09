@@ -47,7 +47,7 @@ The `internal/policy` package provides a pluggable `Rule` interface. PCI-DSS v4.
 - **WebAuthn/FIDO2**: `go-webauthn/webauthn` library. Supports biometric devices and YubiKeys. Session data stored in DB with 5-minute TTL.
 
 ### Audit
-Every authentication event is published synchronously to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). The publish is **fail-closed**: if the journal is unreachable (NATS down, ack timeout, etc.) every handler that emits an audit event returns 503 and the originating action is refused. The JetStream stream is the **sole** authoritative store — there is no projection database, no local DB mirror. FileStorage + DenyDelete + DenyPurge + 13-month retention satisfy PCI-DSS 10.5.
+Every authentication event is published synchronously to a NATS JetStream stream (`auth_audit` on subject `auth.audit.events`). The publish is **fail-closed**: if the journal is unreachable (NATS down, ack timeout, etc.) every handler that emits an audit event returns 503 and the originating action is refused: destructive and credential-weakening actions are audited *before* they run, and creates are rolled back if their audit write fails (see `docs/upgrade-checklist.md`). The JetStream stream is the **sole** authoritative store — there is no projection database, no local DB mirror. FileStorage + DenyDelete + DenyPurge + 13-month retention satisfy PCI-DSS 10.5.
 
 The same stream is read back by:
 

@@ -103,6 +103,7 @@ func (s *Server) handlePortalAdminIntegrationNew(w http.ResponseWriter, r *http.
 	}
 	if err := s.logAudit(r, ActionIntegrationCreated, &pc.User.ID, nil,
 		logMeta("name", row.Name, "provider", row.Provider)); err != nil {
+		s.undoOnAuditFailure(r, "integration", func(ctx context.Context) error { return s.store.DeleteIntegration(ctx, row.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -208,13 +209,13 @@ func (s *Server) handlePortalAdminIntegrationDelete(w http.ResponseWriter, r *ht
 		http.Redirect(w, r, "/portal/admin/integrations?error=integration+not+found", http.StatusFound)
 		return
 	}
-	if err := s.store.DeleteIntegration(r.Context(), id); err != nil {
-		http.Redirect(w, r, "/portal/admin/integrations?error=delete+failed", http.StatusFound)
-		return
-	}
 	if err := s.logAudit(r, ActionIntegrationDeleted, &pc.User.ID, nil,
 		logMeta("name", existing.Name, "provider", existing.Provider)); err != nil {
 		s.auditFail(w, err)
+		return
+	}
+	if err := s.store.DeleteIntegration(r.Context(), id); err != nil {
+		http.Redirect(w, r, "/portal/admin/integrations?error=delete+failed", http.StatusFound)
 		return
 	}
 	s.reloadProvisioners(r.Context())

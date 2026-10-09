@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -65,6 +66,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", req.Email, "admin", req.Admin)); err != nil {
+		s.undoOnAuditFailure(r, "user", func(ctx context.Context) error { return s.store.DeleteUser(ctx, user.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -217,6 +219,7 @@ func (s *Server) handleAdminCreateClient(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("name", req.Name)); err != nil {
+		s.undoOnAuditFailure(r, "client", func(ctx context.Context) error { return s.store.DeleteClient(ctx, client.ID) })
 		s.auditFail(w, err)
 		return
 	}

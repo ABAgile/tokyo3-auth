@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -91,6 +92,7 @@ func (s *Server) handlePortalAdminGroupNew(w http.ResponseWriter, r *http.Reques
 	}
 	if err := s.logAudit(r, ActionGroupCreated, &pc.User.ID, nil,
 		logMeta("name", displayName, "members", len(memberIDs))); err != nil {
+		s.undoOnAuditFailure(r, "group", func(ctx context.Context) error { return s.store.DeleteGroup(ctx, g.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -171,13 +173,15 @@ func (s *Server) handlePortalAdminGroupDelete(w http.ResponseWriter, r *http.Req
 		http.Redirect(w, r, "/portal/admin/groups?error=group+not+found", http.StatusFound)
 		return
 	}
-	if err := s.store.DeleteGroup(r.Context(), id); err != nil {
-		http.Redirect(w, r, "/portal/admin/groups?error=delete+failed", http.StatusFound)
-		return
-	}
+	// Audit before deleting, so an outage can't remove the group (and skip
+	// downstream deprovisioning) unrecorded.
 	if err := s.logAudit(r, ActionGroupDeleted, &pc.User.ID, nil,
 		logMeta("name", g.DisplayName)); err != nil {
 		s.auditFail(w, err)
+		return
+	}
+	if err := s.store.DeleteGroup(r.Context(), id); err != nil {
+		http.Redirect(w, r, "/portal/admin/groups?error=delete+failed", http.StatusFound)
 		return
 	}
 	s.provisionGroup(r, provision.OpDelete, g, nil)

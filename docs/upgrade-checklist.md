@@ -117,17 +117,28 @@ MFA-verified portal session on silent SSO).
 
 ## 5. Audit journal fail-closed
 
-More handlers now refuse to proceed when the audit journal (NATS JetStream) is
-unreachable and return `503`: the admin user/client API, MFA enrolment and
-removal, self-registration, and portal integration management.
+Handlers that change state now refuse to proceed when the audit journal (NATS
+JetStream) is unreachable and return `503`: the admin API, the portal admin
+(users, clients, groups, integrations, AWS federation config), MFA enrolment and
+removal, and self-registration.
 
 - [ ] **Confirm NATS health and alerting** before relying on these paths.
-- [ ] Admin user update/delete, client delete and secret rotation write the
-      audit event **before** changing anything, so an outage leaves the data
-      untouched. Creates and enrolments write it afterwards: on failure the
-      response is `503` and downstream provisioning is skipped, but the row may
-      already exist; retry after the journal recovers (a retried create
-      returns `409`, so check for the row first).
+- [ ] **Destructive and credential-weakening actions audit first**: user
+      update/deactivate/delete, password reset, compromised-account reset, MFA
+      removal (self-service and admin), client delete and secret rotation,
+      group delete, AWS account/role/assignment delete, integration delete. A
+      journal outage refuses them and leaves the data untouched, so nothing is
+      deleted without a record and downstream deprovisioning is never skipped.
+      (The AWS delete handlers previously ignored audit errors entirely.)
+- [ ] **Creates are rolled back** when their audit write fails (users, clients,
+      groups, AWS accounts/roles/assignments, integrations, and both
+      self-registration paths): the response is `503` and the new row is
+      deleted, so a retry after recovery starts clean. If the rollback itself
+      fails, the row remains and `authd` logs `audit failure: could not roll
+      back unaudited change` for the operator.
+- [ ] Lower-risk changes (profile edits, MFA enrolment, group/client/integration
+      updates) still audit last: on failure the response is `503` and
+      provisioning is skipped, but the change may already be stored.
 
 ## 6. Retired features
 

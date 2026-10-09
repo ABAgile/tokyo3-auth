@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/mfa"
+	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
 	"github.com/google/uuid"
 )
@@ -71,15 +73,16 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromCtx(r)
+	// Removing a second factor weakens the account: audit before deleting.
+	if err := s.logAudit(r, ActionMFATOTPDeleted, &sess.UserID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteTOTP(r.Context(), sess.UserID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusInternalServerError, "server_error", "delete failed")
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, false)
-	if err := s.logAudit(r, ActionMFATOTPDeleted, &sess.UserID, nil, nil); err != nil {
-		s.auditFail(w, err)
-		return
-	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -202,6 +205,16 @@ func (s *Server) handleWebAuthnDelete(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "invalid credential id")
 		return
 	}
+	owned, _ := s.store.ListWebAuthnCredentials(r.Context(), sess.UserID)
+	if !slices.ContainsFunc(owned, func(c *model.WebAuthnCredential) bool { return c.ID == credID }) {
+		s.writeError(w, http.StatusNotFound, "not_found", "credential not found")
+		return
+	}
+	// Removing a second factor weakens the account: audit before deleting.
+	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &sess.UserID, nil, logMeta("credential_id", credID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteWebAuthnCredential(r.Context(), credID, sess.UserID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeError(w, http.StatusNotFound, "not_found", "credential not found")
@@ -215,10 +228,6 @@ func (s *Server) handleWebAuthnDelete(w http.ResponseWriter, r *http.Request) {
 	_, totpErr := s.store.GetTOTPByUserID(r.Context(), sess.UserID)
 	if len(creds) == 0 && totpErr != nil {
 		_ = s.store.UpdateUserMFAEnabled(r.Context(), sess.UserID, false)
-	}
-	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &sess.UserID, nil, logMeta("credential_id", credID)); err != nil {
-		s.auditFail(w, err)
-		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

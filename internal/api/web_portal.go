@@ -376,6 +376,7 @@ func (s *Server) handlePortalRegisterPOST(w http.ResponseWriter, r *http.Request
 
 	s.promoteIfFirstUser(r.Context(), user)
 	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("via", "portal_register")); err != nil {
+		s.undoOnAuditFailure(r, "user", func(ctx context.Context) error { return s.store.DeleteUser(ctx, user.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -1002,15 +1003,16 @@ func (s *Server) handlePortalMFATOTPConfirm(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handlePortalMFATOTPDelete(w http.ResponseWriter, r *http.Request) {
 	pc := portalFromCtx(r)
+	// Removing a second factor weakens the account: audit before deleting.
+	if err := s.logAudit(r, ActionMFATOTPDeleted, &pc.User.ID, nil, nil); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteTOTP(r.Context(), pc.User.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		http.Redirect(w, r, "/portal/account?error=delete+failed", http.StatusFound)
 		return
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
-	if err := s.logAudit(r, ActionMFATOTPDeleted, &pc.User.ID, nil, nil); err != nil {
-		s.auditFail(w, err)
-		return
-	}
 	http.Redirect(w, r, "/portal/account?success=Authenticator+app+removed.", http.StatusFound)
 }
 
@@ -1059,6 +1061,16 @@ func (s *Server) handlePortalMFAWebAuthnDelete(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/account?error=invalid+credential+id", http.StatusFound)
 		return
 	}
+	owned, _ := s.store.ListWebAuthnCredentials(r.Context(), pc.User.ID)
+	if !slices.ContainsFunc(owned, func(c *model.WebAuthnCredential) bool { return c.ID == credID }) {
+		http.Redirect(w, r, "/portal/account?error=credential+not+found", http.StatusFound)
+		return
+	}
+	// Removing a second factor weakens the account: audit before deleting.
+	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &pc.User.ID, nil, logMeta("credential_id", credID)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteWebAuthnCredential(r.Context(), credID, pc.User.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.Redirect(w, r, "/portal/account?error=credential+not+found", http.StatusFound)
@@ -1071,10 +1083,6 @@ func (s *Server) handlePortalMFAWebAuthnDelete(w http.ResponseWriter, r *http.Re
 	_, totpErr := s.store.GetTOTPByUserID(r.Context(), pc.User.ID)
 	if len(creds) == 0 && totpErr != nil {
 		_ = s.store.UpdateUserMFAEnabled(r.Context(), pc.User.ID, false)
-	}
-	if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &pc.User.ID, nil, logMeta("credential_id", credID)); err != nil {
-		s.auditFail(w, err)
-		return
 	}
 	http.Redirect(w, r, "/portal/account?success=Security+key+removed.", http.StatusFound)
 }
@@ -1263,6 +1271,7 @@ func (s *Server) handlePortalAdminUserNew(w http.ResponseWriter, r *http.Request
 	}
 	s.syncUserGroups(r, user.ID, groupIDs)
 	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "by", pc.User.Email, "groups", len(groupIDs))); err != nil {
+		s.undoOnAuditFailure(r, "user", func(ctx context.Context) error { return s.store.DeleteUser(ctx, user.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -1309,6 +1318,11 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		showErr("Name cannot be empty.")
 		return
 	}
+	// Audit first: this edit can deactivate the user or change admin rights.
+	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.UpdateUser(r.Context(), id, name, active); err != nil {
 		showErr("Update failed.")
 		return
@@ -1318,10 +1332,6 @@ func (s *Server) handlePortalAdminUserEdit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.syncUserGroups(r, id, groupIDs)
-	if err := s.logAudit(r, ActionUserUpdated, &id, nil, logMeta("by", pc.User.Email)); err != nil {
-		s.auditFail(w, err)
-		return
-	}
 	updated, _ := s.store.GetUserByID(r.Context(), id)
 	if updated != nil {
 		op := provision.OpUpdate
@@ -1368,6 +1378,12 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 		redirect("error=" + url.QueryEscape("An error occurred."))
 		return
 	}
+	// Audit before replacing the credential and killing sessions.
+	if err := s.logAudit(r, ActionUserUpdated, &id, nil,
+		logMeta("field", "password", "by", pc.User.Email, "via", "admin_reset")); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.UpdateUserPassword(r.Context(), id, hash); err != nil {
 		s.log.Error("admin reset password: update", "user", id, "err", err)
 		redirect("error=" + url.QueryEscape("An error occurred."))
@@ -1389,11 +1405,6 @@ func (s *Server) handlePortalAdminUserResetPassword(w http.ResponseWriter, r *ht
 	// are gone.
 	s.broadcastLogout(r.Context(), r, id, "")
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
-	if err := s.logAudit(r, ActionUserUpdated, &id, nil,
-		logMeta("field", "password", "by", pc.User.Email, "via", "admin_reset")); err != nil {
-		s.auditFail(w, err)
-		return
-	}
 	// Surface the temp password in a dedicated query param the edit
 	// page renders ONCE (analogous to OAuth client secret rotation).
 	redirect("temp_pw=" + url.QueryEscape(tempPw))
@@ -1437,6 +1448,30 @@ func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r 
 		return
 	}
 
+	// Plan what the bundle will touch, then write the single audit row
+	// BEFORE changing anything: a journal outage must refuse the whole reset
+	// rather than invalidate credentials unrecorded. The counts are what the
+	// reset is about to clear (a per-credential failure is logged separately).
+	_, totpErr := s.store.GetTOTPByUserID(r.Context(), id)
+	waCreds, _ := s.store.ListWebAuthnCredentials(r.Context(), id)
+	awsTargets := 0
+	if s.provReg != nil {
+		for _, prov := range s.provReg.Snapshot() {
+			if _, ok := prov.(*awsfed.Provisioner); ok {
+				awsTargets++
+			}
+		}
+	}
+	if err := s.logAudit(r, ActionUserCompromisedReset, &id, nil, logMeta(
+		"by", pc.User.Email,
+		"totp_cleared", totpErr == nil,
+		"webauthn_cleared", len(waCreds),
+		"aws_targets_revoked", awsTargets,
+	)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+
 	// (1) Temp password + must-rotate.
 	tempPw, err := creds.GenerateRawToken()
 	if err != nil {
@@ -1463,20 +1498,13 @@ func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r 
 	// Best-effort — log but don't abort if a single credential delete
 	// fails; the overall bundled action remains valuable even if one
 	// piece couldn't be cleared.
-	totpCleared := false
-	if err := s.store.DeleteTOTP(r.Context(), id); err == nil {
-		totpCleared = true
-	} else if !errors.Is(err, store.ErrNotFound) {
+	if err := s.store.DeleteTOTP(r.Context(), id); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.log.Error("compromised reset: delete totp", "user", id, "err", err)
 	}
-	waCreds, _ := s.store.ListWebAuthnCredentials(r.Context(), id)
-	waCleared := 0
 	for _, c := range waCreds {
 		if err := s.store.DeleteWebAuthnCredential(r.Context(), c.ID, id); err != nil {
 			s.log.Error("compromised reset: delete webauthn", "user", id, "cred", c.ID, "err", err)
-			continue
 		}
-		waCleared++
 	}
 
 	// (3) Flip MFAEnabled=false. The user re-enrolls if policy requires
@@ -1495,7 +1523,6 @@ func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r 
 	// provisioners. No-op when no aws_federation integration is
 	// enabled; logged as 0 in the audit metadata so investigators can
 	// tell whether AWS was in scope.
-	awsTargets := 0
 	if s.provReg != nil {
 		for _, prov := range s.provReg.Snapshot() {
 			fed, ok := prov.(*awsfed.Provisioner)
@@ -1504,24 +1531,12 @@ func (s *Server) handlePortalAdminUserCompromisedReset(w http.ResponseWriter, r 
 			}
 			if err := fed.RevokeUser(r.Context(), user.ID.String()); err != nil {
 				s.log.Error("compromised reset: aws revoke", "user", id, "target", fed.Name(), "err", err)
-				continue
 			}
-			awsTargets++
 		}
 	}
 
-	// (6) Single audit row covering the whole bundle. Investigators
-	// looking at "what did this admin do" see one event with the full
-	// scope, not five tangentially-related rows.
-	if err := s.logAudit(r, ActionUserCompromisedReset, &id, nil, logMeta(
-		"by", pc.User.Email,
-		"totp_cleared", totpCleared,
-		"webauthn_cleared", waCleared,
-		"aws_targets_revoked", awsTargets,
-	)); err != nil {
-		s.auditFail(w, err)
-		return
-	}
+	// The single audit row covering the whole bundle was written up front
+	// (see above): investigators see one event with the full scope.
 	redirect("temp_pw=" + url.QueryEscape(tempPw))
 }
 
@@ -1537,30 +1552,27 @@ func (s *Server) handlePortalAdminUserClearMFA(w http.ResponseWriter, r *http.Re
 	}
 	editURL := "/portal/admin/users/" + id.String() + "/edit"
 
-	switch err := s.store.DeleteTOTP(r.Context(), id); {
-	case err == nil:
-		if auditErr := s.logAudit(r, ActionMFATOTPDeleted, &id, nil, logMeta("by", pc.User.Email)); auditErr != nil {
-			s.auditFail(w, auditErr)
+	// Each credential is audited BEFORE it is deleted. Stop on the first audit
+	// failure: better to leave the remaining credentials in place (the admin
+	// can retry once the journal is back) than to delete any without a record.
+	if _, err := s.store.GetTOTPByUserID(r.Context(), id); err == nil {
+		if err := s.logAudit(r, ActionMFATOTPDeleted, &id, nil, logMeta("by", pc.User.Email)); err != nil {
+			s.auditFail(w, err)
 			return
 		}
-	case errors.Is(err, store.ErrNotFound):
-		// Nothing to delete.
-	default:
-		s.log.Error("admin clear totp", "user", id, "err", err)
+		if err := s.store.DeleteTOTP(r.Context(), id); err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.log.Error("admin clear totp", "user", id, "err", err)
+		}
 	}
 
 	creds, _ := s.store.ListWebAuthnCredentials(r.Context(), id)
 	for _, c := range creds {
-		if err := s.store.DeleteWebAuthnCredential(r.Context(), c.ID, id); err != nil {
-			s.log.Error("admin delete webauthn", "user", id, "cred", c.ID, "err", err)
-			continue
-		}
-		// Stop on first audit failure: better to leave the remaining credentials
-		// in place (admin can retry once NATS is back) than to silently delete
-		// without an audit row for any of them.
 		if err := s.logAudit(r, ActionMFAWebAuthnDeleted, &id, nil, logMeta("credential_id", c.ID, "by", pc.User.Email)); err != nil {
 			s.auditFail(w, err)
 			return
+		}
+		if err := s.store.DeleteWebAuthnCredential(r.Context(), c.ID, id); err != nil {
+			s.log.Error("admin delete webauthn", "user", id, "cred", c.ID, "err", err)
 		}
 	}
 	_ = s.store.UpdateUserMFAEnabled(r.Context(), id, false)
@@ -1651,6 +1663,12 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	user, _ := s.store.GetUserByID(r.Context(), id)
+	// Audit before any destructive step: a journal outage refuses the delete
+	// instead of removing the user (and skipping deprovisioning) unrecorded.
+	if err := s.logAudit(r, ActionUserDeleted, &id, nil, logMeta("by", pc.User.Email)); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	// User is being removed wholesale — wipe RP-side sessions too. Must
 	// run BEFORE DeleteSessionsByUserID so broadcastLogout's first query
 	// (ListSessionClientIDsByUser) still finds the user's sessions.
@@ -1658,10 +1676,6 @@ func (s *Server) handlePortalAdminUserDelete(w http.ResponseWriter, r *http.Requ
 	_ = s.store.DeleteSessionsByUserID(r.Context(), id)
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/users?error=delete+failed", http.StatusFound)
-		return
-	}
-	if err := s.logAudit(r, ActionUserDeleted, &id, nil, logMeta("by", pc.User.Email)); err != nil {
-		s.auditFail(w, err)
 		return
 	}
 	if user != nil {
@@ -1803,6 +1817,7 @@ func (s *Server) handlePortalAdminClientNew(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if err := s.logAudit(r, ActionClientCreated, nil, &client.ID, logMeta("by", pc.User.Email, "portal_visible", showInPortal)); err != nil {
+		s.undoOnAuditFailure(r, "client", func(ctx context.Context) error { return s.store.DeleteClient(ctx, client.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -1910,12 +1925,12 @@ func (s *Server) handlePortalAdminClientDelete(w http.ResponseWriter, r *http.Re
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.DeleteClient(r.Context(), id); err != nil {
-		http.Redirect(w, r, "/portal/admin/clients?error=delete+failed", http.StatusFound)
-		return
-	}
 	if err := s.logAudit(r, ActionClientDeleted, nil, &id, logMeta("by", pc.User.Email)); err != nil {
 		s.auditFail(w, err)
+		return
+	}
+	if err := s.store.DeleteClient(r.Context(), id); err != nil {
+		http.Redirect(w, r, "/portal/admin/clients?error=delete+failed", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/portal/admin/clients?success=Client+deleted.", http.StatusFound)
@@ -1942,12 +1957,12 @@ func (s *Server) handlePortalAdminClientRotate(w http.ResponseWriter, r *http.Re
 		http.Redirect(w, r, "/portal/admin/clients?error=generation+failed", http.StatusFound)
 		return
 	}
-	if err := s.store.UpdateClientSecret(r.Context(), id, creds.HashToken(rawSecret)); err != nil {
-		http.Redirect(w, r, "/portal/admin/clients?error=update+failed", http.StatusFound)
-		return
-	}
 	if err := s.logAudit(r, ActionClientSecretRotated, nil, &id, logMeta("by", pc.User.Email)); err != nil {
 		s.auditFail(w, err)
+		return
+	}
+	if err := s.store.UpdateClientSecret(r.Context(), id, creds.HashToken(rawSecret)); err != nil {
+		http.Redirect(w, r, "/portal/admin/clients?error=update+failed", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/portal/admin/clients?success=Secret+rotated.&secret="+rawSecret, http.StatusFound)

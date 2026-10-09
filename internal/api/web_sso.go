@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -128,6 +129,7 @@ func (s *Server) handleRegisterPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	s.promoteIfFirstUser(r.Context(), user)
 	if err := s.logAudit(r, ActionUserCreated, &user.ID, nil, logMeta("email", email, "via", "self-registration")); err != nil {
+		s.undoOnAuditFailure(r, "user", func(ctx context.Context) error { return s.store.DeleteUser(ctx, user.ID) })
 		s.auditFail(w, err)
 		return
 	}

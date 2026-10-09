@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -96,6 +97,7 @@ func (s *Server) handlePortalAdminAWSAccountNew(w http.ResponseWriter, r *http.R
 	pc := portalFromCtx(r)
 	if err := s.logAudit(r, ActionAWSAccountCreated, &pc.User.ID, nil,
 		logMeta("account_id", row.AccountID, "alias", row.Alias)); err != nil {
+		s.undoOnAuditFailure(r, "aws account", func(ctx context.Context) error { return s.store.DeleteAWSAccount(ctx, row.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -109,14 +111,18 @@ func (s *Server) handlePortalAdminAWSAccountDelete(w http.ResponseWriter, r *htt
 		return
 	}
 	existing, _ := s.store.GetAWSAccount(r.Context(), id)
+	pc := portalFromCtx(r)
+	// Audit before deleting: this removes federation configuration.
+	if existing != nil {
+		if err := s.logAudit(r, ActionAWSAccountDeleted, &pc.User.ID, nil,
+			logMeta("account_id", existing.AccountID)); err != nil {
+			s.auditFail(w, err)
+			return
+		}
+	}
 	if err := s.store.DeleteAWSAccount(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/aws?error="+escape("delete failed"), http.StatusFound)
 		return
-	}
-	pc := portalFromCtx(r)
-	if existing != nil {
-		_ = s.logAudit(r, ActionAWSAccountDeleted, &pc.User.ID, nil,
-			logMeta("account_id", existing.AccountID))
 	}
 	http.Redirect(w, r, "/portal/admin/aws?success="+escape("Account deleted."), http.StatusFound)
 }
@@ -167,6 +173,7 @@ func (s *Server) handlePortalAdminAWSRoleNew(w http.ResponseWriter, r *http.Requ
 	pc := portalFromCtx(r)
 	if err := s.logAudit(r, ActionAWSRoleCreated, &pc.User.ID, nil,
 		logMeta("role_arn", row.RoleARN, "role_slug", row.Slug)); err != nil {
+		s.undoOnAuditFailure(r, "aws role", func(ctx context.Context) error { return s.store.DeleteAWSRole(ctx, row.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -180,14 +187,17 @@ func (s *Server) handlePortalAdminAWSRoleDelete(w http.ResponseWriter, r *http.R
 		return
 	}
 	existing, _ := s.store.GetAWSRole(r.Context(), id)
+	pc := portalFromCtx(r)
+	if existing != nil {
+		if err := s.logAudit(r, ActionAWSRoleDeleted, &pc.User.ID, nil,
+			logMeta("role_arn", existing.RoleARN)); err != nil {
+			s.auditFail(w, err)
+			return
+		}
+	}
 	if err := s.store.DeleteAWSRole(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/aws?error="+escape("delete failed"), http.StatusFound)
 		return
-	}
-	pc := portalFromCtx(r)
-	if existing != nil {
-		_ = s.logAudit(r, ActionAWSRoleDeleted, &pc.User.ID, nil,
-			logMeta("role_arn", existing.RoleARN))
 	}
 	http.Redirect(w, r, "/portal/admin/aws?success="+escape("Role deleted."), http.StatusFound)
 }
@@ -218,6 +228,7 @@ func (s *Server) handlePortalAdminAWSAssignmentNew(w http.ResponseWriter, r *htt
 	pc := portalFromCtx(r)
 	if err := s.logAudit(r, ActionAWSAssignmentCreated, &pc.User.ID, nil,
 		logMeta("group_id", groupID.String(), "role_id", roleID.String())); err != nil {
+		s.undoOnAuditFailure(r, "aws assignment", func(ctx context.Context) error { return s.store.DeleteAWSRoleAssignment(ctx, row.ID) })
 		s.auditFail(w, err)
 		return
 	}
@@ -230,12 +241,15 @@ func (s *Server) handlePortalAdminAWSAssignmentDelete(w http.ResponseWriter, r *
 		http.Redirect(w, r, "/portal/admin/aws?error=invalid+id", http.StatusFound)
 		return
 	}
+	pc := portalFromCtx(r)
+	if err := s.logAudit(r, ActionAWSAssignmentDeleted, &pc.User.ID, nil, logMeta("assignment_id", id.String())); err != nil {
+		s.auditFail(w, err)
+		return
+	}
 	if err := s.store.DeleteAWSRoleAssignment(r.Context(), id); err != nil {
 		http.Redirect(w, r, "/portal/admin/aws?error="+escape("delete failed"), http.StatusFound)
 		return
 	}
-	pc := portalFromCtx(r)
-	_ = s.logAudit(r, ActionAWSAssignmentDeleted, &pc.User.ID, nil, logMeta("assignment_id", id.String()))
 	http.Redirect(w, r, "/portal/admin/aws?success="+escape("Assignment deleted."), http.StatusFound)
 }
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -96,12 +97,18 @@ const (
 //
 // Callers should treat any non-nil error as a hard 503 (or the form-handler
 // equivalent) and never proceed with side effects beyond what already happened
-// before this call. The action ordering rule across handlers therefore is:
-// "audit last", so an audit failure surfaces as a failed response rather than
-// a successful response with no audit row. Exception: destructive or
-// privilege-reducing admin actions (user update/delete, client delete, secret
-// rotation) audit FIRST, so a journal outage refuses the change itself rather
-// than leaving it applied but unrecorded.
+// before this call. Ordering by kind of action:
+//
+//   - Destructive or credential-weakening actions (deletes, deactivation,
+//     secret/password resets, MFA removal, AWS federation config removal)
+//     audit FIRST, so a journal outage refuses the change itself instead of
+//     applying it unrecorded and skipping downstream deprovisioning.
+//   - Creates cannot audit first (the id does not exist yet). They audit
+//     right after, and on failure roll the new row back
+//     (undoOnAuditFailure), so the 503 leaves no unaudited state.
+//   - Other changes (profile edits, MFA enrolment, updates that grant
+//     nothing) audit last: on failure the response is a 503 and downstream
+//     side effects are skipped, but the change itself may already be stored.
 func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid.UUID, meta map[string]any) error {
 	var uID, uEmail, uName, cID, cName, metaJSON string
 	if userID != nil {
@@ -152,6 +159,17 @@ func (s *Server) logAudit(r *http.Request, action string, userID, clientID *uuid
 // at a user-reported screenshot knows to check NATS rather than authd itself.
 func (s *Server) auditFail(w http.ResponseWriter, err error) {
 	http.Error(w, "audit journal unreachable; request refused: "+err.Error(), http.StatusServiceUnavailable)
+}
+
+// undoOnAuditFailure reverses a row that was just created when its audit
+// record could not be written, so the 503 the caller returns leaves no
+// unaudited state behind. Best effort: if the undo itself fails the row
+// exists unaudited, which is logged loudly for the operator. It runs on a
+// context that survives the client disconnecting.
+func (s *Server) undoOnAuditFailure(r *http.Request, what string, undo func(ctx context.Context) error) {
+	if err := undo(context.WithoutCancel(r.Context())); err != nil {
+		s.log.Error("audit failure: could not roll back unaudited change; row remains", "what", what, "err", err)
+	}
 }
 
 // errAuditUnavailable wraps a logAudit error so callers downstream of helpers
