@@ -27,7 +27,7 @@ type PolicyViolation struct {
 	Message     string
 }
 
-func (v PolicyViolation) Error() string { return v.RuleID + ": " + v.Message }
+func (v *PolicyViolation) Error() string { return v.RuleID + ": " + v.Message }
 
 // Rule is a single evaluatable policy constraint.
 type Rule interface {
