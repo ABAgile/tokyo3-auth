@@ -737,7 +737,11 @@ func buildProvisioner(ctx context.Context, i *model.AppIntegration, db *postgres
 			if scimTLS == nil {
 				return nil, fmt.Errorf("scim integration %q uses mtls but AUTHD_SCIM_MTLS_CERT/KEY are unset", i.Name)
 			}
-			cfg.TLSConfig = scimTLS
+			tlsCfg, err := scimTLSForURL(scimTLS, i.Config.BaseURL)
+			if err != nil {
+				return nil, fmt.Errorf("scim integration %q tls: %w", i.Name, err)
+			}
+			cfg.TLSConfig = tlsCfg
 		default:
 			return nil, fmt.Errorf("scim integration %q unsupported auth_mode %q", i.Name, authMode)
 		}
@@ -942,6 +946,28 @@ func scimTLSFromEnv() (*tls.Config, error) {
 	keyFile := os.Getenv("AUTHD_SCIM_MTLS_KEY")
 	caFile := envutil.First("AUTHD_SCIM_MTLS_CA", "AUTHD_WORKLOAD_CA")
 	return reloader.ClientTLS(certFile, keyFile, caFile)
+}
+
+// scimTLSForURL returns the TLS config for an mTLS integration at baseURL. A
+// hostname URL shares the common config. An IP-literal URL sends no SNI, so the
+// hot-reloading verifier has no name to check and fails closed; it gets its
+// own config, built from the same env, with ServerName set to the IP so the
+// certificate's IP SAN is verified. (A Clone would not do: the verifier closes
+// over the original config's ServerName.)
+func scimTLSForURL(shared *tls.Config, baseURL string) (*tls.Config, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil || net.ParseIP(u.Hostname()) == nil {
+		return shared, nil
+	}
+	cfg, err := scimTLSFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return shared, nil
+	}
+	cfg.ServerName = u.Hostname()
+	return cfg, nil
 }
 
 // backchannelTLSFromEnv builds a CA-only TLS config for OIDC backchannel logout
