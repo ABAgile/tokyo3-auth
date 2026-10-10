@@ -313,8 +313,8 @@ func TestToken_Refresh_RoundTripAndExpiry(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 
 	// Mint a session row directly. Avoid the full login + code-exchange dance.
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	u := seedTestUser(t, r.store, "bob@example.com", "AnotherG00d!")
 	sess := &model.Session{
@@ -377,8 +377,8 @@ func TestUserInfo_BearerAuth(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid", "profile"})
 	u := seedTestUser(t, r.store, "carol@example.com", "S0meL0ng!Pass")
 
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(rawAccess),
@@ -440,8 +440,8 @@ func TestUserInfo_ExpiredToken(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "dave@example.com", "Tr0ub4dor!&3")
 
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	expired := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(rawAccess),
@@ -472,8 +472,8 @@ func TestRevoke(t *testing.T) {
 	c := seedTestClient(t, r.store, "app", "https://app.example/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "eve@example.com", "Lots0fStuff#1")
 
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(rawAccess),
@@ -501,8 +501,8 @@ func TestRevoke(t *testing.T) {
 	}
 
 	// Revoke via refresh token hash also works.
-	rawAccess2, _ := creds.GenerateRawToken()
-	rawRefresh2, _ := creds.GenerateRawToken()
+	rawAccess2 := mustRawToken(t)
+	rawRefresh2 := mustRawToken(t)
 	sess2 := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(rawAccess2),
@@ -534,8 +534,8 @@ func seedAdminSession(t *testing.T, r *testRig) string {
 	if err := r.store.SetUserAdmin(context.Background(), u.ID, true); err != nil {
 		t.Fatalf("SetUserAdmin: %v", err)
 	}
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(rawAccess),
@@ -710,8 +710,8 @@ func TestAdmin_RequiresAdminScope(t *testing.T) {
 	// but adminAuth must reject it.
 	c := seedTestClient(t, r.store, "app", "https://x/cb", "sec", []string{"openid"})
 	u := seedTestUser(t, r.store, "user@example.com", "AbCdEfG1!@")
-	raw, _ := creds.GenerateRawToken()
-	refresh, _ := creds.GenerateRawToken()
+	raw := mustRawToken(t)
+	refresh := mustRawToken(t)
 	sess := &model.Session{
 		ID: uuid.New(), UserID: u.ID, ClientID: c.ID,
 		AccessTokenHash:  creds.HashToken(raw),

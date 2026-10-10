@@ -573,7 +573,11 @@ func (s *Server) handleTokenClientCreds(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
 		return
 	}
-	rawRefresh, _ := creds.GenerateRawToken() // internal placeholder, not exposed
+	rawRefresh, err := creds.GenerateRawToken() // internal placeholder, not exposed
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "server_error", "token generation failed")
+		return
+	}
 	scopes := splitScopes(r.FormValue("scope"))
 	if bad := unregisteredScope(client, scopes); bad != "" {
 		s.writeError(w, http.StatusBadRequest, "invalid_scope", "scope not registered for this client: "+bad)

@@ -16,9 +16,21 @@ import (
 	"github.com/abagile/tokyo3-auth/internal/policy"
 	"github.com/abagile/tokyo3-auth/internal/provision"
 	"github.com/abagile/tokyo3-auth/internal/store/sqlite"
+	"github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/abagile/tokyo3-base/journal"
 )
+
+// mustRawToken mints a raw opaque token, failing the test on an entropy error
+// instead of letting an empty token (whose hash is a constant) slip through.
+func mustRawToken(t *testing.T) string {
+	t.Helper()
+	tok, err := creds.GenerateRawToken()
+	if err != nil {
+		t.Fatalf("generate raw token: %v", err)
+	}
+	return tok
+}
 
 // testRig bundles the dependencies a handler needs, along with the HTTP
 // test server. Spawned by newTestRig; teardown runs via t.Cleanup.

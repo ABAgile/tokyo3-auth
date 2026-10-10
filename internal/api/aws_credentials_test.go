@@ -17,8 +17,8 @@ import (
 // the raw access token so tests can present it as a bearer credential.
 func seedSessionWithToken(t *testing.T, r *testRig, userID uuid.UUID, mfa bool) string {
 	t.Helper()
-	rawAccess, _ := creds.GenerateRawToken()
-	rawRefresh, _ := creds.GenerateRawToken()
+	rawAccess := mustRawToken(t)
+	rawRefresh := mustRawToken(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	c, err := r.store.CreateClient(context.Background(),
 		"awscreds-test-cid-"+rawAccess[:8], creds.HashToken("nope"),
