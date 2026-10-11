@@ -24,9 +24,11 @@ type appTile struct {
 	LaunchURL    string // populated for "oidc"; empty for "aws" (form-POST handled in template)
 	BrandColor   string
 	IconURL      string
-	StepUpMFA    bool // AWS roles flagged require_step_up_mfa render a badge
-	TTLSeconds   int  // AWS roles only — surfaced as a small badge
-	VisibleToAll bool // OIDC tiles: rendered with a small "everyone" hint for admin visibility
+	StepUpMFA    bool           // AWS roles flagged require_step_up_mfa render a badge
+	TTLSeconds   int            // AWS roles only — surfaced as a small badge
+	VisibleToAll bool           // OIDC tiles: rendered with a small "everyone" hint for admin visibility
+	Regions      []regionOption // AWS tiles: region dropdown; empty renders the single global button
+	NoRegion     bool           // AWS tiles: regions are configured but this role's restriction leaves none
 }
 
 // portalAppTiles aggregates every launchable target the user is
@@ -90,6 +92,8 @@ func (s *Server) portalAppTiles(r *http.Request, pc *portalCtx) ([]appTile, erro
 			Subtitle:    subtitle,
 			StepUpMFA:   role.RequireStepUpMFA,
 			TTLSeconds:  role.MaxSessionDurationSec,
+			Regions:     s.awsRegionOptions(role),
+			NoRegion:    s.awsRegionsBlocked(role),
 		})
 	}
 

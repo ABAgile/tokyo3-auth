@@ -110,6 +110,7 @@ func TestPortalAdmin_DestructiveActionsRefusedWhenJournalDown(t *testing.T) {
 	want503(t, do("POST", "/portal/admin/clients/"+client.ID.String()+"/delete", nil), "delete client")
 	want503(t, do("POST", "/portal/admin/groups/"+group.ID.String()+"/delete", nil), "delete group")
 	want503(t, do("POST", "/portal/admin/aws/assignments/"+asg.ID.String()+"/delete", nil), "delete assignment")
+	want503(t, do("POST", "/portal/admin/aws/roles/"+role.ID.String()+"/regions", nil), "set role regions")
 	want503(t, do("POST", "/portal/admin/aws/roles/"+role.ID.String()+"/delete", nil), "delete role")
 	want503(t, do("POST", "/portal/admin/aws/accounts/"+acct.ID.String()+"/delete", nil), "delete account")
 	want503(t, do("POST", "/portal/admin/integrations/"+integ.ID.String()+"/delete", nil), "delete integration")

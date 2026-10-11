@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -81,6 +82,119 @@ func sanitizeAWSRegion(region string) string {
 	return ""
 }
 
+// splitRegions splits a comma- or whitespace-separated region list.
+func splitRegions(list string) []string {
+	return strings.FieldsFunc(list, func(c rune) bool { return c == ',' || unicode.IsSpace(c) })
+}
+
+// ParseAWSRegions validates and normalises the eligible-region list
+// (AUTHD_AWS_REGIONS, comma- or space-separated) and the default region
+// (AUTHD_AWS_DEFAULT_REGION). Duplicates are dropped and a default region
+// missing from the list is appended to it, so the default is always
+// eligible. An empty default means the global door.
+func ParseAWSRegions(list, def string) ([]string, string, error) {
+	var regions []string
+	for _, r := range splitRegions(list) {
+		if !awsRegionPattern.MatchString(r) {
+			return nil, "", fmt.Errorf("AUTHD_AWS_REGIONS: %q is not a valid AWS region name", r)
+		}
+		if !slices.Contains(regions, r) {
+			regions = append(regions, r)
+		}
+	}
+	def = strings.TrimSpace(def)
+	if def != "" {
+		if !awsRegionPattern.MatchString(def) {
+			return nil, "", fmt.Errorf("AUTHD_AWS_DEFAULT_REGION: %q is not a valid AWS region name", def)
+		}
+		if !slices.Contains(regions, def) {
+			regions = append(regions, def)
+		}
+	}
+	return regions, def, nil
+}
+
+// regionOption is one entry of an AWS tile's region dropdown. Value is the
+// `region` form value; empty selects the global door.
+type regionOption struct {
+	Value    string
+	Label    string
+	Selected bool
+}
+
+// eligibleAWSRegions is the region list a role may use: the server-wide
+// list, narrowed to the role's own allowed_regions when it sets any. Entries
+// the role lists that are no longer in the server-wide list are ignored. A
+// nil role means no per-role restriction.
+func (s *Server) eligibleAWSRegions(role *model.AWSRole) (eligible []string, restricted bool) {
+	if role == nil || len(role.AllowedRegions) == 0 {
+		return s.awsRegions, false
+	}
+	for _, r := range s.awsRegions {
+		if slices.Contains(role.AllowedRegions, r) {
+			eligible = append(eligible, r)
+		}
+	}
+	return eligible, true
+}
+
+// awsRegionOptions builds the dropdown for role's AWS tile. It returns nil
+// when AUTHD_AWS_REGIONS is unset (the single global button) or when the
+// role's restriction leaves no eligible region (callers treat that as
+// blocked; see awsRegionsBlocked). The default entry is the configured
+// default region when the role may use it, otherwise — for a restricted role
+// — its first eligible region, otherwise "Global". The global entry is
+// offered only when the role is unrestricted and no default region is set.
+func (s *Server) awsRegionOptions(role *model.AWSRole) []regionOption {
+	eligible, restricted := s.eligibleAWSRegions(role)
+	if len(eligible) == 0 {
+		return nil
+	}
+	includeGlobal := !restricted && s.awsDefaultRegion == ""
+	def := ""
+	switch {
+	case slices.Contains(eligible, s.awsDefaultRegion):
+		def = s.awsDefaultRegion
+	case !includeGlobal:
+		def = eligible[0]
+	}
+	opts := make([]regionOption, 0, len(eligible)+1)
+	if includeGlobal {
+		opts = append(opts, regionOption{Value: "", Label: "Global (default)", Selected: true})
+	}
+	for _, r := range eligible {
+		o := regionOption{Value: r, Label: r, Selected: r == def}
+		if o.Selected {
+			o.Label += " (default)"
+		}
+		opts = append(opts, o)
+	}
+	return opts
+}
+
+// awsRegionsBlocked reports that regions are configured but role's
+// restriction leaves none, so the role cannot be opened at all.
+func (s *Server) awsRegionsBlocked(role *model.AWSRole) bool {
+	return len(s.awsRegions) > 0 && len(s.awsRegionOptions(role)) == 0
+}
+
+// resolveAWSRegion maps the requested `region` to the one actually used for
+// role. An empty request means the tile's default entry. A non-empty request
+// must be one of the options the tile offers; anything else is rejected, so
+// the browser cannot pick a region the portal didn't offer this role. With
+// AUTHD_AWS_REGIONS unset only the global door (empty) is accepted.
+func (s *Server) resolveAWSRegion(role *model.AWSRole, requested string) (string, bool) {
+	if len(s.awsRegions) == 0 {
+		return "", requested == ""
+	}
+	for _, o := range s.awsRegionOptions(role) {
+		if requested == "" && o.Selected || requested != "" && o.Value == requested {
+			return o.Value, true
+		}
+	}
+	return "", false
+}
+
 // stsAPI is the subset of *sts.Client this handler uses. Defined as an
 // interface so tests can supply a mock and verify the federation flow
 // without touching real AWS.
@@ -124,6 +238,14 @@ func (s *Server) handlePortalAWSConsole(w http.ResponseWriter, r *http.Request) 
 		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
 			logMeta("role_id", roleID.String(), "reason", "not_assigned"))
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	region, ok := s.resolveAWSRegion(role, region)
+	if !ok {
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta("role_id", roleID.String(), "reason", "region_not_allowed"))
+		http.Redirect(w, r, "/portal/aws?error="+url.QueryEscape("region not available"), http.StatusFound)
 		return
 	}
 
@@ -178,6 +300,14 @@ func (s *Server) stepUpMFAFresh(sess *model.Session) bool {
 // (the step-up handler), and the two callers need different response
 // shapes (302 vs JSON for WebAuthn).
 func (s *Server) buildAWSConsoleURL(r *http.Request, pc *portalCtx, role *model.AWSRole, region string) (string, error) {
+	// Re-check here: the step-up handler reaches this point with a region
+	// it read from the request, not the one handlePortalAWSConsole vetted.
+	region, ok := s.resolveAWSRegion(role, region)
+	if !ok {
+		_ = s.logAudit(r, ActionAWSConsoleAssumeFailed, &pc.User.ID, nil,
+			logMeta("role_id", role.ID.String(), "reason", "region_not_allowed"))
+		return "", errors.New("region not available")
+	}
 	out, sessionName, err := s.assumeRoleForUser(r.Context(), pc.User, pc.Session, role, region)
 	if err != nil {
 		s.log.Error("AssumeRoleWithWebIdentity", "role", role.RoleARN, "err", err)

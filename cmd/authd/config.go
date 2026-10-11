@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abagile/tokyo3-auth/internal/api"
 	"github.com/abagile/tokyo3-base/envutil"
 )
 
@@ -21,6 +22,8 @@ type serveConfig struct {
 	Issuer            string
 	Addr              string
 	AWSAudience       string
+	AWSRegions        []string      // eligible console regions; empty = global only
+	AWSDefaultRegion  string        // preselected region; empty = global
 	StepUpMFATTL      time.Duration // 0 = package default
 	AllowRegistration bool
 	TrustedProxies    []*net.IPNet
@@ -62,6 +65,9 @@ func loadServeConfig() (serveConfig, error) {
 	}
 
 	cfg.AWSAudience = os.Getenv("AUTHD_AWS_AUDIENCE")
+	cfg.AWSRegions, cfg.AWSDefaultRegion, err = api.ParseAWSRegions(
+		os.Getenv("AUTHD_AWS_REGIONS"), os.Getenv("AUTHD_AWS_DEFAULT_REGION"))
+	check(err)
 
 	cfg.StepUpMFATTL, err = envutil.Duration("AUTHD_STEP_UP_MFA_TTL")
 	check(err)

@@ -4,6 +4,7 @@
 package model
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -241,8 +242,22 @@ type AWSRole struct {
 	DisplayName           string
 	RequireStepUpMFA      bool
 	MaxSessionDurationSec int
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// AllowedRegions narrows the server-wide console region list
+	// (AUTHD_AWS_REGIONS) for this role; empty inherits the whole list.
+	AllowedRegions []string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// EncodeRegions flattens a region list for storage (comma-separated).
+func EncodeRegions(regions []string) string { return strings.Join(regions, ",") }
+
+// DecodeRegions is the inverse of EncodeRegions; ” decodes to nil.
+func DecodeRegions(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // AWSRoleAssignment links a SCIM group to an AWS role. Membership in the

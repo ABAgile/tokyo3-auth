@@ -56,6 +56,14 @@
 //	                               aws:RequestTag/<key> conditions instead
 //	                               of per-role audiences. See the AWS OIDC
 //	                               Federation section in README for setup.
+//	AUTHD_AWS_REGIONS              Comma/space-separated AWS regions offered
+//	                               in each AWS tile's console region
+//	                               dropdown (e.g. "ap-east-2,eu-west-1").
+//	                               Also the allowlist the console handlers
+//	                               enforce. Empty keeps one global button.
+//	AUTHD_AWS_DEFAULT_REGION       Region preselected in the dropdown (added
+//	                               to the list if missing). Empty means the
+//	                               global console door is the default.
 //
 // TLS — the API always serves HTTPS (IdP requirement):
 //
@@ -343,6 +351,8 @@ func runServe(ctx context.Context) error {
 		AuditSource:       auditSource,
 		Issuer:            issuer,
 		AWSAudience:       cfg.AWSAudience,
+		AWSRegions:        cfg.AWSRegions,
+		AWSDefaultRegion:  cfg.AWSDefaultRegion,
 		StepUpMFATTL:      cfg.StepUpMFATTL,
 		MasterKey:         masterKey,
 		Log:               log,

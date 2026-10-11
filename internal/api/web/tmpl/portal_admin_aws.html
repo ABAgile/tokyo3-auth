@@ -21,6 +21,14 @@
   </div>
   {{end}}
 
+  {{if .Regions}}
+  <div class="alert alert-info">
+    Console regions (<code>AUTHD_AWS_REGIONS</code>): {{range $i, $r := .Regions}}{{if $i}}, {{end}}<code>{{$r}}</code>{{end}}.
+    {{if .DefaultRegion}}Default: <code>{{.DefaultRegion}}</code>.{{else}}Default: global.{{end}}
+    A role can narrow this list below; leave it empty to inherit all.
+  </div>
+  {{end}}
+
   <section class="card" aria-labelledby="aws-accounts-title">
     <div class="card-header"><h2 id="aws-accounts-title">Accounts</h2></div>
     <div class="card-body">
@@ -105,7 +113,7 @@
       {{end}}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Role</th><th>Account</th><th>Role ARN</th><th>Slug</th><th>TTL</th><th>MFA</th><th><span class="sr-only">Actions</span></th></tr></thead>
+          <thead><tr><th>Role</th><th>Account</th><th>Role ARN</th><th>Slug</th><th>TTL</th><th>MFA</th>{{if .Regions}}<th>Regions</th>{{end}}<th><span class="sr-only">Actions</span></th></tr></thead>
           <tbody>
             {{range .Roles}}
             <tr>
@@ -115,6 +123,15 @@
               <td><code>{{.Slug}}</code></td>
               <td>{{.MaxSessionDurationSec}}s</td>
               <td>{{if .RequireStepUpMFA}}<span class="badge badge-info">Step-up</span>{{else}}<span class="text-muted">—</span>{{end}}</td>
+              {{if $.Regions}}
+              <td>
+                <form method="POST" action="/portal/admin/aws/roles/{{.ID}}/regions" class="admin-inline-form">
+                  <label class="sr-only" for="regions-{{.ID}}">Allowed regions for {{.DisplayName}}</label>
+                  <input type="text" id="regions-{{.ID}}" name="allowed_regions" value="{{.RegionsText}}" placeholder="all regions">
+                  <button type="submit" class="btn btn-secondary btn-sm">Save</button>
+                </form>
+              </td>
+              {{end}}
               <td class="resource-actions">
                 <form method="POST" action="/portal/admin/aws/roles/{{.ID}}/delete"
                       onsubmit="return confirm('Delete this role and its assignments?')">
@@ -123,7 +140,7 @@
               </td>
             </tr>
             {{else}}
-            <tr><td colspan="7" class="empty-table-cell">No roles defined.</td></tr>
+            <tr><td colspan="8" class="empty-table-cell">No roles defined.</td></tr>
             {{end}}
           </tbody>
         </table>

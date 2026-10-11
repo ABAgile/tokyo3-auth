@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,7 +26,9 @@ type awsAdminPageData struct {
 	Roles          []*roleRow
 	Groups         []*model.SCIMGroup
 	Assignments    []*model.AWSRoleAssignment
-	Audience       string // server-global, from AUTHD_AWS_AUDIENCE
+	Audience       string   // server-global, from AUTHD_AWS_AUDIENCE
+	Regions        []string // server-wide console regions, from AUTHD_AWS_REGIONS
+	DefaultRegion  string   // from AUTHD_AWS_DEFAULT_REGION
 	Success, Error string
 }
 
@@ -32,6 +36,7 @@ type roleRow struct {
 	*model.AWSRole
 	AccountAlias     string
 	AccountAccountID string
+	RegionsText      string // AllowedRegions, comma-joined for the edit field
 }
 
 func (s *Server) handlePortalAdminAWS(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +59,7 @@ func (s *Server) handlePortalAdminAWS(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]*roleRow, len(rolesRaw))
 	for i, r := range rolesRaw {
-		rr := &roleRow{AWSRole: r}
+		rr := &roleRow{AWSRole: r, RegionsText: strings.Join(r.AllowedRegions, ", ")}
 		if a := acctByID[r.AccountID]; a != nil {
 			rr.AccountAlias = a.Alias
 			rr.AccountAccountID = a.AccountID
@@ -68,8 +73,9 @@ func (s *Server) handlePortalAdminAWS(w http.ResponseWriter, r *http.Request) {
 		Groups:      groups,
 		Assignments: assigns,
 		Audience:    s.awsAudience,
-		Success:     r.URL.Query().Get("success"),
-		Error:       r.URL.Query().Get("error"),
+		Regions:     s.awsRegions, DefaultRegion: s.awsDefaultRegion,
+		Success: r.URL.Query().Get("success"),
+		Error:   r.URL.Query().Get("error"),
 	})
 }
 
@@ -200,6 +206,57 @@ func (s *Server) handlePortalAdminAWSRoleDelete(w http.ResponseWriter, r *http.R
 		return
 	}
 	http.Redirect(w, r, "/portal/admin/aws?success="+escape("Role deleted."), http.StatusFound)
+}
+
+// parseRoleRegions validates the per-role region field: each entry must be
+// one of the server-wide regions, so a role can only narrow the list, never
+// widen it. Empty input clears the restriction.
+func (s *Server) parseRoleRegions(list string) ([]string, error) {
+	var out []string
+	for _, r := range splitRegions(list) {
+		if !slices.Contains(s.awsRegions, r) {
+			return nil, fmt.Errorf("region %q is not in AUTHD_AWS_REGIONS", r)
+		}
+		if !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// handlePortalAdminAWSRoleRegions sets (or clears) the regions a role's tile
+// may open the console in, narrowing AUTHD_AWS_REGIONS for that role.
+func (s *Server) handlePortalAdminAWSRoleRegions(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Redirect(w, r, "/portal/admin/aws?error=invalid+id", http.StatusFound)
+		return
+	}
+	_ = r.ParseForm()
+	regions, err := s.parseRoleRegions(r.FormValue("allowed_regions"))
+	if err != nil {
+		http.Redirect(w, r, "/portal/admin/aws?error="+escape(err.Error()), http.StatusFound)
+		return
+	}
+	role, err := s.store.GetAWSRole(r.Context(), id)
+	if err != nil {
+		http.Redirect(w, r, "/portal/admin/aws?error="+escape("role not found"), http.StatusFound)
+		return
+	}
+	prev := role.AllowedRegions
+	pc := portalFromCtx(r)
+	role.AllowedRegions = regions
+	if err := s.logAudit(r, ActionAWSRoleUpdated, &pc.User.ID, nil,
+		logMeta("role_id", role.ID.String(), "role_slug", role.Slug,
+			"allowed_regions", strings.Join(regions, ","), "previous_allowed_regions", strings.Join(prev, ","))); err != nil {
+		s.auditFail(w, err)
+		return
+	}
+	if err := s.store.UpdateAWSRole(r.Context(), role); err != nil {
+		http.Redirect(w, r, "/portal/admin/aws?error="+escape("update role failed"), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/portal/admin/aws?success="+escape("Role regions updated."), http.StatusFound)
 }
 
 // ── assignment handlers ──────────────────────────────────────────────────────

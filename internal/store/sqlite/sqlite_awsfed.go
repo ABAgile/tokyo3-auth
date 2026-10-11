@@ -111,18 +111,20 @@ func (s *DB) DeleteAWSAccount(ctx context.Context, id uuid.UUID) error {
 
 // ── aws_roles ─────────────────────────────────────────────────────────────────
 
-const awsRoleCols = `id, account_id, role_arn, slug, display_name, require_step_up_mfa, max_session_duration_sec, created_at, updated_at`
+const awsRoleCols = `id, account_id, role_arn, slug, display_name, require_step_up_mfa, max_session_duration_sec, allowed_regions, created_at, updated_at`
 
 func scanAWSRole(row interface{ Scan(...any) error }) (*model.AWSRole, error) {
 	r := &model.AWSRole{}
+	var regions string
 	err := row.Scan(&r.ID, &r.AccountID, &r.RoleARN, &r.Slug, &r.DisplayName,
-		&r.RequireStepUpMFA, &r.MaxSessionDurationSec, &r.CreatedAt, &r.UpdatedAt)
+		&r.RequireStepUpMFA, &r.MaxSessionDurationSec, &regions, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	r.AllowedRegions = model.DecodeRegions(regions)
 	return r, nil
 }
 
@@ -139,10 +141,10 @@ func (s *DB) CreateAWSRole(ctx context.Context, r *model.AWSRole) error {
 	}
 	r.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO aws_roles (id, account_id, role_arn, slug, display_name, require_step_up_mfa, max_session_duration_sec, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO aws_roles (id, account_id, role_arn, slug, display_name, require_step_up_mfa, max_session_duration_sec, allowed_regions, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.AccountID, r.RoleARN, r.Slug, r.DisplayName,
-		r.RequireStepUpMFA, r.MaxSessionDurationSec, dt(r.CreatedAt), dt(r.UpdatedAt))
+		r.RequireStepUpMFA, r.MaxSessionDurationSec, model.EncodeRegions(r.AllowedRegions), dt(r.CreatedAt), dt(r.UpdatedAt))
 	if isUnique(err) {
 		return store.ErrConflict
 	}
@@ -178,9 +180,10 @@ func (s *DB) UpdateAWSRole(ctx context.Context, r *model.AWSRole) error {
 		UPDATE aws_roles
 		   SET role_arn = ?, slug = ?, display_name = ?,
 		       require_step_up_mfa = ?, max_session_duration_sec = ?,
-		       updated_at = ?
+		       allowed_regions = ?, updated_at = ?
 		 WHERE id = ?`,
-		r.RoleARN, r.Slug, r.DisplayName, r.RequireStepUpMFA, r.MaxSessionDurationSec, dt(r.UpdatedAt), r.ID)
+		r.RoleARN, r.Slug, r.DisplayName, r.RequireStepUpMFA, r.MaxSessionDurationSec,
+		model.EncodeRegions(r.AllowedRegions), dt(r.UpdatedAt), r.ID)
 	if isUnique(err) {
 		return store.ErrConflict
 	}
@@ -245,7 +248,7 @@ func (s *DB) ListAWSRoleAssignments(ctx context.Context) ([]*model.AWSRoleAssign
 func (s *DB) ListAWSRolesForUser(ctx context.Context, userID uuid.UUID) ([]*model.AWSRole, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT r.id, r.account_id, r.role_arn, r.slug, r.display_name,
-		                r.require_step_up_mfa, r.max_session_duration_sec, r.created_at, r.updated_at
+		                r.require_step_up_mfa, r.max_session_duration_sec, r.allowed_regions, r.created_at, r.updated_at
 		  FROM aws_roles r
 		  JOIN aws_role_assignments a ON a.role_id = r.id
 		  JOIN scim_group_members m   ON m.group_id = a.group_id

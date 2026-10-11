@@ -145,6 +145,8 @@ services:
       # provider. Empty disables the federation handler; setup runbook is
       # in README's "AWS OIDC Federation" section.
       AUTHD_AWS_AUDIENCE:        ${AUTHD_AWS_AUDIENCE:-}
+      AUTHD_AWS_REGIONS:         ${AUTHD_AWS_REGIONS:-}
+      AUTHD_AWS_DEFAULT_REGION:  ${AUTHD_AWS_DEFAULT_REGION:-}
 
       # Standard AWS SDK credential env vars — consumed by the SDK's
       # default credential chain inside the federation revocation

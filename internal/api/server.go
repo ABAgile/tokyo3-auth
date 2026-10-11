@@ -42,6 +42,14 @@ type Server struct {
 	// safety); per-role authorisation moves to aws:RequestTag/<key>
 	// conditions in the role trust policies.
 	awsAudience string
+	// awsRegions is the eligible-region list offered by the portal's AWS
+	// tiles (AUTHD_AWS_REGIONS, normalised by ParseAWSRegions) and the
+	// allowlist the console handlers enforce. awsDefaultRegion
+	// (AUTHD_AWS_DEFAULT_REGION) is the preselected entry; empty means the
+	// global door. Both empty keeps the single global "Open AWS Console"
+	// button.
+	awsRegions       []string
+	awsDefaultRegion string
 	// stepUpMFATTL is the freshness window for the step-up MFA gate that
 	// protects AWS roles flagged require_step_up_mfa. A click on such a
 	// role's tile re-prompts MFA when the session's mfa_verified_at is
@@ -77,6 +85,9 @@ type Config struct {
 	AuditSource    journal.Source
 	Issuer         string
 	AWSAudience    string
+	// AWSRegions and AWSDefaultRegion must come from ParseAWSRegions.
+	AWSRegions       []string
+	AWSDefaultRegion string
 	// StepUpMFATTL bounds how recently the user must have completed an
 	// MFA challenge for sensitive role assumption to proceed without
 	// re-prompting. Zero or negative falls back to the package default.
@@ -128,27 +139,29 @@ func New(cfg Config) (*Server, error) {
 	}
 	proxies := mergeProxies(cfg.TrustedProxies)
 	return &Server{
-		store:          cfg.Store,
-		signer:         cfg.Signer,
-		policy:         cfg.Policy,
-		wa:             cfg.WAHandler,
-		kp:             cfg.KP,
-		provReg:        cfg.Provisioners,
-		scimTLS:        cfg.SCIMTLS,
-		backchannelTLS: cfg.BackchannelTLS,
-		audit:          auditSink,
-		auditSrc:       auditSrc,
-		issuer:         cfg.Issuer,
-		awsAudience:    cfg.AWSAudience,
-		stepUpMFATTL:   stepUpTTL,
-		masterKey:      cfg.MasterKey,
-		log:            log,
-		authLimiter:    newLimiter(cfg.AuthRatePerMin, defaultAuthRatePerMin, proxies, log),
-		tokenLimiter:   newLimiter(cfg.TokenRatePerMin, defaultTokenRatePerMin, proxies, log),
-		ipExtractor:    clientip.New(proxies),
-		ssoTmpl:        ssoTmpl,
-		portalTmpl:     portalTmpl,
-		allowReg:       cfg.AllowRegistration,
+		store:            cfg.Store,
+		signer:           cfg.Signer,
+		policy:           cfg.Policy,
+		wa:               cfg.WAHandler,
+		kp:               cfg.KP,
+		provReg:          cfg.Provisioners,
+		scimTLS:          cfg.SCIMTLS,
+		backchannelTLS:   cfg.BackchannelTLS,
+		audit:            auditSink,
+		auditSrc:         auditSrc,
+		issuer:           cfg.Issuer,
+		awsAudience:      cfg.AWSAudience,
+		awsRegions:       cfg.AWSRegions,
+		awsDefaultRegion: cfg.AWSDefaultRegion,
+		stepUpMFATTL:     stepUpTTL,
+		masterKey:        cfg.MasterKey,
+		log:              log,
+		authLimiter:      newLimiter(cfg.AuthRatePerMin, defaultAuthRatePerMin, proxies, log),
+		tokenLimiter:     newLimiter(cfg.TokenRatePerMin, defaultTokenRatePerMin, proxies, log),
+		ipExtractor:      clientip.New(proxies),
+		ssoTmpl:          ssoTmpl,
+		portalTmpl:       portalTmpl,
+		allowReg:         cfg.AllowRegistration,
 	}, nil
 }
 
@@ -305,6 +318,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /portal/admin/aws/accounts/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSAccountDelete))
 	mux.HandleFunc("POST /portal/admin/aws/roles/new", s.portalAdminAuth(s.handlePortalAdminAWSRoleNew))
 	mux.HandleFunc("POST /portal/admin/aws/roles/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSRoleDelete))
+	mux.HandleFunc("POST /portal/admin/aws/roles/{id}/regions", s.portalAdminAuth(s.handlePortalAdminAWSRoleRegions))
 	mux.HandleFunc("POST /portal/admin/aws/assignments/new", s.portalAdminAuth(s.handlePortalAdminAWSAssignmentNew))
 	mux.HandleFunc("POST /portal/admin/aws/assignments/{id}/delete", s.portalAdminAuth(s.handlePortalAdminAWSAssignmentDelete))
 	mux.HandleFunc("GET /portal/admin/groups", s.portalAdminAuth(s.handlePortalAdminGroups))

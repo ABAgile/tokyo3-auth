@@ -31,11 +31,21 @@
           {{if eq .Kind "oidc"}}
             <a href="{{.LaunchURL}}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm btn-block app-action">Launch</a>
           {{else if eq .Kind "aws"}}
+            {{if .NoRegion}}
+            <p class="app-subtitle app-action">No console region is available for this role. Ask an administrator.</p>
+            {{else}}
             <form method="POST" action="/portal/aws/console" target="_blank" class="app-action app-action-aws">
               <input type="hidden" name="role_id" value="{{.ID}}">
-              <button type="submit" name="region" value="" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
-              <button type="submit" name="region" value="ap-east-2" class="btn btn-secondary btn-sm btn-block">Open Console (ap-east-2)</button>
+              {{if .Regions}}
+              <label class="sr-only" for="region-{{.ID}}">AWS region for {{.DisplayName}}</label>
+              <select id="region-{{.ID}}" name="region">
+                {{range .Regions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+                {{end}}
+              </select>
+              {{end}}
+              <button type="submit" class="btn btn-primary btn-sm btn-block">Open AWS Console</button>
             </form>
+            {{end}}
           {{end}}
         </div>
       </article>

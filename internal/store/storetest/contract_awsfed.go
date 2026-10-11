@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -65,6 +66,52 @@ func testAWSRoleCRUDAndCascadeOnAccount(t *testing.T, newStore Factory) {
 	}
 	if _, err := db.GetAWSRole(ctx, role.ID); err == nil {
 		t.Error("expected role to be cascade-deleted with account")
+	}
+}
+
+// testAWSRoleAllowedRegions pins the per-role region restriction round trip:
+// create, read, narrow via update, clear via update, and via the list calls.
+func testAWSRoleAllowedRegions(t *testing.T, newStore Factory) {
+	ctx := context.Background()
+	db := newStore(t)
+	acct := &model.AWSAccount{AccountID: "555555555555", OIDCProviderARN: "arn:aws:iam::555:oidc-provider/id.example.com"}
+	if err := db.CreateAWSAccount(ctx, acct); err != nil {
+		t.Fatalf("CreateAWSAccount: %v", err)
+	}
+	role := &model.AWSRole{
+		AccountID: acct.ID, RoleARN: "arn:aws:iam::555:role/R", Slug: "regions", DisplayName: "R",
+		AllowedRegions: []string{"ap-east-2", "eu-west-1"},
+	}
+	if err := db.CreateAWSRole(ctx, role); err != nil {
+		t.Fatalf("CreateAWSRole: %v", err)
+	}
+	got, err := db.GetAWSRole(ctx, role.ID)
+	if err != nil {
+		t.Fatalf("GetAWSRole: %v", err)
+	}
+	if !slices.Equal(got.AllowedRegions, []string{"ap-east-2", "eu-west-1"}) {
+		t.Errorf("AllowedRegions = %v, want [ap-east-2 eu-west-1]", got.AllowedRegions)
+	}
+
+	got.AllowedRegions = []string{"eu-west-1"}
+	if err := db.UpdateAWSRole(ctx, got); err != nil {
+		t.Fatalf("UpdateAWSRole: %v", err)
+	}
+	roles, err := db.ListAWSRoles(ctx)
+	if err != nil || len(roles) != 1 || !slices.Equal(roles[0].AllowedRegions, []string{"eu-west-1"}) {
+		t.Fatalf("ListAWSRoles after narrowing = %+v, %v", roles, err)
+	}
+
+	got.AllowedRegions = nil
+	if err := db.UpdateAWSRole(ctx, got); err != nil {
+		t.Fatalf("UpdateAWSRole clear: %v", err)
+	}
+	cleared, err := db.GetAWSRole(ctx, role.ID)
+	if err != nil {
+		t.Fatalf("GetAWSRole: %v", err)
+	}
+	if len(cleared.AllowedRegions) != 0 {
+		t.Errorf("AllowedRegions after clear = %v, want empty", cleared.AllowedRegions)
 	}
 }
 

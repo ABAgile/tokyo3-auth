@@ -12,6 +12,7 @@ func setEnv(t *testing.T, env map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"AUTHD_ISSUER", "AUTHD_ADDR", "AUTHD_AWS_AUDIENCE", "AUTHD_STEP_UP_MFA_TTL",
+		"AUTHD_AWS_REGIONS", "AUTHD_AWS_DEFAULT_REGION",
 		"AUTHD_ALLOW_REGISTRATION", "AUTHD_TRUSTED_PROXIES", "AUTHD_AUTH_RATE_PER_MIN",
 		"AUTHD_TOKEN_RATE_PER_MIN", "AUTHD_PROVISION_SYNC_INTERVAL",
 		"AUTHD_AWSFED_REAP_INTERVAL", "AUTHD_VAULT_SCIM_TIMEOUT", "AUTHD_WEBAUTHN_ORIGINS",
@@ -111,5 +112,28 @@ func TestLoadServeConfig_ReportsAllProblems(t *testing.T) {
 	_, err := loadServeConfig()
 	if err == nil || !strings.Contains(err.Error(), "AUTHD_ISSUER") || !strings.Contains(err.Error(), "AUTHD_ALLOW_REGISTRATION") {
 		t.Fatalf("want both problems reported, got %v", err)
+	}
+}
+
+func TestLoadServeConfig_AWSRegions(t *testing.T) {
+	setEnv(t, map[string]string{
+		"AUTHD_ISSUER":             "https://id.example.com",
+		"AUTHD_AWS_REGIONS":        "ap-east-2,eu-west-1",
+		"AUTHD_AWS_DEFAULT_REGION": "us-east-1",
+	})
+	cfg, err := loadServeConfig()
+	if err != nil {
+		t.Fatalf("loadServeConfig: %v", err)
+	}
+	if strings.Join(cfg.AWSRegions, ",") != "ap-east-2,eu-west-1,us-east-1" || cfg.AWSDefaultRegion != "us-east-1" {
+		t.Errorf("regions = %v default = %q", cfg.AWSRegions, cfg.AWSDefaultRegion)
+	}
+
+	setEnv(t, map[string]string{
+		"AUTHD_ISSUER":      "https://id.example.com",
+		"AUTHD_AWS_REGIONS": "ap-east-2,evil.com/x",
+	})
+	if _, err := loadServeConfig(); err == nil || !strings.Contains(err.Error(), "AUTHD_AWS_REGIONS") {
+		t.Errorf("err = %v, want AUTHD_AWS_REGIONS error", err)
 	}
 }
