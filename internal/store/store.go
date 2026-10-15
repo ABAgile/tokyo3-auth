@@ -137,7 +137,10 @@ type MFAStore interface {
 	CreateWebAuthnCredential(ctx context.Context, c *model.WebAuthnCredential) error
 	ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*model.WebAuthnCredential, error)
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credID []byte) (*model.WebAuthnCredential, error)
-	UpdateWebAuthnSignCount(ctx context.Context, id uuid.UUID, signCount uint32, lastUsed time.Time) error
+	// UpdateWebAuthnCredentialUse records a successful assertion: the new
+	// sign count, the authenticator's BE/BS flags (backfilling BE on
+	// credentials enrolled before it was persisted), and last_used_at.
+	UpdateWebAuthnCredentialUse(ctx context.Context, id uuid.UUID, signCount uint32, backupEligible, backupState bool, lastUsed time.Time) error
 	DeleteWebAuthnCredential(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
 	CreateWebAuthnSession(ctx context.Context, userID uuid.UUID, data []byte, purpose string) (uuid.UUID, error)

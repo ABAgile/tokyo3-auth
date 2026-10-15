@@ -139,9 +139,17 @@ type WebAuthnCredential struct {
 	PublicKey    []byte
 	AAGUID       []byte
 	SignCount    uint32
-	DeviceName   string
-	CreatedAt    time.Time
-	LastUsedAt   time.Time
+	// BackupEligible is the authenticator's BE flag, fixed for the life of
+	// the credential (true for synced passkeys, false for hardware keys).
+	// nil means the credential was enrolled before the flag was persisted;
+	// the first successful assertion records it.
+	BackupEligible *bool
+	// BackupState is the latest BS flag seen (whether the credential is
+	// currently backed up / synced). It may change between assertions.
+	BackupState bool
+	DeviceName  string
+	CreatedAt   time.Time
+	LastUsedAt  time.Time
 }
 
 type SCIMGroup struct {
