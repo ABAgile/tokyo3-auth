@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
+	"image/png"
 	"net/http"
 	"net/url"
 	"slices"
@@ -21,6 +24,7 @@ import (
 	creds "github.com/abagile/tokyo3-base/auth/creds"
 	bcrypto "github.com/abagile/tokyo3-base/crypto"
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
 )
 
 // portalClientUUID is the sentinel client used for portal sessions.
@@ -260,6 +264,25 @@ func (s *Server) setTOTPPendingCookie(w http.ResponseWriter, uri, secret string)
 		Path: "/portal", MaxAge: 600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
+}
+
+// totpQRCode renders the otpauth:// URI as an inline PNG data URI. The URI
+// carries the TOTP secret, so the image is generated here rather than by an
+// external QR service.
+func totpQRCode(uri string) (template.URL, error) {
+	key, err := otp.NewKeyFromURL(uri)
+	if err != nil {
+		return "", err
+	}
+	img, err := key.Image(200, 200)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())), nil
 }
 
 func (s *Server) getTOTPPendingCookie(r *http.Request) *totpPending {
@@ -688,6 +711,7 @@ func (s *Server) handlePortalLoginMFAWebAuthnFinish(w http.ResponseWriter, r *ht
 		return
 	}
 	if _, err := s.wa.FinishLogin(r.Context(), user, sessionID, r); err != nil {
+		s.log.Error("portal webauthn finish", "err", err)
 		if err := s.logAudit(r, ActionLoginMFAFailed, &user.ID, nil, logMeta("via", "portal_webauthn")); err != nil {
 			s.auditFail(w, err)
 			return
@@ -879,7 +903,7 @@ type accountPageData struct {
 	portalBase
 	TOTPEnabled    bool
 	TOTPEnrolling  bool
-	OTPURI         string
+	TOTPQRCode     template.URL // inline PNG data URI; empty if rendering failed
 	TOTPSecret     string
 	WebAuthnCreds  []*model.WebAuthnCredential
 	Success, Error string
@@ -898,7 +922,11 @@ func (s *Server) buildAccountPageData(r *http.Request, pc *portalCtx, success, e
 	}
 	if tp != nil {
 		d.TOTPEnrolling = true
-		d.OTPURI = tp.OTPURI
+		qr, err := totpQRCode(tp.OTPURI)
+		if err != nil {
+			s.log.Error("render totp qr code", "err", err)
+		}
+		d.TOTPQRCode = qr
 		d.TOTPSecret = tp.Secret
 	}
 	return d
@@ -979,7 +1007,7 @@ func (s *Server) handlePortalMFATOTPEnroll(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/portal/account?error=enrollment+failed", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/portal/mfa", http.StatusFound)
+	http.Redirect(w, r, "/portal/account", http.StatusFound)
 }
 
 func (s *Server) handlePortalMFATOTPConfirm(w http.ResponseWriter, r *http.Request) {

@@ -32,8 +32,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 23 {
-		t.Errorf("expected 23 migrations applied, got %d", n)
+	if n != 24 {
+		t.Errorf("expected 24 migrations applied, got %d", n)
 	}
 
 	// Re-running migrate() must be a no-op (idempotent).
@@ -43,8 +43,8 @@ func TestMigrationsApply(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations 2: %v", err)
 	}
-	if n != 23 {
-		t.Errorf("after re-run, expected still 23 migrations, got %d", n)
+	if n != 24 {
+		t.Errorf("after re-run, expected still 24 migrations, got %d", n)
 	}
 }
 

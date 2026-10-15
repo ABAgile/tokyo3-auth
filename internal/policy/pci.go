@@ -130,7 +130,7 @@ func (r *MFARequiredRule) Evaluate(ctx PolicyContext) *PolicyViolation {
 		return &PolicyViolation{
 			RuleID:      r.ID(),
 			Description: r.Description(),
-			Message:     "This client requires MFA. Enroll TOTP or a security key under /portal/mfa, then sign in again.",
+			Message:     "This client requires MFA. Enroll TOTP or a security key under /portal/account, then sign in again.",
 		}
 	}
 	if !ctx.MFAVerified {

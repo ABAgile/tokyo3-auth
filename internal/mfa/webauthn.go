@@ -1,14 +1,17 @@
 package mfa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/abagile/tokyo3-auth/internal/model"
 	"github.com/abagile/tokyo3-auth/internal/store"
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 )
@@ -38,9 +41,40 @@ func (w *WAUser) modelToWACreds() []webauthn.Credential {
 				AAGUID:    c.AAGUID,
 				SignCount: c.SignCount,
 			},
+			// go-webauthn rejects an assertion whose BE flag differs from
+			// the stored one, so this must reflect what was enrolled.
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: c.BackupEligible != nil && *c.BackupEligible,
+				BackupState:    c.BackupState,
+			},
 		}
 	}
 	return out
+}
+
+// describeWAError surfaces go-webauthn's DevInfo, which *protocol.Error
+// leaves out of Error(): "Error validating origin" alone doesn't say
+// which origin was received. The original error stays wrapped for
+// errors.As.
+func describeWAError(err error) error {
+	if pe, ok := errors.AsType[*protocol.Error](err); ok && pe.DevInfo != "" {
+		return fmt.Errorf("%w (%s)", err, pe.DevInfo)
+	}
+	return err
+}
+
+// adoptLegacyBackupEligible fills in BackupEligible for the asserted
+// credential when it was enrolled before the flag was persisted (nil),
+// taking the value the authenticator reports now. The signature is still
+// fully verified; only the BE consistency check is skipped this once.
+// Once the assertion succeeds the value is stored and enforced from then on.
+func adoptLegacyBackupEligible(creds []*model.WebAuthnCredential, parsed *protocol.ParsedCredentialAssertionData) {
+	for _, c := range creds {
+		if c.BackupEligible == nil && bytes.Equal(c.CredentialID, parsed.RawID) {
+			be := parsed.Response.AuthenticatorData.Flags.HasBackupEligible()
+			c.BackupEligible = &be
+		}
+	}
 }
 
 // WAHandler wraps the go-webauthn library and the store.
@@ -107,13 +141,15 @@ func (h *WAHandler) FinishRegistration(ctx context.Context, user *model.User, se
 	}
 
 	m := &model.WebAuthnCredential{
-		ID:           uuid.New(),
-		UserID:       user.ID,
-		CredentialID: cred.ID,
-		PublicKey:    cred.PublicKey,
-		AAGUID:       cred.Authenticator.AAGUID,
-		SignCount:    cred.Authenticator.SignCount,
-		DeviceName:   deviceName,
+		ID:             uuid.New(),
+		UserID:         user.ID,
+		CredentialID:   cred.ID,
+		PublicKey:      cred.PublicKey,
+		AAGUID:         cred.Authenticator.AAGUID,
+		SignCount:      cred.Authenticator.SignCount,
+		BackupEligible: new(cred.Flags.BackupEligible),
+		BackupState:    cred.Flags.BackupState,
+		DeviceName:     deviceName,
 	}
 	if err := h.st.CreateWebAuthnCredential(ctx, m); err != nil {
 		return nil, err
@@ -145,7 +181,9 @@ func (h *WAHandler) BeginLogin(ctx context.Context, user *model.User) (optionsJS
 	return optionsJSON, sessionID, err
 }
 
-// FinishLogin verifies the assertion from the HTTP request body and updates sign count.
+// FinishLogin verifies the assertion from the HTTP request body and records
+// the use (sign count, BE/BS flags). A failed write fails the login: it is
+// what pins BE for credentials enrolled before the flag was persisted.
 // Returns "hwk" as the AMR value (hardware key / platform authenticator).
 func (h *WAHandler) FinishLogin(ctx context.Context, user *model.User, sessionID uuid.UUID, r *http.Request) (amr string, err error) {
 	sessionBytes, err := h.st.GetWebAuthnSession(ctx, sessionID, user.ID, "login")
@@ -158,16 +196,29 @@ func (h *WAHandler) FinishLogin(ctx context.Context, user *model.User, sessionID
 	if err := json.Unmarshal(sessionBytes, &sessionData); err != nil {
 		return "", err
 	}
+	parsed, err := protocol.ParseCredentialRequestResponse(r)
+	if err != nil {
+		return "", fmt.Errorf("parse assertion: %w", describeWAError(err))
+	}
 	creds, _ := h.st.ListWebAuthnCredentials(ctx, user.ID)
+	adoptLegacyBackupEligible(creds, parsed)
 	waUser := newWAUser(user, creds)
 
-	cred, err := h.wa.FinishLogin(waUser, sessionData, r)
+	cred, err := h.wa.ValidateLogin(waUser, sessionData, parsed)
 	if err != nil {
-		return "", fmt.Errorf("finish login: %w", err)
+		return "", fmt.Errorf("finish login: %w", describeWAError(err))
 	}
 
-	if stored, err := h.st.GetWebAuthnCredentialByCredentialID(ctx, cred.ID); err == nil {
-		_ = h.st.UpdateWebAuthnSignCount(ctx, stored.ID, cred.Authenticator.SignCount, time.Now().UTC())
+	// ValidateLogin only succeeds for a credential in creds.
+	for _, c := range creds {
+		if !bytes.Equal(c.CredentialID, cred.ID) {
+			continue
+		}
+		if err := h.st.UpdateWebAuthnCredentialUse(ctx, c.ID, cred.Authenticator.SignCount,
+			cred.Flags.BackupEligible, cred.Flags.BackupState, time.Now().UTC()); err != nil {
+			return "", fmt.Errorf("record credential use: %w", err)
+		}
+		return "hwk", nil
 	}
-	return "hwk", nil
+	return "", fmt.Errorf("verified credential not found")
 }
