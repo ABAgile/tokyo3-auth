@@ -93,16 +93,6 @@ func (s *DB) ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*
 	return creds, rows.Err()
 }
 
-func (s *DB) GetWebAuthnCredentialByCredentialID(ctx context.Context, credID []byte) (*model.WebAuthnCredential, error) {
-	c, err := scanWebAuthnCredential(s.db.QueryRowContext(ctx,
-		`SELECT `+webAuthnCredentialCols+`
-		 FROM webauthn_credentials WHERE credential_id = $1`, credID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, store.ErrNotFound
-	}
-	return c, err
-}
-
 func (s *DB) UpdateWebAuthnCredentialUse(ctx context.Context, id uuid.UUID, signCount uint32, backupEligible, backupState bool, lastUsed time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE webauthn_credentials

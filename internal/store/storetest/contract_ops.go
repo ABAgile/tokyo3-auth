@@ -350,10 +350,7 @@ func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
 		t.Errorf("list: %v", list)
 	}
 
-	got, err := db.GetWebAuthnCredentialByCredentialID(ctx, []byte{1, 2, 3, 4})
-	if err != nil {
-		t.Fatalf("GetWebAuthnCredentialByCredentialID: %v", err)
-	}
+	got := list[0]
 	if got.SignCount != 7 {
 		t.Errorf("SignCount: want 7, got %d", got.SignCount)
 	}
@@ -376,7 +373,8 @@ func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
 	if err := db.UpdateWebAuthnCredentialUse(ctx, cred.ID, 42, true, true, last); err != nil {
 		t.Fatalf("UpdateWebAuthnCredentialUse: %v", err)
 	}
-	got, _ = db.GetWebAuthnCredentialByCredentialID(ctx, []byte{1, 2, 3, 4})
+	list, _ = db.ListWebAuthnCredentials(ctx, u.ID)
+	got = list[0]
 	if got.SignCount != 42 || !got.LastUsedAt.Equal(last) {
 		t.Errorf("after update: SignCount=%d LastUsedAt=%v", got.SignCount, got.LastUsedAt)
 	}
@@ -432,10 +430,6 @@ func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
 	list, _ = db.ListWebAuthnCredentials(ctx, u.ID)
 	if len(list) != 0 {
 		t.Errorf("after delete: want 0, got %d", len(list))
-	}
-
-	if _, err := db.GetWebAuthnCredentialByCredentialID(ctx, []byte{9, 9, 9}); err != store.ErrNotFound {
-		t.Errorf("missing cred: want ErrNotFound, got %v", err)
 	}
 }
 

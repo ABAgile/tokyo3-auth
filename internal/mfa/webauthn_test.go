@@ -203,13 +203,19 @@ func login(t *testing.T, h *mfa.WAHandler, u *model.User, a *fakeAuthenticator, 
 	return err
 }
 
-func storedCred(t *testing.T, db *sqlite.DB, credID []byte) *model.WebAuthnCredential {
+func storedCred(t *testing.T, db *sqlite.DB, userID uuid.UUID, credID []byte) *model.WebAuthnCredential {
 	t.Helper()
-	c, err := db.GetWebAuthnCredentialByCredentialID(context.Background(), credID)
+	creds, err := db.ListWebAuthnCredentials(context.Background(), userID)
 	if err != nil {
-		t.Fatalf("GetWebAuthnCredentialByCredentialID: %v", err)
+		t.Fatalf("ListWebAuthnCredentials: %v", err)
 	}
-	return c
+	for _, c := range creds {
+		if bytes.Equal(c.CredentialID, credID) {
+			return c
+		}
+	}
+	t.Fatalf("credential %x not found", credID)
+	return nil
 }
 
 // A synced passkey (iCloud Keychain, Google Password Manager, …) reports
@@ -223,7 +229,7 @@ func TestWebAuthn_SyncedPasskeyRoundTrip(t *testing.T) {
 
 	assertFlags := func(step string, wantBS bool) {
 		t.Helper()
-		c := storedCred(t, db, a.credID)
+		c := storedCred(t, db, u.ID, a.credID)
 		if c.BackupEligible == nil || !*c.BackupEligible || c.BackupState != wantBS {
 			t.Fatalf("%s: BE=%v BS=%v, want BE=true BS=%v", step, c.BackupEligible, c.BackupState, wantBS)
 		}
@@ -250,7 +256,7 @@ func TestWebAuthn_HardwareKeyRejectsBEFlip(t *testing.T) {
 	a := newFakeAuthenticator(t)
 
 	register(t, h, u, a, flagUP)
-	c := storedCred(t, db, a.credID)
+	c := storedCred(t, db, u.ID, a.credID)
 	if c.BackupEligible == nil || *c.BackupEligible {
 		t.Fatalf("stored BE=%v, want false", c.BackupEligible)
 	}
@@ -281,14 +287,14 @@ func TestWebAuthn_LegacyCredentialBackfillsBE(t *testing.T) {
 	if err := db.CreateWebAuthnCredential(context.Background(), legacy); err != nil {
 		t.Fatalf("CreateWebAuthnCredential: %v", err)
 	}
-	if c := storedCred(t, db, a.credID); c.BackupEligible != nil {
+	if c := storedCred(t, db, u.ID, a.credID); c.BackupEligible != nil {
 		t.Fatalf("legacy credential BE=%v, want nil", *c.BackupEligible)
 	}
 
 	if err := login(t, h, u, a, flagUP|flagBE|flagBS); err != nil {
 		t.Fatalf("FinishLogin with legacy synced passkey: %v", err)
 	}
-	c := storedCred(t, db, a.credID)
+	c := storedCred(t, db, u.ID, a.credID)
 	if c.BackupEligible == nil || !*c.BackupEligible || !c.BackupState {
 		t.Fatalf("after backfill: BE=%v BS=%v, want BE=true BS=true", c.BackupEligible, c.BackupState)
 	}
@@ -324,7 +330,29 @@ func TestWebAuthn_LegacyBackfillWriteFailureFailsLogin(t *testing.T) {
 	if err := login(t, h, u, a, flagUP|flagBE); !errors.Is(err, errWriteFailed) {
 		t.Fatalf("FinishLogin: want errWriteFailed, got %v", err)
 	}
-	if c := storedCred(t, db, a.credID); c.BackupEligible != nil {
+	if c := storedCred(t, db, u.ID, a.credID); c.BackupEligible != nil {
 		t.Fatalf("BE=%v after failed write, want nil", *c.BackupEligible)
+	}
+}
+
+// A signature counter that fails to advance signals a cloned
+// authenticator: the login is refused and the stored counter is kept.
+func TestWebAuthn_RejectsNonAdvancingCounter(t *testing.T) {
+	db, h, u := newWAEnv(t)
+	a := newFakeAuthenticator(t)
+
+	register(t, h, u, a, flagUP)
+	if err := login(t, h, u, a, flagUP); err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	want := storedCred(t, db, u.ID, a.credID).SignCount
+
+	a.count = 0 // a clone replaying from an older counter
+	err := login(t, h, u, a, flagUP)
+	if !errors.Is(err, mfa.ErrCloneSuspected) {
+		t.Fatalf("login with stale counter: err=%v, want ErrCloneSuspected", err)
+	}
+	if got := storedCred(t, db, u.ID, a.credID).SignCount; got != want {
+		t.Errorf("stored SignCount changed to %d, want %d", got, want)
 	}
 }

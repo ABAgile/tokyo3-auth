@@ -136,7 +136,6 @@ type MFAStore interface {
 
 	CreateWebAuthnCredential(ctx context.Context, c *model.WebAuthnCredential) error
 	ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*model.WebAuthnCredential, error)
-	GetWebAuthnCredentialByCredentialID(ctx context.Context, credID []byte) (*model.WebAuthnCredential, error)
 	// UpdateWebAuthnCredentialUse records a successful assertion: the new
 	// sign count, the authenticator's BE/BS flags (backfilling BE on
 	// credentials enrolled before it was persisted), and last_used_at.

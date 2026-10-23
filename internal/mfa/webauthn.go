@@ -77,6 +77,10 @@ func adoptLegacyBackupEligible(creds []*model.WebAuthnCredential, parsed *protoc
 	}
 }
 
+// ErrCloneSuspected is returned by FinishLogin when the authenticator's
+// signature counter did not advance, which signals a cloned credential.
+var ErrCloneSuspected = errors.New("webauthn: signature counter did not advance; authenticator may be cloned")
+
 // WAHandler wraps the go-webauthn library and the store.
 type WAHandler struct {
 	wa *webauthn.WebAuthn
@@ -200,13 +204,22 @@ func (h *WAHandler) FinishLogin(ctx context.Context, user *model.User, sessionID
 	if err != nil {
 		return "", fmt.Errorf("parse assertion: %w", describeWAError(err))
 	}
-	creds, _ := h.st.ListWebAuthnCredentials(ctx, user.ID)
+	creds, err := h.st.ListWebAuthnCredentials(ctx, user.ID)
+	if err != nil {
+		return "", fmt.Errorf("list credentials: %w", err)
+	}
 	adoptLegacyBackupEligible(creds, parsed)
 	waUser := newWAUser(user, creds)
 
 	cred, err := h.wa.ValidateLogin(waUser, sessionData, parsed)
 	if err != nil {
 		return "", fmt.Errorf("finish login: %w", describeWAError(err))
+	}
+
+	// The signature counter did not advance: the authenticator may be
+	// cloned (WebAuthn L2 §7.2 step 21). Refuse, and keep the stored counter.
+	if cred.Authenticator.CloneWarning {
+		return "", ErrCloneSuspected
 	}
 
 	// ValidateLogin only succeeds for a credential in creds.
