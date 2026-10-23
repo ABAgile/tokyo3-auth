@@ -2,7 +2,7 @@ module github.com/abagile/tokyo3-auth
 
 go 1.27
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/abagile/tokyo3-base v0.9.1
