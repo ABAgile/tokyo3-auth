@@ -53,9 +53,11 @@
     <div class="card-body">
       {{if .TOTPEnrolling}}
       <div class="alert alert-info">Scan this QR code in your authenticator app, then confirm below.</div>
+      {{if .TOTPQRCode}}
       <div class="qr-wrap">
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{.OTPURI | urlquery}}" alt="QR code containing the authenticator enrollment secret" width="200" height="200">
+        <img src="{{.TOTPQRCode}}" alt="QR code containing the authenticator enrollment secret" width="200" height="200">
       </div>
+      {{end}}
       <p class="text-muted">Or enter the secret manually:</p>
       <div class="secret-box">{{.TOTPSecret}}</div>
       <form method="POST" action="/portal/mfa/totp/confirm" class="mt-4">

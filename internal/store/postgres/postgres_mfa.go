@@ -47,11 +47,27 @@ func (s *DB) DeleteTOTP(ctx context.Context, userID uuid.UUID) error {
 
 // ── WebAuthn credentials ──────────────────────────────────────────────────────
 
+const webAuthnCredentialCols = `id, user_id, credential_id, public_key, aaguid, sign_count,
+	backup_eligible, backup_state, device_name, created_at, last_used_at`
+
+func scanWebAuthnCredential(row interface{ Scan(...any) error }) (*model.WebAuthnCredential, error) {
+	c := &model.WebAuthnCredential{}
+	var be sql.NullBool
+	if err := row.Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &c.AAGUID, &c.SignCount,
+		&be, &c.BackupState, &c.DeviceName, &c.CreatedAt, &c.LastUsedAt); err != nil {
+		return nil, err
+	}
+	if be.Valid {
+		c.BackupEligible = &be.Bool
+	}
+	return c, nil
+}
+
 func (s *DB) CreateWebAuthnCredential(ctx context.Context, c *model.WebAuthnCredential) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, aaguid, sign_count, device_name)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		c.ID, c.UserID, c.CredentialID, c.PublicKey, c.AAGUID, c.SignCount, c.DeviceName)
+		INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, aaguid, sign_count, backup_eligible, backup_state, device_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		c.ID, c.UserID, c.CredentialID, c.PublicKey, c.AAGUID, c.SignCount, c.BackupEligible, c.BackupState, c.DeviceName)
 	if isUnique(err) {
 		return store.ErrConflict
 	}
@@ -60,7 +76,7 @@ func (s *DB) CreateWebAuthnCredential(ctx context.Context, c *model.WebAuthnCred
 
 func (s *DB) ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*model.WebAuthnCredential, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, credential_id, public_key, aaguid, sign_count, device_name, created_at, last_used_at
+		`SELECT `+webAuthnCredentialCols+`
 		 FROM webauthn_credentials WHERE user_id = $1 ORDER BY created_at`, userID)
 	if err != nil {
 		return nil, err
@@ -68,8 +84,8 @@ func (s *DB) ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*
 	defer rows.Close()
 	var creds []*model.WebAuthnCredential
 	for rows.Next() {
-		c := &model.WebAuthnCredential{}
-		if err := rows.Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &c.AAGUID, &c.SignCount, &c.DeviceName, &c.CreatedAt, &c.LastUsedAt); err != nil {
+		c, err := scanWebAuthnCredential(rows)
+		if err != nil {
 			return nil, err
 		}
 		creds = append(creds, c)
@@ -78,21 +94,21 @@ func (s *DB) ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]*
 }
 
 func (s *DB) GetWebAuthnCredentialByCredentialID(ctx context.Context, credID []byte) (*model.WebAuthnCredential, error) {
-	c := &model.WebAuthnCredential{}
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, credential_id, public_key, aaguid, sign_count, device_name, created_at, last_used_at
-		 FROM webauthn_credentials WHERE credential_id = $1`, credID).
-		Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &c.AAGUID, &c.SignCount, &c.DeviceName, &c.CreatedAt, &c.LastUsedAt)
+	c, err := scanWebAuthnCredential(s.db.QueryRowContext(ctx,
+		`SELECT `+webAuthnCredentialCols+`
+		 FROM webauthn_credentials WHERE credential_id = $1`, credID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
 	return c, err
 }
 
-func (s *DB) UpdateWebAuthnSignCount(ctx context.Context, id uuid.UUID, signCount uint32, lastUsed time.Time) error {
+func (s *DB) UpdateWebAuthnCredentialUse(ctx context.Context, id uuid.UUID, signCount uint32, backupEligible, backupState bool, lastUsed time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE webauthn_credentials SET sign_count = $2, last_used_at = $3 WHERE id = $1`,
-		id, signCount, lastUsed)
+		`UPDATE webauthn_credentials
+		 SET sign_count = $2, backup_eligible = $3, backup_state = $4, last_used_at = $5
+		 WHERE id = $1`,
+		id, signCount, backupEligible, backupState, lastUsed)
 	return err
 }
 

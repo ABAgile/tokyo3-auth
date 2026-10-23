@@ -135,6 +135,7 @@ func (s *Server) handlePortalStepUpWebAuthnFinish(w http.ResponseWriter, r *http
 		return
 	}
 	if _, err := s.wa.FinishLogin(r.Context(), pc.User, sessionID, r); err != nil {
+		s.log.Error("step-up webauthn finish", "err", err)
 		_ = s.logAudit(r, ActionLoginMFAFailed, &pc.User.ID, nil, logMeta("via", "step_up_webauthn"))
 		s.writeError(w, http.StatusUnauthorized, "unauthorized", "webauthn verification failed")
 		return

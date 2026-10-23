@@ -357,6 +357,9 @@ func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
 	if got.SignCount != 7 {
 		t.Errorf("SignCount: want 7, got %d", got.SignCount)
 	}
+	if got.BackupEligible != nil || got.BackupState {
+		t.Errorf("unset flags: want BE=nil BS=false, got BE=%v BS=%v", got.BackupEligible, got.BackupState)
+	}
 
 	// Duplicate credential_id → ErrConflict.
 	dup := &model.WebAuthnCredential{
@@ -370,12 +373,48 @@ func testWebAuthnCredentialLifecycle(t *testing.T, newStore Factory) {
 	}
 
 	last := time.Now().UTC().Truncate(time.Second)
-	if err := db.UpdateWebAuthnSignCount(ctx, cred.ID, 42, last); err != nil {
-		t.Fatalf("UpdateWebAuthnSignCount: %v", err)
+	if err := db.UpdateWebAuthnCredentialUse(ctx, cred.ID, 42, true, true, last); err != nil {
+		t.Fatalf("UpdateWebAuthnCredentialUse: %v", err)
 	}
 	got, _ = db.GetWebAuthnCredentialByCredentialID(ctx, []byte{1, 2, 3, 4})
 	if got.SignCount != 42 || !got.LastUsedAt.Equal(last) {
 		t.Errorf("after update: SignCount=%d LastUsedAt=%v", got.SignCount, got.LastUsedAt)
+	}
+	if got.BackupEligible == nil || !*got.BackupEligible || !got.BackupState {
+		t.Errorf("after update: want BE=true BS=true, got BE=%v BS=%v", got.BackupEligible, got.BackupState)
+	}
+
+	// Flags set at creation round-trip through List.
+	beFalse := false
+	key := &model.WebAuthnCredential{
+		ID: uuid.New(), UserID: u.ID,
+		CredentialID:   []byte{5, 6, 7, 8},
+		PublicKey:      []byte{0x01},
+		AAGUID:         []byte{0x02},
+		BackupEligible: &beFalse,
+	}
+	if err := db.CreateWebAuthnCredential(ctx, key); err != nil {
+		t.Fatalf("CreateWebAuthnCredential(flags): %v", err)
+	}
+	list, err = db.ListWebAuthnCredentials(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ListWebAuthnCredentials(flags): %v", err)
+	}
+	found := false
+	for _, c := range list {
+		if c.ID != key.ID {
+			continue
+		}
+		found = true
+		if c.BackupEligible == nil || *c.BackupEligible {
+			t.Errorf("list flags: want BE=false, got %v", c.BackupEligible)
+		}
+	}
+	if !found {
+		t.Fatal("List omitted the newly created credential")
+	}
+	if err := db.DeleteWebAuthnCredential(ctx, key.ID, u.ID); err != nil {
+		t.Fatalf("DeleteWebAuthnCredential(flags): %v", err)
 	}
 
 	// Cross-user delete must be a no-op.
